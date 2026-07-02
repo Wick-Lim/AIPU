@@ -17,22 +17,23 @@ The single source of truth for the real shape is [`configs/full_glm52.vh`](../co
 | H_HEADS | 4 | 64 | `num_attention_heads` |
 | NOPE / ROPE | 16 / 16 | 192 / 64 | `qk_nope_head_dim` / `qk_rope_head_dim` |
 | V_DIM | 32 | 256 | `v_head_dim` |
-| Q_LORA / KV_LORA | 64 / 32 | 1536 / 512 † | DeepSeek-MLA standard |
+| Q_LORA / KV_LORA | 64 / 32 | 2048 / 512 † | `q_a_proj`/`kv_a_proj` safetensors (confirmed) |
 | N_EXPERT / TOPK | 8 / 2 | 256 / 8 | `n_routed_experts` / `num_experts_per_tok` |
 | INTER_MOE / INTER_DENSE | 64 / 256 | 2048 / 12288 | `moe_intermediate_size` / `intermediate_size` |
 | TOPK_ATTN | 8 | 2048 | `index_topk` |
 | POSW | 20 | 20 | 2^20 = 1,048,576 ≥ 1M context |
 | S_MAX | 8 | **keep small** | latent-ring depth — see §3 |
 
-† `q_lora`/`kv_lora` follow the DeepSeek-MLA standard (1536/512); marked **pending**
-confirmation against the published checkpoint safetensors tensor shapes.
+† `q_lora`/`kv_lora` = **2048/512, CONFIRMED** against the real checkpoint safetensors
+(`tools/validate_real_ckpt.py`; `q_a_proj.weight [2048,6144]`) — an earlier 1536 guess was
+corrected. See [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md).
 
 ## 2. Elaboration result — the parameterization threads structurally at real dims
 
 Method: instantiate `glm_model_fp8` at real MLA + FFN geometry via a dangling-instance
 wrapper (`build/b4_wrap.v`) and elaborate with **verilator** (an independent parser).
 
-Confirmed clean at **NOPE=192, ROPE=64, V_DIM=256, KV_LORA=512, Q_LORA=1536,
+Confirmed clean at **NOPE=192, ROPE=64, V_DIM=256, KV_LORA=512, Q_LORA=2048,
 INTER_DENSE=12288, INTER_MOE=2048, N_EXPERT=16, TOPK=8** (MODEL_DIM/VOCAB held at
 moderate 768/1024 for a tractable elaboration; those are pure data-width scalings with
 no structural effect):

@@ -40,7 +40,7 @@
 
 **Underspecified fields (the ONLY two assumptions).** config.json does not expose
 `q_lora_rank` / `kv_lora_rank`. GLM-5.2 is DeepSeek-MLA-derived → we size with the
-standard **kv_lora_rank = 512**, **q_lora_rank ≈ 1536**. Both are RTL parameters,
+standard **kv_lora_rank = 512**, **q_lora_rank = 2048 (confirmed vs real safetensors)**. Both are RTL parameters,
 overridable from the real weights. Everything else above is exact.
 
 ### 1.2 Honest scale reality — what one chip can and cannot do
@@ -174,7 +174,7 @@ infrastructure and the golden uses matching fp32 reduce so they agree within tol
 `rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer`, and the extended `attention_unit`
 over tile memory, and owns the latent cache.
 
-- **Q path:** `x(6144) → W_dq(6144×1536) → q_lora(1536) → rmsnorm → W_uq(1536×16384) →
+- **Q path:** `x(6144) → W_dq(6144×2048) → q_lora(2048) → rmsnorm → W_uq(2048×16384) →
   q(64 heads × 256)`. Each head's 256 split **nope[192] | rope[64]** by lane slicing.
   Parameterized so a no-q-LoRA collapse to one 6144×16384 proj is also supported.
 - **KV path (the compression):** `x → W_dkv(6144×512) → c_kv(512)` and
@@ -316,7 +316,7 @@ small scale.
 | layers L | 6 (3 dense + 3 MoE) | 78 | first_k_dense_replace=3 |
 | heads | 4 | 64 | — |
 | qk split | rope 16 + nope 16 = 32; v 32 | 64+192=256; v256 | **nope/rope split** |
-| q_lora / kv_lora | 64 / 32 | 1536 / 512 | **MLA low-rank** |
+| q_lora / kv_lora | 64 / 32 | 2048 / 512 | **MLA low-rank** |
 | rope_theta / interleave | 8e6 / true | 8e6 / true | **exact RoPE math** |
 | DSA index_topk | 8 (S=32) + S=4 dense test | 2048 | **sparsity + dense fallback** |
 | index_topk_freq / offset | 4 / 3 | 4 / 3 | **IndexShare (L3 computes, L4-5 reuse)** |

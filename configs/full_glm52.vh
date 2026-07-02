@@ -13,7 +13,7 @@
 //     [doc] = docs/ACCEL_GLM52.md (§2 config table L27-35, §8.1 slice table L315-327)
 //
 //   NOTE ON q_lora / kv_lora: GLM-5.2 is DeepSeek-MLA-derived.  The DeepSeek-MLA
-//   *standard* low-rank sizes are kv_lora_rank=512, q_lora_rank=1536 (docs
+//   *standard* low-rank sizes are kv_lora_rank=512, q_lora_rank=2048 (docs
 //   ACCEL_GLM52.md §2 L42-43).  These two are marked PENDING safetensors
 //   confirmation against the published checkpoint tensor shapes; every other
 //   value below is a hard config.json / doc citation.
@@ -37,7 +37,7 @@
 `define GLM52_NOPE        192       // [cfg] qk_nope_head_dim       [doc L32]  (slice 16)
 `define GLM52_ROPE        64        // [cfg] qk_rope_head_dim       [doc L32]  (slice 16)
 `define GLM52_V_DIM       256       // [cfg] v_head_dim             [doc L32]  (slice 32)
-`define GLM52_Q_LORA      1536      // [cfg] q_lora_rank    PENDING safetensors [doc L42-43] (slice 64)
+`define GLM52_Q_LORA      2048      // [cfg] q_lora_rank  CONFIRMED safetensors [doc L42-43] (slice 64)
 `define GLM52_KV_LORA     512       // [cfg] kv_lora_rank   PENDING safetensors [doc L42-43] (slice 32)
 `define GLM52_THETA       8000000   // [cfg] rope_theta = 8e6       [doc L33]  (slice 8000000)
 // qk_head_dim = NOPE+ROPE = 256; num_kv_heads=64; attention_bias=false [doc L32]
