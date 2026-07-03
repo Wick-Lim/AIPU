@@ -220,7 +220,7 @@ module glm_model_fp8_tb;
     reg [15:0] ScSHg[0:L-1], ScSHu[0:L-1], ScSHd[0:L-1];
 
     // ================= combinational weight responders (indexed by db_layer) ===
-    integer t, re, ft, fo, cd, obd, lt;
+    integer t, re, ft, fo, cd, obd, lt, bj;
     reg [15:0] sc_a; reg dmode;
     // bf16 embedding / final gamma / LM head
     always @* em_val = EMB[em_tok][em_idx];
@@ -252,7 +252,13 @@ module glm_model_fp8_tb;
             4'd3: sc_a=ScW_kr[db_layer]; 4'd4: sc_a=ScW_uk[db_layer]; 4'd5: sc_a=ScW_uv[db_layer];
             4'd6: sc_a=ScW_o[db_layer]; default: sc_a=16'h3F80;
         endcase
-        for (t=0;t<PE_N;t=t+1) aw_scale[16*t+:16]=sc_a;
+        // uniform per-matrix block scale on EVERY (K-block bj, col pj) lane
+        // (glm_matmul_fp8 packs w_scale[16*(bj*PE_N+pj)]).  When an attention
+        // projection's K exceeds BLK it spans A_NB>1 K-blocks; presenting the scale
+        // on only block 0 would zero-dequant blocks >=1 and drop all K past 128.
+        // At the slice (A_KMAX<=BLK -> A_NB=1) this fills exactly the original PE_N
+        // block-0 lanes -> byte-identical.
+        for (t=0;t<PE_N*A_NB;t=t+1) aw_scale[16*t+:16]=sc_a;
     end
     // per-layer cache read
     always @* begin
@@ -269,10 +275,14 @@ module glm_model_fp8_tb;
     always @* begin
         rw_col   = {8*N_EXPERT{1'b0}};
         rw_scale = {16*N_EXPERT*R_NB{1'b0}};
-        for (re=0;re<N_EXPERT;re=re+1) begin
-            rw_col[8*re+:8]    = Wg[db_layer][rw_k][re];
-            rw_scale[16*re+:16]= ScWg[db_layer];
-        end
+        for (re=0;re<N_EXPERT;re=re+1) rw_col[8*re+:8] = Wg[db_layer][rw_k][re];
+        // uniform router block scale on EVERY (K-block bj, expert col pj) lane
+        // (moe_router_fp8 packs w_scale[16*(bj*N_EXPERT+pj)]).  Router K=MODEL_DIM;
+        // when it exceeds BLK (R_NB>1) block 0 alone would starve the reduction.
+        // R_NB=1 at slice -> only bj=0 -> byte-identical.
+        for (bj=0;bj<R_NB;bj=bj+1)
+            for (re=0;re<N_EXPERT;re=re+1)
+                rw_scale[16*(bj*N_EXPERT+re)+:16]= ScWg[db_layer];
     end
     // per-layer FFN expert weight + scale (mode inferred from db_layer vs N_DENSE)
     always @(fw_grp or fw_k or fw_sel or fw_shared or fw_eidx or db_layer or start) begin
@@ -321,17 +331,25 @@ module glm_model_fp8_tb;
                     fw_scale_u[16*(1*TN+ft)+:16]=ScDu[db_layer][obd];
                 end
             end else begin
-                if (fw_shared) begin
-                    if (fw_sel==2'd2) fw_scale_g[16*(0*TN+ft)+:16]=ScSHd[db_layer];
-                    else begin
-                        fw_scale_g[16*(0*TN+ft)+:16]=ScSHg[db_layer];
-                        fw_scale_u[16*(0*TN+ft)+:16]=ScSHu[db_layer];
-                    end
-                end else begin
-                    if (fw_sel==2'd2) fw_scale_g[16*(0*TN+ft)+:16]=ScMd[db_layer][fw_eidx];
-                    else begin
-                        fw_scale_g[16*(0*TN+ft)+:16]=ScMg[db_layer][fw_eidx];
-                        fw_scale_u[16*(0*TN+ft)+:16]=ScMu[db_layer][fw_eidx];
+                // uniform MoE / shared-expert block scale on EVERY K-block bj lane
+                // (swiglu_expert_fp8 packs w_scale_*[16*(bj*TN+pj)]).  MoE gate/up
+                // reduce over K=MODEL_DIM; when it exceeds BLK (FF_NB_M>1) block 0
+                // alone would starve them.  ScM*/ScSH* are per-matrix uniform, so the
+                // same scale rides every K-block.  FF_NB_M=1 at slice -> only bj=0 ->
+                // byte-identical.
+                for (bj=0;bj<FF_NB_M;bj=bj+1) begin
+                    if (fw_shared) begin
+                        if (fw_sel==2'd2) fw_scale_g[16*(bj*TN+ft)+:16]=ScSHd[db_layer];
+                        else begin
+                            fw_scale_g[16*(bj*TN+ft)+:16]=ScSHg[db_layer];
+                            fw_scale_u[16*(bj*TN+ft)+:16]=ScSHu[db_layer];
+                        end
+                    end else begin
+                        if (fw_sel==2'd2) fw_scale_g[16*(bj*TN+ft)+:16]=ScMd[db_layer][fw_eidx];
+                        else begin
+                            fw_scale_g[16*(bj*TN+ft)+:16]=ScMg[db_layer][fw_eidx];
+                            fw_scale_u[16*(bj*TN+ft)+:16]=ScMu[db_layer][fw_eidx];
+                        end
                     end
                 end
             end
