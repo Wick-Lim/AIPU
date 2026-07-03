@@ -94,6 +94,10 @@ import math
 # (mirrors glm_fp8_contract.py).  We REUSE modal_validate's proven helpers rather
 # than re-derive them.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# In the Modal container the sibling modules are mounted at /root/tools
+# (image.add_local_dir(..., remote_path="/root/tools")), which is NOT the
+# entrypoint's dir (/root); add it so `import modal_validate` resolves there too.
+sys.path.insert(0, "/root/tools")
 
 # Pure-python compare helpers + the in-container numeric refs -- all import-safe
 # WITHOUT modal/torch (modal_validate ships a no-op shim; the numeric helpers only
