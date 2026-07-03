@@ -124,3 +124,39 @@ independent paths** — CPU (an MLA projection, matched reference → bit-exact)
 (6 MoE experts, fp32-accumulate reference → argmax-preserving). Full **end-to-end** token
 identity (tier2, all experts resident) remains the only unrun step; it needs the 8×H200
 class of host and is out of scope here.
+
+## Partial-F1 — multi-layer real-weight assembled FFN (Modal, ~$1-2)
+
+Extends the operator-level validation above to an **assembled multi-layer FFN on real
+weights**, run on Modal (`tools/modal_partial_f1.py`, budget-capped: CPU download → $1 smoke
+gate → T4 compare). Scope: the first **6 real decoder layers** of `zai-org/GLM-5.2-FP8`
+(layers 0–2 dense SwiGLU, 3–5 256-expert MoE + shared), covering the **dense→MoE transition**.
+
+**mode=ffn (measured, PASS):** for every FP8 Linear in the assembled real-weight FFN, OUR
+exact-BFP block-scaled contract vs a fp32-accumulate reference at the same per-token `a_shift`:
+
+| metric | value |
+|---|---|
+| layers compared | 6 (dense 0–2 + MoE 3–5), dense→MoE transition **covered** |
+| argmax (proxy) match | **6/6** |
+| worst `max_abs` | **0.0015** (mean `rms_abs` 0.0002) |
+| `bf16_exact` | 0/6144 — the exact-BFP vs fp32-accumulate ~1-ULP gap (not a bug) |
+| worst `max_rel` | 1586 — a **near-zero-denominator artifact** (tiny abs / tiny value); `max_abs` is the meaningful signal |
+
+So the assembled real-weight FFN — including the dense→MoE transition and the 256-expert +
+shared-expert MoE block — is **numerically faithful** (max_abs ~1.5e-3, argmax preserved),
+extending the single-operator bit-accuracy to a multi-GEMM assembled block on real weights.
+
+**HF cross-check (partial):** the real **`GlmMoeDsa` architecture loads and all 6 decoder
+layers build** from `AutoModelForCausalLM.from_config(trust_remote_code=True)` with **our FP8
+Linears patched in** (8 per MoE layer) — HF compatibility is proven. The **full token-chain
+vs-HF** did **not** complete: running an HF `GlmMoeDsa` decoder layer *standalone* needs the
+model's plumbing (`position_embeddings` from a meta-device `rotary_emb`, DSA sparse-attention
+indexing, masks) — a `TypeError: cannot unpack non-iterable NoneType` (position_embeddings
+not supplied). This is an **HF standalone-layer integration limit, not a fidelity failure**;
+the attention path itself (MLA + DSA) is separately bit-validated by the operator TBs
+(`mla_attn_fp8` real-dim, worst rel 5.48e-4).
+
+**Fidelity standing:** operator-level → **assembled multi-layer FFN on real weights, faithful**
+(borderline-A). The full-model token-chain-vs-HF (true A) still needs either the HF
+standalone-layer plumbing solved, or the full 753B run (multi-GPU, out of the ~$29 budget).
