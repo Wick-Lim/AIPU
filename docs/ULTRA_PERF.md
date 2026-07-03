@@ -20,7 +20,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind F
 | # | Opportunity | Mechanism (1-line) | Quantified impact **[EST]** | Where | Effort | Ceiling? |
 |---|-------------|--------------------|------------------------------|-------|--------|----------|
 | 1 | **Expert-grouped layer-synchronous batched MoE** | Fetch the per-layer expert *union* once from Flash, reuse across B token-rows | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user | system-arch | high | ✅ |
-| 2 | **PE_M batch-widening of FP8 wrappers** — ✅ **DONE (3/4), verified** | swiglu/router/mla now carry a `PE_M` param + per-row buffers → one weight fetch serves B rows (`mtp_head_fp8` still PE_M=1). Verified bit-exact in the regression: **swiglu 513, router 192**, + mla `pem`/`ppos`/`pslen`/`sparse-perrow` TBs; swiglu proves *"PE_M=4 issues the same 4096 weight beats as PE_M=1 → 4 rows, 1 fetch stream"* (0 extra weight BW) | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW | **rtl-here** | **done** (mtp remains) | (enabler) |
+| 2 | **PE_M batch-widening of FP8 wrappers** — ✅ **DONE (4/4), verified** | **All four** FP8 wrappers (swiglu/router/mla/**mtp**) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Verified bit-exact in the regression: **swiglu 513, router 192, mla 6, mtp 44** (+ mla `ppos`/`pslen`/`sparse-perrow`); the weight-share check confirms *"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"* — e.g. mtp `{cn/pw/gn/aw/kc/fw/lw}` beats identical at PE_M=3 (0 extra weight BW) | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW | **rtl-here** | **✅ done** | (enabler) |
 | 3 | **Stronger weight decompressor (context-rANS)** | Spend idle die on context-modeled rANS in Flash→DDR5 refill path | 1.34×→**1.5–1.7×** fewer Flash bytes → ~16→18–20 tok/s, ~3.8→3.0 J/tok | **rtl-here** | high | ✅ |
 | 4 | **Resident dense draft model → high-K spec decode** | ~1–3B DDR5-resident draft proposes K=4–8; target verifies in one pass | K_eff 1.7→**3–5** → ~2–3× single-user, **bit-exact** | rtl-here* | high | ✅ |
 | 5 | **Batched single-pass verification** | Make the main forward process {base + D draft} positions *together* | The gate for ANY spec Flash gain (today's ÷K on Flash = **0**) | **rtl-here** | high | ✅ |
@@ -103,14 +103,14 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
 ### Build A — Expert-grouped batched MoE (#1+#2+#15) — the aggregate ceiling
 The only thing that needs to be *invented*; the math die is ready.
 
-1. **PE_M batch-widen the wrappers (#2, the keystone) — ✅ mostly DONE.** glm_matmul_fp8 already supports
+1. **PE_M batch-widen the wrappers (#2, the keystone) — ✅ DONE (4/4).** glm_matmul_fp8 already supports
    PE_M>1 (8·PE_M a_shift port, per-row accumulator banks, PE_M·PE_N dequant walk; the scarce 24×24 dequant
-   muls stay pinned at NB **regardless of PE_M**). **`swiglu_expert_fp8` / `moe_router_fp8` / `mla_attn_fp8`
-   now carry a `PE_M` parameter** with `xbuf[0:PE_M-1][…]` / `hbuf[0:PE_M-1][…]` per-row buffers, TILE per-row
-   a_shift/hsh, and the **same** w_col streamed to all rows — verified bit-exact (swiglu 513 / router 192 /
-   mla pem·ppos·pslen·sparse TBs; the "4 rows == 1 fetch stream" weight-share check passes). **Remaining:
-   `mtp_head_fp8`** still instantiates `glm_matmul_fp8 #(.PE_M(1), …)` with a single-row `hbuf` — the one
-   wrapper left to widen (for Batch × MTP, #14).
+   muls stay pinned at NB **regardless of PE_M**). **All four wrappers — `swiglu_expert_fp8` / `moe_router_fp8`
+   / `mla_attn_fp8` / `mtp_head_fp8` — now carry a `PE_M` parameter** with `[0:PE_M-1][…]` per-row buffers,
+   per-row a_shift/hsh, and the **same** w_col streamed to all rows — verified bit-exact (swiglu 513 / router
+   192 / mla 6·ppos·pslen·sparse / **mtp 44**; the "B rows == 1 fetch stream" weight-share check passes on
+   every weight port). `mtp_head_fp8` (the composite: 3 RMSNorms + combine-proj + a full `glm_decoder_block_fp8`
+   + LM head) threads PE_M through per-row and enables **Batch × MTP (#14)**.
 2. **Grouped dispatcher.** Per MoE layer: (a) route all B tokens, histogram top-8 picks into a per-expert
    token-list (reuse scatter_gather.v + topk_select); (b) for each *distinct* active expert, gather its rows
    into a PE_M tile, fetch the ~37 MB expert from Flash/DDR5 **once**, run the grouped GEMM, scatter back;

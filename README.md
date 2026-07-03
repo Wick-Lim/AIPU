@@ -108,7 +108,7 @@ Full FP8 forward pass runs and predicts the correct next token.
 | `moe_router_fp8.v` | gate GEMV FP8, bf16 sigmoid/topk/renorm; **PE_M-batched** | 185 + real 256/top-8 + PE_M 192 |
 | `glm_decoder_block_fp8.v` | one full FP8 decoder layer | 9 tests, dense + MoE |
 | **`glm_model_fp8.v`** | **full FP8 forward pass** | **next-token argmax == fp8 golden** |
-| `mtp_head_fp8.v` | FP8 multi-token-prediction (t+2) head | 6 tests |
+| `mtp_head_fp8.v` | FP8 multi-token-prediction (t+2) head; **PE_M-batched** | 6 + PE_M 44 (all weight ports: B rows == 1 fetch) |
 
 ### Single-module system (real-753B memory/streaming hardware) — BUILT
 
