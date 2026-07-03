@@ -150,12 +150,22 @@ extending the single-operator bit-accuracy to a multi-GEMM assembled block on re
 **HF cross-check (partial):** the real **`GlmMoeDsa` architecture loads and all 6 decoder
 layers build** from `AutoModelForCausalLM.from_config(trust_remote_code=True)` with **our FP8
 Linears patched in** (8 per MoE layer) — HF compatibility is proven. The **full token-chain
-vs-HF** did **not** complete: running an HF `GlmMoeDsa` decoder layer *standalone* needs the
-model's plumbing (`position_embeddings` from a meta-device `rotary_emb`, DSA sparse-attention
-indexing, masks) — a `TypeError: cannot unpack non-iterable NoneType` (position_embeddings
-not supplied). This is an **HF standalone-layer integration limit, not a fidelity failure**;
-the attention path itself (MLA + DSA) is separately bit-validated by the operator TBs
-(`mla_attn_fp8` real-dim, worst rel 5.48e-4).
+vs-HF** did **not** complete, and we traced *exactly* why by fixing each blocker in turn:
+1. standalone layers unpack `cos,sin = position_embeddings` — supplied by re-instantiating the
+   rotary on a real device (the meta-built model's is on `meta`); **fixed**.
+2. `mixed dtype (CPU): expect Float` — the bf16 tail vs float32 hidden; cast the layer to
+   float32 (the fp8-patched forwards preserve `x.dtype`); **fixed**.
+3. **`ValueError: Shared DSA layers require top-k indices from a previous full indexer layer.`**
+   — the fundamental blocker: GLM-5.2's **DSA IndexShare** has a *full-indexer* layer compute the
+   sparse top-k indices that later *shared* DSA layers reuse, so the layers are **not
+   independent** — running them standalone lacks the model's cross-layer index threading. This is
+   an **architectural dependency of GlmMoeDsa, not a kwarg** — the proper fix is the truncated
+   full-`model.model.forward` (which threads the index itself), a larger effort with its own
+   uncertainties (materializing the model, DSA at seq-len 1).
+
+This is an **HF standalone-layer integration limit, not a fidelity failure**; the attention path
+itself (MLA + DSA IndexShare) is separately bit-validated by the operator TBs (`mla_attn_fp8`
+real-dim, worst rel 5.48e-4; the per-row DSA union in `dsa_indexer`). Spend to here: ~$4-5.
 
 **Fidelity standing:** operator-level → **assembled multi-layer FFN on real weights, faithful**
 (borderline-A). The full-model token-chain-vs-HF (true A) still needs either the HF

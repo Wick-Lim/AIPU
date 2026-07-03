@@ -590,6 +590,11 @@ def _try_build_hf_layer(torch, transformers, layer_idx, weight_map, opener):
     # split into bf16-tail (loadable into params) vs fp8 (patched)
     fp8_mods = _patch_fp8_linears(torch, layer, tens)
     _load_bf16_tail(torch, layer, tens)
+    # Run the whole layer in float32 on CPU: the bf16 tail (norms) + float32 hidden
+    # otherwise raise "mixed dtype (CPU): expect parameter to have scalar type of
+    # Float".  .float() only casts float params/buffers (int index buffers survive);
+    # the fp8-patched forwards ignore the module weight and preserve x.dtype.
+    layer = layer.float()
     return layer, dict(patched=len(fp8_mods))
 
 
@@ -660,19 +665,59 @@ def _compare_layers_hf(torch, transformers, layer_indices, weight_map, opener,
         print(f"[layer] built HF decoder layer {i} (patched {meta['patched']} fp8 Linears)")
 
     hidden0 = _synthetic_input(torch, seed).to(torch.float32).unsqueeze(0)  # [1,1,H]
+    dev = hidden0.device
+    seqlen = hidden0.shape[1]
+    position_ids = torch.arange(seqlen, device=dev).unsqueeze(0)
+
+    # Standalone HF decoder layers unpack `cos, sin = position_embeddings` inside
+    # attention, so we MUST supply it.  The meta-built model's rotary_emb has meta
+    # buffers, so re-instantiate the SAME rotary class on the real device (it is tiny
+    # -- just inv_freq derived from config).
+    pos_emb = None
+    try:
+        from transformers import AutoConfig, AutoModelForCausalLM
+        _cfg = AutoConfig.from_pretrained(CKPT_DIR, trust_remote_code=True)
+        with torch.device("meta"):
+            _m = AutoModelForCausalLM.from_config(_cfg, trust_remote_code=True)
+        _rot_cls = type(getattr(getattr(_m, "model", _m), "rotary_emb"))
+        try:
+            _rot = _rot_cls(config=_cfg).to(dev)
+        except TypeError:
+            _rot = _rot_cls(_cfg).to(dev)
+        pos_emb = _rot(hidden0, position_ids)   # (cos, sin)
+        print("[layer] rotary ready -> position_embeddings supplied")
+    except Exception as _e:
+        print(f"[layer] rotary unavailable ({type(_e).__name__}: {_e}); trying without")
+
+    _cache_pos = position_ids[0]
+    def _call_layer(layer, h):
+        # arch/version-tolerant: try richest signature first, degrade to minimal.
+        attempts = [
+            dict(position_embeddings=pos_emb, position_ids=position_ids,
+                 attention_mask=None, use_cache=False, cache_position=_cache_pos),
+            dict(position_embeddings=pos_emb, position_ids=position_ids,
+                 attention_mask=None, use_cache=False),
+            dict(position_embeddings=pos_emb, position_ids=position_ids),
+            dict(position_embeddings=pos_emb),
+            dict(position_ids=position_ids),
+            dict(),
+        ]
+        errs = []
+        for kw in attempts:
+            kw = {k: v for k, v in kw.items()
+                  if not (k == "position_embeddings" and v is None)}
+            try:
+                return layer(h, **kw)
+            except Exception as e:
+                errs.append(f"[{'+'.join(kw.keys()) or 'bare'}] {type(e).__name__}: {e}")
+        raise RuntimeError("all layer-call signatures failed:\n    "
+                           + "\n    ".join(errs))
 
     def run_chain():
         h = hidden0
         outs = []
         for i, layer, _ in built:
-            # HF decoder layers accept (hidden_states, ...) and return a tuple;
-            # position/mask kwargs vary by arch -> best-effort minimal call.
-            try:
-                res = layer(h)
-            except TypeError:
-                # provide a trivial position id / no attention mask
-                pos = torch.arange(h.shape[1]).unsqueeze(0)
-                res = layer(h, position_ids=pos)
+            res = _call_layer(layer, h)
             h = res[0] if isinstance(res, (tuple, list)) else res
             outs.append(h)
         return h, outs
