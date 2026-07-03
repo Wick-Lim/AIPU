@@ -159,9 +159,17 @@ module mla_attn_fp8_tb;
     );
 
     // ================= combinational WEIGHT RESPONDER =================
-    // present PE_N FP8 lanes W_sel[w_grp*PE_N+t , w_k] + the per-column block
-    // scale (NB=1 -> w_scale[16*t +: 16]).  All columns of a matrix share its
-    // single block scale.
+    // present PE_N FP8 lanes W_sel[w_grp*PE_N+t , w_k] + the block dequant scale.
+    // Each matrix carries ONE (uniform) [128,128] block scale sel_scale; the DUT
+    // expects a scale for EVERY (K-block bj, col pj) lane, packed
+    // w_scale[16*(bj*PE_N+pj) +: 16]  (see glm_matmul_fp8's block-scaled dequant).
+    // When a projection's reduction K exceeds BLK it spans NB>1 K-blocks, so the
+    // SAME uniform scale must be presented on ALL NB*PE_N lanes -- otherwise blocks
+    // bj>=1 dequant with scale 0 and the DUT drops every K beat past the first
+    // BLK, a ~(K/BLK)x under-sum per projection that compounds through
+    // W_uk*W_uv*W_o (e.g. at real dims: 4x on W_uk/W_uv over K=512 and 16x on W_o
+    // over K=2048 -> the observed 64x).  At the slice (KMAX<=BLK -> NB=1) this
+    // fills exactly the original PE_N lanes, so it is byte-identical there.
     integer t;
     reg [15:0] sel_scale;
     always @* begin
@@ -184,8 +192,9 @@ module mla_attn_fp8_tb;
             4'd6: if (w_grp*PE_N+t < MODEL_DIM)w_col[8*t +:8] = W_o  [w_grp*PE_N+t][w_k];
             default: w_col[8*t +:8] = 8'h38;    // 1.0 for don't-care
             endcase
-            w_scale[16*t +: 16] = sel_scale;
         end
+        // uniform per-matrix block scale on EVERY (K-block, col) lane (all NB blocks).
+        for (t = 0; t < PE_N*NB; t = t + 1) w_scale[16*t +: 16] = sel_scale;
     end
 
     // ================= combinational CACHE RESPONDER =================
