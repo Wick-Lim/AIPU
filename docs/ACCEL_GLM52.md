@@ -401,5 +401,5 @@ units** only; full-system throughput/power are paper estimates, not measured.
 
 ---
 
-*Buildable RTL under `/Users/wick/Documents/workspaces/TPU/src/`. Golden + per-unit/block TBs
+*Buildable RTL under `src/`. Golden + per-unit/block TBs
 to be added alongside. Build starts at `rmsnorm_unit.v`.*

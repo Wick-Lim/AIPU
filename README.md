@@ -1,4 +1,9 @@
-# TPU — a GLM-5.2-FP8 inference accelerator in Verilog
+# AIPU — a GLM-5.2-FP8 inference accelerator in Verilog
+
+> **AIPU** (AI Processing Unit) — repo [`Wick-Lim/AIPU`](https://github.com/Wick-Lim/AIPU).
+> (The project was formerly named *TPU*; the name **AIPU** now refers to the whole
+> accelerator. The classic *5-stage scalar TPU core* below is an internal substrate that
+> keeps its own name — "TPU v2.0" — and its `tpu_*` module names.)
 
 A synthesizable Verilog accelerator whose single deliverable goal is to **run one
 real model well: [`zai-org/GLM-5.2-FP8`](https://huggingface.co/zai-org/GLM-5.2-FP8)** —
