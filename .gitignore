@@ -20,3 +20,4 @@ tools/*.hex
 __pycache__/
 *.pyc
 .deferred/
+build_f0/
