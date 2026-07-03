@@ -412,10 +412,20 @@ module glm_matmul_fp8 #(
 
     // PIPELINED dequant streaming ONE element/cycle.  The per-element math is the
     // left-fold  deq = ((0 + acc[0]*w[0]) + acc[1]*w[1]) + ...  reusing the
-    // bit-exact fp32_mul_pipe / fp32_add_pipe.  DEQ_LAT = FP_MUL_LAT + NB*FP_ADD_LAT
-    // (the fold depth); the shallow 2^-a_shift exponent-add and bf16 round stay
-    // combinational at the tail.
-    localparam integer DEQ_LAT = `FP_MUL_LAT + NB*`FP_ADD_LAT;
+    // bit-exact fp32_mul_pipe / fp32_add_pipe.  The shallow 2^-a_shift exponent-add
+    // and bf16 round stay combinational at the tail.
+    //
+    // FMAX SPLIT (fold-stage repipeline): a NEW input-register stage sits BEFORE
+    // the block-scale multiply -- the fixed_to_fp32 bank convert and the bf16->fp32
+    // scale are registered (acc_sel_r/wf_sel_r in the DQ generate) before feeding
+    // fp32_mul_pipe.  This cuts the register-to-register critical path that bundled
+    // fixed_to_fp32 (48-bit leading-one + barrel-shift + RNE) AND the 24x24 mantissa
+    // multiply of fp32_mul_pipe's combinational stage 0 into ONE cone -- the
+    // measured fmax limiter of the whole GEMM tile.  DEQ_LAT therefore gains +1;
+    // it is a pure repipeline (same operands, one cycle later), so the numeric
+    // result is BIT-IDENTICAL -- the DEQ_LAT-deep side-band (valid/slot/a_shift)
+    // pipe below tracks the extra stage and still lands each result at its c_out slot.
+    localparam integer DEQ_LAT = 1 + `FP_MUL_LAT + NB*`FP_ADD_LAT;
 
     // output side-band pipe: carry (valid, output-slot, a_shift) alongside the
     // dequant datapath so the result lands at the right c_out slot DEQ_LAT later.
@@ -425,6 +435,16 @@ module glm_matmul_fp8 #(
 
     // feed: present element (ri,rj) for one cycle while walking 0..NOUT-1.
     wire         resc_feed_v = rescaling & (rcnt < NOUT[OW:0]);
+    // registered feed valid: the new dequant input stage (acc_sel_r/wf_sel_r) is
+    // one flop deep, so the block-scale multiply sees each operand pair one cycle
+    // after it is presented.  Clearing on rst keeps the mul valid_in glitch-free
+    // (the authoritative c_out-write valid is the dq_v_pipe side-band, which is
+    // captured at the SAME edge, so alignment is exact).
+    reg          resc_feed_r;
+    always @(posedge clk) begin
+        if (rst) resc_feed_r <= 1'b0;
+        else     resc_feed_r <= resc_feed_v;
+    end
 
     // --- stage A: NB parallel products fixed_to_fp32(accx[bb][ri][rj]) * w_scale[rj][bj] ---
     wire [31:0]  dq_prod  [0:NB-1];
@@ -447,9 +467,19 @@ module glm_matmul_fp8 #(
             dq_widx = gd*PE_N + {{(32-NW){1'b0}}, rj};   // linear (K-block, col)
             wf_sel  = bf16_to_fp32(w_scale_q[16*dq_widx +: 16]);
         end
+        // NEW input-register stage (the fold-stage fmax split): register the
+        // fixed_to_fp32 bank convert and the bf16->fp32 scale BEFORE the 24x24
+        // block-scale multiply, so the deep fixed_to_fp32 cone no longer shares a
+        // register-to-register path with fp32_mul_pipe's mantissa multiply.  Data
+        // only -- captured at the same edge as the dq_v_pipe side-band; bit-exact.
+        reg [31:0] acc_sel_r, wf_sel_r;
+        always @(posedge clk) begin
+            acc_sel_r <= acc_sel;
+            wf_sel_r  <= wf_sel;
+        end
         fp32_mul_pipe u_dqmul (
-            .clk(clk), .rst(rst), .valid_in(resc_feed_v),
-            .a(acc_sel), .b(wf_sel),
+            .clk(clk), .rst(rst), .valid_in(resc_feed_r),
+            .a(acc_sel_r), .b(wf_sel_r),
             .valid_out(dq_prodv[gd]), .result(dq_prod[gd])
         );
         // align product k to the running sum it folds into: delay by k*FP_ADD_LAT.
