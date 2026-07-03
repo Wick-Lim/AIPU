@@ -93,3 +93,40 @@ yosys -p "read_verilog -sv -I src src/glm_matmul_fp8.v src/glm_fp_pipe.v; \
           abc -liberty $LIB; stat -liberty $LIB"          # -> Chip area
 # timing: append an abc -script ending in `topo; stime`  # -> Delay = <ps>
 ```
+
+## FPGA resource fit (ECP5) — partial, honest
+
+Since the product is an **FPGA card** (ASIC out of scope), a first look at whether the *full
+system* fits a real FPGA. Partitioned `synth_ecp5` (yosys 0.66) of each memory-system controller
+**standalone** completed cleanly:
+
+| block | LUT4 | FF | CCU2C | MULT18 | EBR |
+|---|---|---|---|---|---|
+| `ddr5_xbar` | 18,137 | 8,507 | 0 | 0 | 0 |
+| `flash_xbar` | 26,112 | 17,011 | 0 | 0 | 0 |
+| `kv_cache_pager` | 25,249 | 25,367 | 17 | 0 | 0 |
+| `expert_cache_pf` | 744 | 287 | 80 | 0 | 0 |
+| `weight_loader` | 302 | 202 | 63 | 0 | 0 |
+| `boot_loader` | 931 | 399 | 74 | 0 | 0 |
+| **sum (6 controllers)** | **71,475** | **51,773** | 234 | 0 | 0 |
+
+vs an **ECP5-85** (`LFE5UM5G-85`: ~84k LUT4, ~84k FF, 156 MULT18, 208 EBR): the **memory-system
+controllers alone are ~85% of LUT4 / 62% of FF** — so the full system (controllers + the compute
+die) **does not fit an ECP5-85**; a larger FPGA is needed. (The 0 EBR reflects that the actual
+RAM is external/TB-modeled here, so these are the control-fabric + QDEPTH-queue costs; the crossbars'
+deep outstanding queues are the LUT/FF drivers.)
+
+**Honest correction — the compute die's ECP5 size was NOT obtained, and it is NOT "32–64× over".**
+The exploratory pass could not `synth_ecp5` the compute die (`glm_model_fp8`): yosys 0.66 is
+prohibitively slow / artifact-prone elaborating it. That pass *reported* the die as ~10–17× over an
+ECP5-85 due to a `glm_matmul_fp8` at `KMAX=16384 → NB=128` accumulator banks — **this is a synth
+artifact, not the real design.** Independently disproven: (1) `glm_model_fp8` **simulates and passes**
+(`ALL 3 TESTS PASSED`, ~13 min in iverilog) — a real NB=128 die would blow the sim up far beyond that;
+(2) the instantiation trace shows every in-die matmul has its `KMAX` **overridden** to `FF_KMAX_D/M`
+(= 256/128 at the slice → **NB ≤ 2**), never the module-default 16384. So the die is small (NB ≤ 2);
+its ECP5-mapped size is simply **unmeasured** (an EDA-tooling limit of yosys-0.66 `synth_ecp5` on this
+design), not a design over-provisioning.
+
+**Takeaway:** ECP5-85 is too small for the full system (controllers ~85% alone) → target a larger
+FPGA; the full-system ECP5 mapped fit remains **unobtained** (yosys-0.66 `synth_ecp5` scalability),
+a real next-step item (a newer yosys / vendor flow, or the FPGA-prototype step of `PRODUCT_ROADMAP.md`).
