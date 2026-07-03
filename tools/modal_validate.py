@@ -267,6 +267,39 @@ def download_weights(force: bool = False):
     return CKPT_DIR
 
 
+def _download_one_shard():
+    """tier1 helper: download ONLY config.json + the safetensors index + a SINGLE
+    shard that contains real FP8 Linear weights (~5 GB), NOT the 753 GB model.
+    Runs inside the Modal container against the mounted volume."""
+    import json as _json
+    from huggingface_hub import hf_hub_download
+    os.makedirs(CKPT_DIR, exist_ok=True)
+    for fn in ("config.json", "model.safetensors.index.json"):
+        try:
+            hf_hub_download(repo_id=MODEL_ID, filename=fn, local_dir=CKPT_DIR)
+        except Exception as e:                 # index may be named differently
+            print(f"[shard-dl] {fn}: {e}")
+    # choose a shard referenced by a *.weight_scale_inv (i.e. an FP8 Linear).
+    shard, idx = None, os.path.join(CKPT_DIR, "model.safetensors.index.json")
+    if os.path.exists(idx):
+        wm = _json.load(open(idx)).get("weight_map", {})
+        for k, v in wm.items():
+            if k.endswith("weight_scale_inv"):
+                shard = v
+                break
+        if shard is None and wm:
+            shard = sorted(set(wm.values()))[0]
+    if shard is None:
+        shard = "model-00001-of-000150.safetensors"     # fallback
+    print(f"[shard-dl] fetching single shard {shard} (~5 GB, not 753 GB) ...")
+    hf_hub_download(repo_id=MODEL_ID, filename=shard, local_dir=CKPT_DIR)
+    try:
+        volume.commit()
+    except Exception:
+        pass
+    print(f"[shard-dl] done -> {CKPT_DIR}")
+
+
 @app.function(
     image=image,
     gpu=GPU_CONFIG,
@@ -333,9 +366,12 @@ def reference(prompts):
 
 @app.function(
     image=image,
-    gpu="H100",                              # one GPU is plenty for the op tier
+    gpu="T4",                                # cheapest GPU; the op tier only does a
+                                             # weight-GEMM compare, so T4 is plenty
+                                             # (no need for H100/H200 or the 753 GB model).
     volumes={WEIGHTS_DIR: volume},
-    secrets=[hf_secret],
+    # NB: zai-org/GLM-5.2-FP8 is a PUBLIC repo (gated: False) -> no HF token / secret
+    # needed for the single-shard download this tier does.
     timeout=FUNC_TIMEOUT,
 )
 def tier1_operator(n_weights: int = 6, m_tokens: int = 16, seed: int = 0):
@@ -344,10 +380,16 @@ def tier1_operator(n_weights: int = 6, m_tokens: int = 16, seed: int = 0):
        cached checkpoint, build realistic bf16 activations, and compare OUR
        contract (glm_fp8_contract.block_fp8_gemm) against a reference
        fp32-accumulate FP8 GEMM (the real-engine scheme).  Reports, per weight:
-       bf16-exact rate, max/RMS abs error, max rel error, and ARGMAX match."""
+       bf16-exact rate, max/RMS abs error, max rel error, and ARGMAX match.
+
+       This tier is MoE- and download-cheap: it does NOT load the model and does
+       NOT fetch the 753 GB checkpoint -- it downloads only config.json + the
+       safetensors index + a SINGLE ~5 GB shard (enough real FP8 Linears to
+       validate the contract), and runs on the cheapest GPU (T4)."""
     _ensure_on_path()
-    if not _checkpoint_present():
-        download_weights.local(force=False)
+    if not any(n.endswith(".safetensors") for n in (os.listdir(CKPT_DIR)
+                                                    if os.path.isdir(CKPT_DIR) else [])):
+        _download_one_shard()
 
     import torch
     from safetensors import safe_open
