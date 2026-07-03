@@ -1,5 +1,12 @@
 # Physical characterization — REAL sky130 standard cells
 
+> **Scope note (ASIC is out of scope).** The product path is an **FPGA card**, not an ASIC
+> ([`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2). This sky130 (an ASIC PDK) characterization is
+> therefore **realizability evidence** — proof that the RTL synthesizes and *places* to real
+> standard cells with timing met, i.e. it is physically sound and will map cleanly to FPGA fabric —
+> **not** a product tapeout step. The numbers stand as real-cell PPA anchors; the flow is not the
+> product's physical path.
+
 Moves the FP8 compute die's area/timing from **[EST]** (market/physics models) to **real
 synthesized numbers on a real open-source PDK**. Flow: yosys 0.66 `synth` → `dfflibmap` →
 `abc -liberty` mapping to the **SkyWater sky130 high-density** standard-cell library

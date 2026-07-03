@@ -1,6 +1,8 @@
 # GLM-5.2-FP8 Datapath — Area / Timing Characterization (PPA_FP8)
 
-**All numbers below are `[synth-estimate, yosys generic/abc — not a placed-and-routed ASIC/FPGA result]`.**
+**All numbers below are `[synth-estimate, yosys generic/abc — not a placed-and-routed FPGA result]`.**
+(A real sky130 standard-cell placement of `glm_matmul_fp8` exists as realizability evidence — see
+[`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md); the product path is an FPGA card, ASIC is out of scope.)
 
 Method: yosys 0.66 FAST flow per repo note (no `synth_gowin` autoname).
 - **cells** = generic cells via `read_verilog -sv; (chparam); hierarchy; proc; opt; stat` (hierarchical, includes submodules).

@@ -44,7 +44,7 @@ the Flash levers. Read them as an optimistic ceiling ([`ULTRA_PERF.md`](docs/ULT
 [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)).
 
 **Out of scope** (vendor IP / not attempted): DDR5/Flash/USB-C **PHYs** (TB-stubbed), the
-**tokenizer** (software), **full-chip P&R → tapeout**, and a **full-model 8×H200 GPU
+**tokenizer** (software), **full-chip FPGA P&R + board bring-up** (ASIC/tapeout is out of scope — the product is an FPGA card), and a **full-model 8×H200 GPU
 validation** (resource-gated; substituted by the CPU-bit-exact + T4 evidence above).
 
 ---
@@ -152,7 +152,7 @@ Flash bandwidth does. The striping strategy for that bandwidth is in
 
 ## Documents
 
-- **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction: the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the FPGA-vs-ASIC fork.
+- **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction: the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the **FPGA-card** product path (ASIC out of scope).
 - **[`docs/ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)** — accelerator architecture: exact config, MLA + DSA + MoE detail, the fp64-golden methodology, memory/streaming, RTL build order.
 - **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (FP8 die + 64 GB DDR5 + 1 TB Flash, e.g. a USB-C box): tiering, expert caching, the bottleneck/perf/cost model.
 - **Evidence:** [`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md) (real-checkpoint bit-exact + T4) · [`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md) (operators at real dims) · [`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md) (real sky130 area/P&R) · [`MODAL_VALIDATE.md`](docs/MODAL_VALIDATE.md) (GPU validation harness).
@@ -208,4 +208,4 @@ as the control/integration substrate. Detail in [`SPEC.md`](SPEC.md) / [`docs/IS
 20K** (GW2A-18, ~49% LUT, ~0 DSP) — fp32 does not (`mla_attn` alone ≈ 396 DSP-equiv, 8× the
 device), which is the point of FP8: its 4×4 mantissa multiply frees the scarce DSP and spends
 LUTs on the accumulator. This is a **silicon-fabric sanity test, not the deliverable** (the board
-cannot run GLM-5.2); the target is a custom ASIC / large FPGA with the DDR5+Flash system.
+cannot run GLM-5.2); the target is a **large (data-center-class) FPGA** with the DDR5+Flash system. Because the workload is Flash-bandwidth-bound (the die sits ~75–80% idle behind Flash), an FPGA card is the committed product — an ASIC's faster compute would be largely wasted, so ASIC is out of scope.

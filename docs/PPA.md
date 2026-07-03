@@ -358,10 +358,13 @@ gives a bitstream for power estimation.
 Use **Lattice Diamond/Radiant** (ECP5) or port to **Vivado** (Xilinx) /
 **Quartus** (Intel) for vendor-grade timing closure and power analysis.
 
-### Option C — ASIC flow
+### Option C — real-cell realizability (sky130, not the product path)
 
-Use **OpenLane + Sky130** (open-source RTL-to-GDS) or a commercial ASIC flow for
-true silicon PPA (gate-level timing, area in µm², and power).
+ASIC is **out of scope** for the project (the AIPU product is an FPGA card — see
+[`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)). A standard-cell map (**yosys + Sky130**) is still
+useful as **realizability evidence** — real gate-level area (µm²) and register-to-register timing,
+confirming the RTL maps to real cells. See [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md) for the FP8
+die's real sky130 area/placement/timing. This is a soundness check, not a tapeout step.
 
 ---
 

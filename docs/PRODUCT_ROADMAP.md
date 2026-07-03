@@ -21,7 +21,7 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 | Memory | DDR5/Flash/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC + directed TBs at slice | coverage closure, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
-| Physical | slice-scale yosys estimates | full synth + P&R + timing/power sign-off + DRC/LVS + tapeout/bitstream |
+| Physical | slice-scale yosys estimates + real sky130 realizability (placement, timing met) | full synth + **FPGA** P&R + timing closure via the vendor flow → **bitstream** (ASIC/tapeout out of scope) |
 | Software | weight-pack tools (ckpt_pack/flash_layout) | host driver, tokenizer, runtime, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
@@ -57,22 +57,28 @@ one thing the slice cannot.
 ### P2 — Productize the RTL (robustness)
 - P2.1 ECC on DDR5 + Flash; error detection / correction / retry / recovery paths.
 - P2.2 Full CDC sign-off across USB / memory / compute clock domains; reset/init/boot-load hardening.
-- P2.3 DFT: scan-chain insertion, MBIST for the SRAMs/caches, boundary scan.
+- P2.3 Reliability (FPGA path): the built ECC (SECDED scrub) + BRAM-ECC + CDC/reset hardening
+  carry over; MBIST maps to a BRAM self-test. ASIC-specific DFT (scan-chain insertion, boundary
+  scan) is **out of scope** — on FPGA the vendor JTAG/config handles device test.
 - P2.4 Power: real ICG clock-gating cells, power domains, DVFS hooks, thermal budget.
 - P2.5 Verification closure: functional + code coverage targets, constrained-random regression,
   gate-level (post-synth) sim, production-width controller formal + k-induction for unboundedness.
 
 ### P3 — Vendor IP + physical implementation
 - P3.1 License + integrate the PHYs: DDR5 multi-channel controller+PHY, NVMe/Flash, USB-C device.
-- P3.2 Target choice (the product fork — decide early):
-  - **FPGA-card product** (faster to market): a data-center FPGA + on-board DDR + NVMe runs the
-    real model streamed; bitstream via the vendor flow. Lower NRE, higher unit cost, slower.
-  - **ASIC product** (cost/power/size at volume): standard-cell synth → floorplan → P&R → clock
-    tree → timing/power/IR sign-off → DRC/LVS → tapeout → packaging. High NRE, months–years.
+- P3.2 Target — **FPGA-card product** (the committed path; **ASIC is out of scope**). A
+  data-center-class FPGA + on-board DDR + NVMe/Flash runs the real model streamed; bitstream via
+  the vendor flow.
+  - **Why not ASIC:** the workload is **Flash-bandwidth-bound**, so the die already sits
+    ~75–80% idle behind Flash. An ASIC's headline advantage (faster / denser compute) is therefore
+    largely *wasted* here — it would only buy power/efficiency and unit-cost-at-volume, at
+    multi-million NRE + months–years and no do-overs. For a bandwidth-bound design the FPGA-card
+    (compute is cheap; the memory interface is what matters) is not a stepping stone but a
+    legitimate end product. ASIC is only revisited if volume/power economics ever justify the NRE.
 - P3.3 Full-scale STA (SDC), power sign-off, signal/power integrity.
 
 ### P4 — System, software, manufacturing
-- P4.1 PCB: multi-layer controlled-impedance board (die/FPGA + DDR5 + Flash + USB-C), BOM, assembly.
+- P4.1 PCB: multi-layer controlled-impedance board (FPGA + DDR5 + Flash + USB-C), BOM, assembly.
 - P4.2 Software stack: USB-C host driver, tokenizer, the checkpoint→Flash quant-layout pipeline
   (productionize `ckpt_pack.py`/`flash_layout.py`), inference runtime + continuous-batch scheduler.
 - P4.3 Qualification: reliability (temp/voltage/aging), compliance (USB-C, EMI), yield/binning.
