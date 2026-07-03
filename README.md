@@ -41,7 +41,10 @@ exhaustive enumeration, a real PDK, or a formal solver).
 bandwidth-roofline model (`tokens/s ≈ Flash_BW / [(1−h)·footprint] · K`), **not** from a routed
 netlist or silicon: single-user **~3 → ~30+ tok/s** and **~9 → ~3 J/token** [EST] after stacking
 the Flash levers. Read them as an optimistic ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md),
-[`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)).
+[`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)). The roofline's *memory-stall mechanism* is,
+however, now **measured on real RTL cycles** (assembled system, cycle-accurate): the exposed stall
+is exactly linear in Flash latency (`stall = 3·FLASH_LAT + 9`) and proportional to miss count — so
+the mechanism is validated even though the absolute tok/s is not ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)).
 
 **Out of scope** (vendor IP / not attempted): DDR5/Flash/USB-C **PHYs** (TB-stubbed), the
 **tokenizer** (software), **full-chip FPGA P&R + board bring-up** (ASIC/tapeout is out of scope — the product is an FPGA card), and a **full-model 8×H200 GPU
@@ -156,7 +159,7 @@ Flash bandwidth does. The striping strategy for that bandwidth is in
 - **[`docs/ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)** — accelerator architecture: exact config, MLA + DSA + MoE detail, the fp64-golden methodology, memory/streaming, RTL build order.
 - **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (FP8 die + 64 GB DDR5 + 1 TB Flash, e.g. a USB-C box): tiering, expert caching, the bottleneck/perf/cost model.
 - **Evidence:** [`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md) (real-checkpoint bit-exact + T4) · [`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md) (operators at real dims) · [`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md) (real sky130 area/P&R) · [`MODAL_VALIDATE.md`](docs/MODAL_VALIDATE.md) (GPU validation harness).
-- **Perf / physical:** [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) · [`ULTRA_PERF.md`](docs/ULTRA_PERF.md) · [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md) · [`PPA_FP8.md`](docs/PPA_FP8.md) · [`FORMAL.md`](docs/FORMAL.md).
+- **Perf / physical:** [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) · [`ULTRA_PERF.md`](docs/ULTRA_PERF.md) · [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md) · [`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md) (cycle-accurate: the memory-stall mechanism measured on real RTL cycles) · [`PPA_FP8.md`](docs/PPA_FP8.md) · [`FORMAL.md`](docs/FORMAL.md).
 - **Scale / memory:** [`P12_SCALEUP.md`](docs/P12_SCALEUP.md) · [`P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md) · [`ROADMAP.md`](docs/ROADMAP.md).
 - **Scalar core substrate:** [`SPEC.md`](SPEC.md) · [`docs/ISA.md`](docs/ISA.md) · [`docs/PPA.md`](docs/PPA.md).
 
