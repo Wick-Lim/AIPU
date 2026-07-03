@@ -1,5 +1,11 @@
 # TPU PPA Report (ECP5)
 
+> **Naming.** "TPU" here = the **internal scalar TPU v2.0 tensor core** (conv2d / matmul /
+> the four tensor units on ECP5), a real subcomponent — **not** the project. The project is
+> **AIPU** (the GLM-5.2-FP8 accelerator); the FP8 compute die's PPA is characterized on real
+> sky130 cells in [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md). This report is the legacy scalar
+> core on FPGA.
+
 Power / Performance / Area (PPA) characterization of the Verilog TPU and its four
 tensor units, mapped to the **Lattice ECP5** FPGA cell library with the open-source
 Yosys synthesis flow.
