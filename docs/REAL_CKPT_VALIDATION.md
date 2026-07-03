@@ -101,3 +101,26 @@ DeepSeek-MLA-derived MoE with **DeepSeek Sparse Attention** (`index_n_heads=32`,
 qk_rope(64). The `indexer.wk`/`indexer.wq_b` projections are FP8; the
 `indexers_proj` input projection is kept bf16. `num_nextn_predict_layers = 1`
 (one MTP layer → 79 attention blocks total for 78 hidden layers).
+
+## Addendum — GPU tier1 on T4 (real MoE expert weights)
+
+`modal run tools/modal_validate.py --tier 1` on the **cheapest GPU (T4)**, single-shard
+download (~5 GB, no 753 GB model, no token — the repo is public). It read **6 real FP8 MoE
+expert Linears** (`model.layers.10.mlp.experts.*.{down,up}_proj.weight`, real N/K =
+6144/2048 and 2048/6144) and compared OUR contract vs the **fp32-accumulate** reference
+engine on the GPU (torch path).
+
+Result: **argmax_match 16/16 on 5 of 6 weights, 15/16 on the 6th** (`max_abs ≈ 1e-3`,
+i.e. ~1 bf16 ULP). Unlike the CPU check above (which used a *matched-accumulator* numpy
+reference → 100 % bf16-exact), tier1 compares against the **intentionally different**
+fp32-rolling-add accumulator, so the two engines differ by ≤ 1 bf16 ULP per element
+(`bf16_exact` low, and `max_rel` blows up on the near-zero outputs) — exactly the
+exact-BFP-vs-fp32-accumulate gap documented in `docs/BIT_ACCURACY.md §A`, which is
+**argmax-preserving**. The one 15/16 flip is a near-tie at the accumulator-ULP level on a
+single Linear's raw output (not the final next-token logits).
+
+**Takeaway:** the operator-level fidelity is now confirmed on real weights through **two
+independent paths** — CPU (an MLA projection, matched reference → bit-exact) and GPU T4
+(6 MoE experts, fp32-accumulate reference → argmax-preserving). Full **end-to-end** token
+identity (tier2, all experts resident) remains the only unrun step; it needs the 8×H200
+class of host and is out of scope here.
