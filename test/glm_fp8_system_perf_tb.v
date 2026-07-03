@@ -51,15 +51,27 @@ module glm_fp8_system_perf_tb;
     parameter integer FLASH_LAT_CFG   = 8;   // Flash fetch latency (cycles)
     parameter integer DDR_NCH_CFG     = 4;   // DDR5 channels (power of two)
     parameter integer CACHE_SLOTS_CFG = 4;   // expert-cache slots
+    // FAITHFUL cycle integration (TRACK P / P0): when 1 (DEFAULT), the compute die
+    // is clock-gated for exactly the cycles the expert cache waits on a demand-miss
+    // Flash fetch, so the MEASURED start->tok_valid latency actually PAYS the memory
+    // stall (cyc_per_tok GROWS with FLASH_LAT) while the committed token stays
+    // byte-identical.  Set to 0 to reproduce the OLD decoupled (observer-only) run.
+    parameter integer EXPERT_STALL_CFG = 1;
 
     // ---- clock / reset ----
     reg clk = 1'b0;
     always #5 clk = ~clk;
     reg rst;
 
+    // ---- SCALE knobs: grow the model so more distinct experts are demanded per
+    //      token -> a higher demand-miss count -> a larger measured memory fraction
+    //      (P1 "larger config").  Defaults reproduce the committed small slice.
+    parameter integer L_CFG        = 4;   // decoder layers (>= N_DENSE+1)
+    parameter integer N_EXPERT_CFG = 4;   // routed experts (cache thrashes when > CACHE_SLOTS)
+
     // ================= small-but-faithful slice =================
     localparam integer MODEL_DIM  = 16;
-    localparam integer L          = 4;
+    localparam integer L          = L_CFG;
     localparam integer N_DENSE    = 2;
     localparam integer VOCAB      = 16;
     localparam integer H_HEADS    = 2;
@@ -73,7 +85,7 @@ module glm_fp8_system_perf_tb;
     localparam integer THETA      = 8000000;
     localparam integer PE_N       = 4;
     localparam integer POSW       = 20;
-    localparam integer N_EXPERT   = 4;
+    localparam integer N_EXPERT   = N_EXPERT_CFG;
     localparam integer TOPK       = 2;
     localparam integer INTER_MOE  = 16;
     localparam integer INTER_DENSE= 32;
@@ -328,6 +340,7 @@ module glm_fp8_system_perf_tb;
         .BLK(BLK), .LM_TN(LM_TN),
         .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT), .KV_CTX(KV_CTX),
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
+        .EXPERT_STALL(EXPERT_STALL_CFG),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),
         .WL_KMAX(WL_KMAX), .WL_ADDR_W(WL_ADDR_W), .LOADER_KLEN(LOADER_KLEN)
@@ -737,6 +750,7 @@ module glm_fp8_system_perf_tb;
     always @(posedge clk) perf_cyc <= rst ? 64'd0 : perf_cyc + 64'd1;
     integer     n_meas;
     reg  [63:0] cyc_tok [0:15];
+    reg  [63:0] stall_tok [0:15];   // ec_demand_stall accrued WITHIN this token's window
     reg  [63:0] cyc_per_tok;
 
     // ================= checks =================
@@ -747,20 +761,25 @@ module glm_fp8_system_perf_tb;
         for (c=0;c<n;c=c+1) @(negedge clk);
     end endtask
 
-    integer fdc0, krv0, xreq0, xrsp0, lds0, ldb0;
+    integer fdc0, krv0, xreq0, xrsp0, lds0, ldb0;  reg [63:0] sbefore;
     task run_token; input [TOKW-1:0] tk; input [POSW-1:0] ps; input integer SL;
         input [256*8-1:0] label; integer b; reg [63:0] c0, c1; begin
         hbefore = ec_hit_count; mbefore = ec_miss_count; abefore = kv_append_count;
         fdc0 = flash_done_cnt;  krv0 = kv_rowvalid_cnt;
         xreq0 = xbar_req_count; xrsp0 = xbar_resp_count;
         lds0  = loader_done_count; ldb0 = loader_beat_count;
+        sbefore = ec_demand_stall_cycles;
         prompt_tok = tk; start_pos = ps; s_len = SL[IDXW:0];
         @(negedge clk); start = 1'b1; r_start = 1'b1;
         c0 = perf_cyc;                   // start counting posedges at start assertion
         @(negedge clk); start = 1'b0; r_start = 1'b0;
         wait (tok_valid === 1'b1);
         c1 = perf_cyc;                   // ...through tok_valid for THIS token
-        cyc_tok[n_meas] = c1 - c0;
+        cyc_tok[n_meas]   = c1 - c0;
+        // demand-stall accrued strictly INSIDE this token's start->tok_valid window.
+        // With EXPERT_STALL=1 the die is frozen for these cycles, so the measured
+        // latency GROWTH over the free-running (EXPERT_STALL=0) run equals this.
+        stall_tok[n_meas] = ec_demand_stall_cycles - sbefore;
         if (n_meas == 0) cyc_per_tok = c1 - c0;   // headline = first (cold) token
         n_meas = n_meas + 1;
         @(negedge clk);
@@ -846,12 +865,21 @@ module glm_fp8_system_perf_tb;
         end
         $display("ALL %0d TESTS PASSED  (glm_fp8_system: compute die + expert_cache_pf + kv_cache_pager + Flash arbiter + ddr5_xbar fast tier + weight_loader DMA == standalone glm_model_fp8, end-to-end)", test_count);
         // ---- machine-readable throughput line (grepped by tools/perf_sweep.sh) ----
-        $display("PERF flash_lat=%0d ddr_nch=%0d cache_slots=%0d cyc_per_tok=%0d stall=%0d hit=%0d miss=%0d",
+        //   With EXPERT_STALL=1 (faithful, default) cyc_per_tok ALREADY INCLUDES the
+        //   token-0 demand-stall: the die was clock-gated for those cycles, so this
+        //   latency is what real HW pays.  stall= is cumulative ec_demand_stall over
+        //   the 3 tokens (an upper bound on what the die paid within the windows).
+        $display("PERF flash_lat=%0d ddr_nch=%0d cache_slots=%0d cyc_per_tok=%0d stall=%0d hit=%0d miss=%0d expert_stall=%0d",
                  FLASH_LAT, DDR_NCH, CACHE_SLOTS, cyc_per_tok,
-                 ec_demand_stall_cycles, ec_hit_count, ec_miss_count);
+                 ec_demand_stall_cycles, ec_hit_count, ec_miss_count, EXPERT_STALL_CFG);
         $display("PERF_DETAIL cyc_cold=%0d cyc_warm2=%0d cyc_warm3=%0d final_stall=%0d final_hit=%0d final_miss=%0d",
                  cyc_tok[0], cyc_tok[1], cyc_tok[2],
                  ec_demand_stall_cycles, ec_hit_count, ec_miss_count);
+        // per-token FAITHFUL split: measured latency and the demand-stall that landed
+        // INSIDE each token's start->tok_valid window (the cycles the die was frozen).
+        $display("PERF_INTEG stall_tok0=%0d stall_tok1=%0d stall_tok2=%0d in_window_stall=%0d",
+                 stall_tok[0], stall_tok[1], stall_tok[2],
+                 stall_tok[0]+stall_tok[1]+stall_tok[2]);
         $finish;
     end
 endmodule

@@ -140,6 +140,25 @@ module glm_fp8_system #(
     //       per-edge input trajectory is unchanged, so the committed token is
     //       identical to the LOOPBACK=0 run).  See the new local proof TB.
     parameter integer LOOPBACK    = 0,
+    // ---- FAITHFUL EXPERT-MISS STALL (make the die pay the Flash memory wait) ----
+    //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-stall module.  die_clk===clk;
+    //       the compute die runs at full speed and a demand miss is only OBSERVED
+    //       by expert_cache_pf on a parallel path (ec_demand_stall_cycles counts
+    //       the wait, but the die never actually pays it -- cyc_per_tok is decoupled
+    //       from FLASH_LAT).
+    //   1 = ON: the die's clock is FROZEN (glitch-free, negedge-latched enable, the
+    //       SAME external clock-gate the C8 LOOPBACK proves bit-exact) for exactly
+    //       the cycles expert_cache_pf holds ec_busy -- i.e. every cycle a DEMAND
+    //       MISS (or a demand miss queued behind a prefetch) is being serviced by
+    //       Flash.  Because a synchronous die tolerates clock-gating bit-for-bit
+    //       (its per-edge input trajectory is unchanged; the weight/KV stub still
+    //       serves every family same-cycle on the edges the die actually takes), the
+    //       committed token is IDENTICAL to the OFF run -- but the die now waits
+    //       ~FLASH_LAT per miss, so the measured start->tok_valid latency GROWS by
+    //       exactly ec_demand_stall_cycles.  No glm_model_fp8 edit is needed; the
+    //       cache/FIFO/Flash-arbiter all keep running on the ungated clk so the
+    //       fetch that clears the stall always completes (no deadlock).
+    parameter integer EXPERT_STALL = 0,
     // ---- DDR5 fast-tier fabric (ddr5_xbar) config ----
     parameter integer DDR_NCH     = 4,      // DDR5 channels (POWER OF TWO)
     parameter integer DDR_ADDR_W  = 32,     // block-address width into the fabric
@@ -932,10 +951,27 @@ module glm_fp8_system #(
     //========================================================================
     generate
     if (LOOPBACK == 0) begin : g_lb
-        assign die_clk     = clk;
         assign die_aw_col  = aw_col;              // stub lanes, straight through
         assign lb_pending  = 1'b0;
         assign lb_req_addr = {DDR_ADDR_W{1'b0}};
+        if (EXPERT_STALL == 0) begin : g_free
+            // die runs at full clk -- BYTE-IDENTICAL to the pre-stall module.
+            assign die_clk = clk;
+        end else begin : g_estall
+            // FAITHFUL EXPERT-MISS STALL: freeze the die (glitch-free clock gate,
+            // enable latched on the LOW phase of clk) for exactly the cycles the
+            // expert cache holds ec_busy -- every cycle a DEMAND MISS is serviced
+            // by Flash.  The cache/FIFO/Flash-arbiter keep running on the ungated
+            // clk, so the fetch that drops ec_busy always completes; the die then
+            // advances again.  Clock-gating a synchronous die is transparent, so
+            // the committed token is identical to EXPERT_STALL==0 (see g_lb.LOOPBACK
+            // proof), while start->tok_valid grows by ec_demand_stall_cycles.
+            wire die_ce = ~ec_busy;
+            reg  die_en_lat;
+            initial die_en_lat = 1'b1;
+            always @(negedge clk) die_en_lat <= die_ce;
+            assign die_clk = clk & die_en_lat;
+        end
         /* verilator lint_off UNUSEDSIGNAL */
         wire _lb_off_unused = &{1'b0, lb_accept, xbar_resp_tag, xbar_resp_data};
         /* verilator lint_on UNUSEDSIGNAL */

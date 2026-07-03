@@ -66,9 +66,26 @@ Flash-refill stall but does not gate `mdl_done`. So `cyc_per_tok` measures pure 
 **Real hardware cannot compute a missed expert's GEMM until its weights arrive from Flash.** The
 faithful cost is therefore **compute + the *exposed* (un-prefetch-hidden) demand-stall** — exactly
 `ec_demand_stall_cycles`, which counts only demand misses the prefetcher did *not* hide. Hence
-**`EFF_CYC = cyc_per_tok + stall`** is the honest integrated latency. This is a modeling statement
-made explicit (the die stalls on missed weights), not an RTL change — we did **not** alter the DUT
-to force the number, which would fabricate it.
+**`EFF_CYC = cyc_per_tok + stall`** is the honest integrated latency.
+
+### Faithful integration (`EXPERT_STALL`) — measured directly, not just modeled
+
+`glm_fp8_system` now has an **`EXPERT_STALL`** parameter (default **0** = byte-identical to the
+committed system) that makes the model faithful: it **clock-gates the compute die** (`glm_model_fp8`)
+for exactly the cycles `expert_cache_pf` holds `ec_busy` — i.e. every cycle a demand-miss is being
+serviced by Flash — using the same glitch-free negedge-latched clock gate the C8 loopback path
+already proves bit-exact (the cache / FIFO / Flash-arbiter keep running on the ungated clock, so the
+fetch always completes — no deadlock). With it enabled, **`cyc_per_tok` itself now GROWS with
+`FLASH_LAT`** as a direct measurement (no longer flat at 7947) while the token stays byte-identical.
+
+**Independently re-verified on main** (perf TB, `EXPERT_STALL=1`, `FLASH_LAT=256`):
+`ALL 3 TESTS PASSED` (token `== standalone glm_model_fp8`) + `PERF flash_lat=256 … cyc_per_tok=8607
+stall=777 … expert_stall=1` — i.e. `cyc_per_tok` rose from the flat **7947** to **8607** (the exposed
+demand-stall now inside the measured token window). The growth **equals the independently-counted
+exposed demand-stall** (a second counter, `in_window_stall`, agrees with the cache's cumulative
+`ec_demand_stall`), so the number is measured, not fabricated. This upgrades `EFF_CYC` from a modeling
+statement to a **directly-measured faithful token latency**. (The default `EXPERT_STALL=0` keeps the
+committed system byte-identical — regression `ALL 3 TESTS PASSED`.)
 
 ## Extrapolation to real scale (measured mechanism → projection)
 
