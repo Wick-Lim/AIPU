@@ -51,7 +51,7 @@ UNITS := instruction_decoder register_file memory tile_memory vector_alu \
 
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint synth synth-glm cdc ppa clean
+.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint synth synth-glm synth-glm-compact sim-glm-compact cdc ppa clean
 
 all: test hazard unittests lint synth synth-glm formal
 
@@ -603,6 +603,61 @@ GLM_CDC_SRCS := src/glm_fp8_system_cdc.v src/glm_fp8_system.v src/cdc_async_fifo
 synth-glm:
 	$(YOSYS) -q -p "read_verilog -sv -I src $(GLM_CDC_SRCS); \
 	                hierarchy -top glm_fp8_system_cdc -check; proc; opt; check -assert; stat"
+
+# ---- COMPACT SYNTH VARIANT (FPGA miniaturization; Tang Mega 138K / GW5AT-138) --
+# Same structural elaboration+sign-off as `synth-glm`, but overrides the five
+# RESULT-INVARIANT resource parameters (capacity / parallelism / bandwidth -- NOT
+# the math) to their compact values so the elaborated hierarchy is SMALLER (half
+# the matmul PE array, half the DDR5 crossbar, smaller KV ring / expert FIFO /
+# expert cache).  The decoded TOKEN is BYTE-IDENTICAL to the default config --
+# proven functionally by `make sim-glm-compact` (token == the committed run).
+#   PE_N 4->2  DDR_NCH 4->2  KV_RESIDENT 16->8(>=S_MAX)  EFIFO_DEPTH 16->8  CACHE_SLOTS 4->2
+# NOTE: yosys 0.66 cannot map the FP8 datapaths through ABC, so this target does
+# NOT emit a LUT count; it elaborates + `check -assert`s the compact hierarchy and
+# `stat`s the flattened cell count.  The area reduction is BY CONSTRUCTION (fewer
+# PE columns / channels / ring+FIFO+cache entries); the byte-identical token is the
+# verified invariant (see docs/OPERATION_FLOW.md "Compact config").
+synth-glm-compact:
+	$(YOSYS) -q -p "read_verilog -sv -I src $(GLM_CDC_SRCS); \
+	                hierarchy -top glm_fp8_system_cdc -check \
+	                  -chparam PE_N 2 -chparam DDR_NCH 2 -chparam KV_RESIDENT 8 \
+	                  -chparam EFIFO_DEPTH 8 -chparam CACHE_SLOTS 2; \
+	                proc; opt; check -assert; stat"
+
+# ---- COMPACT FUNCTIONAL VERIFY (token byte-identical at the compact config) ----
+# Runs the system TB (test/glm_fp8_system_tb.v) TWICE and asserts the compact
+# config decodes the SAME token as the committed default: (1) default -P (committed
+# slice) and (2) the compact -P overrides.  Both must print ALL 3 TESTS PASSED and
+# the per-test `tok=` lines must match.  This is the functional proof behind
+# `synth-glm-compact`.
+sim-glm-compact:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_sys_committed_sim test/glm_fp8_system_tb.v \
+	    src/glm_fp8_system.v src/weight_decomp.v src/glm_model_fp8.v src/ddr5_xbar.v src/weight_loader.v \
+	    src/expert_cache_pf.v src/expert_cache_ctrl.v src/kv_cache_pager.v src/glm_decoder_block_fp8.v \
+	    src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v \
+	    src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v \
+	    src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
+	@$(IVERILOG) $(IFLAGS) \
+	    -Pglm_fp8_system_tb.PE_N=2 -Pglm_fp8_system_tb.DDR_NCH=2 -Pglm_fp8_system_tb.KV_RESIDENT=8 \
+	    -Pglm_fp8_system_tb.EFIFO_DEPTH=8 -Pglm_fp8_system_tb.CACHE_SLOTS=2 \
+	    -o $(BUILD_DIR)/glm_sys_compact_sim test/glm_fp8_system_tb.v \
+	    src/glm_fp8_system.v src/weight_decomp.v src/glm_model_fp8.v src/ddr5_xbar.v src/weight_loader.v \
+	    src/expert_cache_pf.v src/expert_cache_ctrl.v src/kv_cache_pager.v src/glm_decoder_block_fp8.v \
+	    src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v \
+	    src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v \
+	    src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
+	@$(VVP) $(BUILD_DIR)/glm_sys_committed_sim | grep -E 'PASS\[|ALL [0-9]+ TESTS PASSED' > $(BUILD_DIR)/glm_committed.tok \
+	    || { echo "FAILED: committed config did not pass"; exit 1; }
+	@$(VVP) $(BUILD_DIR)/glm_sys_compact_sim   | grep -E 'PASS\[|ALL [0-9]+ TESTS PASSED' > $(BUILD_DIR)/glm_compact.tok \
+	    || { echo "FAILED: compact config did not pass"; exit 1; }
+	@echo "==== COMMITTED (PE_N=4 DDR_NCH=4 KV_RESIDENT=16 EFIFO_DEPTH=16 CACHE_SLOTS=2) ===="; cat $(BUILD_DIR)/glm_committed.tok
+	@echo "==== COMPACT   (PE_N=2 DDR_NCH=2 KV_RESIDENT=8  EFIFO_DEPTH=8  CACHE_SLOTS=2) ===="; cat $(BUILD_DIR)/glm_compact.tok
+	@grep -oE 'tok=[0-9]+' $(BUILD_DIR)/glm_committed.tok > $(BUILD_DIR)/glm_committed.toks
+	@grep -oE 'tok=[0-9]+' $(BUILD_DIR)/glm_compact.tok   > $(BUILD_DIR)/glm_compact.toks
+	@diff -q $(BUILD_DIR)/glm_committed.toks $(BUILD_DIR)/glm_compact.toks >/dev/null \
+	    && echo "PASS: compact token stream is BYTE-IDENTICAL to the committed config" \
+	    || { echo "FAILED: compact token differs from committed"; exit 1; }
 
 # ---- CDC structural sign-off for the 2-clock product top (task C8) ----------
 # Asserts every host_clk<->core_clk crossing in glm_fp8_system_cdc flows through a

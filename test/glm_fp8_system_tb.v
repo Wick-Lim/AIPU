@@ -28,7 +28,21 @@
 // The per-channel DDR5 PHY and the loader staging tier are modeled here (the TB
 // "stubs the memory"), exactly as the SoC TB stubs GDDR6/Flash.
 //============================================================================
-module glm_fp8_system_tb;
+module glm_fp8_system_tb #(
+    // ---- COMPACT-config overridable knobs (RESULT-INVARIANT resource params) ----
+    //   Defaults == the COMMITTED slice config below (byte-identical committed run
+    //   when no override is given).  Override for the compact FPGA variant via, e.g.
+    //     iverilog -P glm_fp8_system_tb.PE_N=2 -P glm_fp8_system_tb.DDR_NCH=2 \
+    //              -P glm_fp8_system_tb.KV_RESIDENT=8 -P glm_fp8_system_tb.EFIFO_DEPTH=8 \
+    //              -P glm_fp8_system_tb.CACHE_SLOTS=2 ...
+    //   The decoded TOKEN must be IDENTICAL across every setting (these params set
+    //   capacity/parallelism/bandwidth, never the math).
+    parameter integer PE_N        = 4,   // matmul PE-array columns (result-invariant)
+    parameter integer DDR_NCH     = 4,   // DDR5 channels (POWER OF TWO)
+    parameter integer KV_RESIDENT = 16,  // KV ring capacity (POWER OF TWO, >= S_MAX)
+    parameter integer EFIFO_DEPTH = 16,  // routed-expert request FIFO depth (POWER OF TWO)
+    parameter integer CACHE_SLOTS = 2    // expert-cache slots
+);
 
     // ---- clock / reset ----
     reg clk = 1'b0;
@@ -49,7 +63,7 @@ module glm_fp8_system_tb;
     localparam integer S_MAX      = 4;
     localparam integer TOPK_ATTN  = 4;
     localparam integer THETA      = 8000000;
-    localparam integer PE_N       = 4;
+    // PE_N is a module parameter (overridable header knob) -- see top of module.
     localparam integer POSW       = 20;
     localparam integer N_EXPERT   = 4;
     localparam integer TOPK       = 2;
@@ -60,13 +74,11 @@ module glm_fp8_system_tb;
     localparam integer BLK        = 128;
     localparam integer LM_TN      = 4;
     // ---- memory system ----
-    localparam integer CACHE_SLOTS = 2;
+    // CACHE_SLOTS / KV_RESIDENT / EFIFO_DEPTH are overridable header knobs (top).
     localparam integer FLASH_LAT   = 8;
     localparam integer KV_CTX      = 1024;
-    localparam integer KV_RESIDENT = 16;
-    localparam integer EFIFO_DEPTH = 16;
     // ---- DDR5 fabric + loader ----
-    localparam integer DDR_NCH     = 4;
+    // DDR_NCH is an overridable header knob (top of module).
     localparam integer DDR_ADDR_W  = 32;
     localparam integer DDR_DATA_W  = 256;
     localparam integer DDR_TAG_W   = 8;

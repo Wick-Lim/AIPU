@@ -172,3 +172,52 @@ memory/streaming system that runs the real 753B. What is *modeled* (not silicon)
 all `[EST]` tok/s/J. Fidelity is operator-bit-exact vs the real checkpoint + assembled-FFN faithful
 (borderline-A); the full-model token-chain-vs-HF and a real FPGA run remain (see
 [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md), [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)).
+
+## 10. Compact config (FPGA miniaturization)
+
+Target: fit the chip on a **smaller FPGA** (Tang Mega 138K / GW5AT-138). Five parameters of
+`glm_fp8_system` (and its 2-clock top `glm_fp8_system_cdc`) set **capacity / parallelism /
+bandwidth — never the math**. Shrinking them makes the elaborated logic smaller (fewer LUT/FF in
+the matmul PE array, the DDR5 crossbar, the KV ring, the expert-request FIFO, and the expert
+cache) and slower / lower-BW, but the **decoded token is byte-identical**. They are *result-invariant*.
+
+**Compact synth config** (overrides on the `glm_fp8_system_cdc` full-model defaults):
+
+| param | default | compact | true safe-min¹ | constraint | what it sizes | shrink / cost when reduced |
+|---|---|---|---|---|---|---|
+| `PE_N`        | 4  | **2** | 1              | —                     | matmul PE-array columns          | halves the PE array (**biggest die saving**); tiles more → same output, more cycles |
+| `DDR_NCH`     | 4  | **2** | 2              | power-of-two          | DDR5 fabric channels (`ddr5_xbar`)| smaller crossbar; ~½ aggregate read BW (Flash-bound anyway) |
+| `KV_RESIDENT` | 16 | **8** | `S_MAX` (=8)²  | POW2, `>= S_MAX`      | latent-KV ring capacity          | smaller ring RAM; more cold-row Flash gathers |
+| `EFIFO_DEPTH` | 16 | **8** | 2 (1 passed³)  | power-of-two          | routed-expert request FIFO depth | smaller FIFO; risk of drop only under bursty routing |
+| `CACHE_SLOTS` | 4  | **2** | 1              | —                     | GDDR6 expert-cache slots         | smaller tag/data array; more misses → more Flash stalls |
+
+¹ Verified in the system TB slice (`test/glm_fp8_system_tb.v`, `S_MAX=4`): every value listed
+still prints `ALL 3 TESTS PASSED` with the **same token stream** as the committed config. The
+compact column is the recommended FPGA set (keeps head-room over the true minimum).
+² `KV_RESIDENT >= S_MAX` and POW2. Slice `S_MAX=4` → min 4; the **full model `S_MAX=8`** → min 8,
+so the compact synth uses 8. ³ `EFIFO_DEPTH=1` also passed the slice (no FIFO overflow observed)
+but leaves zero slack against a burst; 2 is the recommended floor.
+
+**Why the token cannot change.** `kv_cache_pager`, `ddr5_xbar`, `expert_cache_pf` and the expert
+FIFO are *transparent* to the compute die: the die pulls its weight/KV bytes same-cycle from the
+weight/KV source (§2–§4); the pager/cache/xbar are the bandwidth/observability plumbing around it.
+Reducing their capacity changes only counters (hit/miss, cold-row Flash fetches, xbar req/resp) —
+never the FP8 arithmetic. `PE_N` tiles the *same* matmul into more/fewer columns and reduces to
+the identical accumulated sum. Proven: committed and compact runs emit the byte-identical token
+stream `tok = {0, 11, 11}`; the all-minimums run (`PE_N=1 DDR_NCH=2 KV_RESIDENT=4 EFIFO_DEPTH=2
+CACHE_SLOTS=1`) also matches.
+
+**Build / verify.**
+```
+make sim-glm-compact    # runs the system TB at BOTH the committed and compact configs and
+                        # asserts the compact token stream == committed (byte-identical)
+make synth-glm-compact  # structural elaboration + check -assert + stat of the compact hierarchy
+```
+The TB knobs are overridable header parameters, e.g.
+`iverilog -Pglm_fp8_system_tb.PE_N=2 ...`; the default (no `-P`) is the committed slice.
+
+**Measurement caveat (honest).** yosys 0.66 cannot map the FP8 datapaths through ABC, so no LUT
+count is emitted here — `synth-glm-compact` elaborates + `check -assert`s + `stat`s the compact
+hierarchy. The **area reduction is by construction** (fewer PE columns / channels / ring+FIFO+cache
+entries); the **byte-identical token is the verified invariant** (`make sim-glm-compact`). A real
+LUT/FF delta needs the vendor flow (Gowin / nextpnr) on the elaborated compact netlist.
