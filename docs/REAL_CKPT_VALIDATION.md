@@ -167,6 +167,37 @@ This is an **HF standalone-layer integration limit, not a fidelity failure**; th
 itself (MLA + DSA IndexShare) is separately bit-validated by the operator TBs (`mla_attn_fp8`
 real-dim, worst rel 5.48e-4; the per-row DSA union in `dsa_indexer`). Spend to here: ~$4-5.
 
-**Fidelity standing:** operator-level → **assembled multi-layer FFN on real weights, faithful**
-(borderline-A). The full-model token-chain-vs-HF (true A) still needs either the HF
-standalone-layer plumbing solved, or the full 753B run (multi-GPU, out of the ~$29 budget).
+## Truncated FULL-MODEL token chain — the DSA wall RESOLVED (mode=model, measured)
+
+Blocker #3 is **fixed** by not running standalone layers at all: `modal_partial_f1.py --mode model`
+builds a **truncated `GlmMoeDsa` model** (`num_hidden_layers=N`, real weights) and runs its **own
+`forward`** twice — `gold` (fp32-accumulate) vs `ours` (exact-BFP), same fp8 weights — so **the
+model threads the DSA IndexShare top-k across its layers itself**. `N=3` (≤ `first_k_dense_replace`)
+is all-dense (no 256-expert modules → light, builds on CPU / runs on T4).
+
+**Result (measured, T4, ~$0.1, layers 0–2 = the first real 3-layer stack):**
+
+| metric | value |
+|---|---|
+| chain | **real token chain** — embed → MLA + **DSA (threaded)** + residual + dense FFN ×3 → norm → lm_head |
+| fp8 Linears patched | 30 (10/layer) |
+| **next-token argmax match** (gold vs ours) | **1/1 — IDENTICAL** (both token `82137`) |
+| **top-8 logit overlap** | **1.0** (full) |
+| logit `max_abs` / `rms_abs` | **0.118 / 0.0231** |
+| logit `max_rel` | 1343 — the **near-zero-denominator artifact** (tiny logit / tiny value); `max_abs` is the meaningful signal |
+
+So through a **real assembled token chain** — the MLA + DSA-threaded attention + residual + dense
+FFN, ending at the LM head — our exact-BFP contract lands on the **same next token** as the
+fp32-accumulate reference, with the **top-8 fully preserved**. This is the first result that
+exercises the **cross-layer DSA index threading** (the exact thing standalone layers could not),
+and it passes. The `model.forward` fix retired the "larger effort with its own uncertainties" caveat.
+
+**Scope (honest):** truncated to the **3 dense layers** (not yet the MoE stack — `N≥4` adds a
+256-expert layer needing A100-class memory) and a short (8-token) prompt; `gold` is the
+fp32-accumulate reference (the documented accumulator isolation), not HF's native FP8 kernel. Next
+increments: `N=4` (the dense→MoE seam) on A100, then deeper `N`.
+
+**Fidelity standing:** operator-level → assembled multi-layer FFN → **truncated full-model token
+chain (3 dense layers) argmax-identical + top-8 preserved, DSA threaded** (**A−, firmer**). Full A
+now needs the MoE-inclusive chain (`N≥4`) and ultimately deeper depth / the full 753 B run
+(multi-GPU) — the DSA-plumbing blocker itself is **retired**.

@@ -748,8 +748,106 @@ def _compare_layers_hf(torch, transformers, layer_indices, weight_map, opener,
     return per_layer, cum
 
 
+def _set_param(torch, root, dotted, tensor):
+    """Assign `tensor` into root's parameter/buffer at a dotted path, matching the
+       existing dtype (real-init model built on CPU -> valid buffers like rotary
+       inv_freq, so we only OVERWRITE the params we have real weights for)."""
+    obj = root
+    parts = dotted.split(".")
+    for p in parts[:-1]:
+        obj = getattr(obj, p)
+    leaf = parts[-1]
+    cur = getattr(obj, leaf, None)
+    with torch.no_grad():
+        t = tensor
+        if cur is not None and hasattr(cur, "dtype"):
+            t = t.to(cur.dtype)
+        if isinstance(cur, torch.nn.Parameter):
+            setattr(obj, leaf, torch.nn.Parameter(t, requires_grad=False))
+        else:
+            setattr(obj, leaf, t)
+
+
+def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, seed):
+    """TRUNCATED FULL-MODEL forward (the DSA-IndexShare fix).
+
+       Standalone decoder layers fail because GLM-5.2's DSA has a *full-indexer*
+       layer compute top-k indices that later *shared* layers reuse -- the layers
+       are NOT independent.  Here we instead build a truncated GlmMoeDsa MODEL
+       (num_hidden_layers=N) with real weights and run its OWN `forward` twice
+       (gold=fp32-accumulate vs ours=exact-BFP, same fp8 weights), so the MODEL
+       threads the DSA index across its N layers -- a real assembled TOKEN CHAIN
+       through MLA + DSA + residual + FFN + final-norm + lm_head.
+
+       N<=first_k_dense_replace (=3) => all-dense, NO 256-expert modules => light
+       enough to build on CPU and run without a big GPU.  Returns ([], cumulative)."""
+    global _LAYER_SCHEME
+    from transformers import AutoConfig, AutoModelForCausalLM
+    cfg = AutoConfig.from_pretrained(CKPT_DIR, trust_remote_code=True)
+    cfg.num_hidden_layers = int(n_layers)                     # truncate the stack
+    if hasattr(cfg, "num_nextn_predict_layers"):
+        cfg.num_nextn_predict_layers = 0                      # drop the MTP head
+    # Build with REAL init on CPU (NOT meta+to_empty): keeps computed buffers valid
+    # (rotary inv_freq, causal masks) -- we then overwrite only the real params.
+    print(f"[model] building truncated GlmMoeDsa (num_hidden_layers={n_layers}) on CPU ...")
+    model = AutoModelForCausalLM.from_config(cfg, trust_remote_code=True)
+    base = getattr(model, "model", model)
+
+    patched_total = 0
+    for i in range(int(n_layers)):
+        tens = _load_layer_tensors(i, weight_map, opener)
+        if not tens:
+            raise RuntimeError(f"no tensors cached for layer {i}")
+        layer = base.layers[i]
+        patched_total += len(_patch_fp8_linears(torch, layer, tens))   # fp8 -> _gemm
+        _load_bf16_tail(torch, layer, tens)                            # norms/gate/bias
+    print(f"[model] loaded {n_layers} layers, patched {patched_total} fp8 Linears")
+
+    # embeddings + final norm + lm_head (bf16 tail)
+    _set_param(torch, base, "embed_tokens.weight",
+               _get_tail_tensor("model.embed_tokens.weight", weight_map, opener))
+    norm_w, lm_head_w = tail
+    _set_param(torch, base, "norm.weight", norm_w)
+    _set_param(torch, model, "lm_head.weight", lm_head_w)
+
+    model = model.float().eval()      # bf16 tail on CPU otherwise trips mixed-dtype
+
+    torch.manual_seed(int(seed))
+    input_ids = torch.randint(0, VOCAB, (1, 8))               # short prompt; gold==ours share it
+
+    def run():
+        with torch.no_grad():
+            out = model(input_ids=input_ids, use_cache=False)
+        logits = out.logits if hasattr(out, "logits") else out[0]
+        return logits[0, -1].float().tolist()                # last-position next-token logits
+
+    _LAYER_SCHEME = "gold"; lg = run()
+    print("[model] gold (fp32-accumulate) forward done")
+    _LAYER_SCHEME = "ours"; lo = run()
+    print("[model] ours (exact-BFP) forward done")
+
+    st = error_stats(lg, lo)
+    cum = dict(token_chain=True, layers=int(n_layers), patched_fp8=patched_total,
+               argmax_ours=argmax(lo), argmax_gold=argmax(lg),
+               argmax_match=int(argmax(lo) == argmax(lg)),
+               logit_max_rel=st["max_rel"], logit_max_abs=st["max_abs"],
+               logit_rms_abs=st["rms_abs"], topk8_overlap=topk_overlap(lg, lo, 8))
+    return [], cum
+
+
+def _print_model_result(result):
+    c = result.get("cumulative", {})
+    print("=== PARTIAL-F1 (mode=model): TRUNCATED FULL-MODEL token chain "
+          "(gold fp32-acc vs ours exact-BFP, DSA threaded by model.forward) ===")
+    print(f"  layers=0..{result['n_layers']-1}  patched_fp8={c.get('patched_fp8')}")
+    print(f"  argmax_match={c.get('argmax_match')}  "
+          f"(gold={c.get('argmax_gold')} ours={c.get('argmax_ours')})")
+    print(f"  logit max_abs={c.get('logit_max_abs'):.3e}  max_rel={c.get('logit_max_rel'):.3e}  "
+          f"top8_overlap={c.get('topk8_overlap')}")
+
+
 # ============================================================================
-# CORE compare driver (mode auto|ffn|layer) -- shared by the T4 / A100 functions.
+# CORE compare driver (mode auto|ffn|layer|model) -- shared by the GPU functions.
 # ============================================================================
 def _compare_impl(n_layers, mode, seed=0):
     _ensure_on_path()
@@ -777,6 +875,22 @@ def _compare_impl(n_layers, mode, seed=0):
 
     used_mode = mode
     result = dict(mode_requested=mode, n_layers=n_layers)
+
+    # ---- mode=model: TRUNCATED FULL-MODEL forward (DSA IndexShare threaded) ----
+    if mode == "model":
+        try:
+            import transformers
+            per_layer, cum = _compare_model_hf(
+                torch, transformers, int(n_layers), weight_map, opener, tail, seed)
+            result.update(mode_used="model", per_layer=per_layer, cumulative=cum)
+            _print_model_result(result)
+            return result
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[compare] mode='model' failed ({type(e).__name__}: {e})")
+            result.update(mode_used="model-FAILED", error=str(e))
+            return result
 
     # ---- mode=layer / auto: try the real HF assembled layer chain ----
     if mode in ("layer", "auto"):
@@ -942,13 +1056,18 @@ def main(layers: int = DEFAULT_N_LAYERS, mode: str = "ffn", gpu: str = "t4",
        --smoke 1        : run ONLY the 1-layer smoke gate (cheapest; do this first)
        --download-only 1: only cache the shards (CPU fn, no GPU)
        --mode ffn       : SOLID accumulator isolation over the assembled FFN (T4)
-       --mode auto      : try the real HF layer chain (vs HF), fall back to ffn
-       --gpu a100       : use A100-80GB (needed if mode=layer MoE won't fit T4)
+       --mode model     : TRUNCATED FULL-MODEL forward -- the DSA-IndexShare fix; a
+                          real token chain (MLA+DSA+residual+FFN). Use --layers 3
+                          (all-dense, no 256-expert modules -> light, T4).
+       --mode auto      : try the real HF standalone-layer chain, fall back to ffn
+       --gpu a100       : use A100-80GB (needed if MoE layers won't fit T4)
     """
-    est = {("t4", "ffn"): "~$0.10-0.25", ("t4", "auto"): "~$0.10-0.25 (T4; HF-layer "
-           "MoE may not fit -> use --gpu a100)", ("t4", "layer"): "T4 may OOM on MoE "
-           "layers; consider --gpu a100", ("a100", "auto"): "~$0.6-1.5",
-           ("a100", "layer"): "~$0.6-1.5", ("a100", "ffn"): "~$0.15-0.4"}
+    est = {("t4", "ffn"): "~$0.10-0.25", ("t4", "model"): "~$0.15-0.5 (N<=3 dense; "
+           "N>=4 adds MoE -> use --gpu a100)", ("a100", "model"): "~$0.6-1.5",
+           ("t4", "auto"): "~$0.10-0.25 (T4; HF-layer MoE may not fit -> --gpu a100)",
+           ("t4", "layer"): "T4 may OOM on MoE layers; consider --gpu a100",
+           ("a100", "auto"): "~$0.6-1.5", ("a100", "layer"): "~$0.6-1.5",
+           ("a100", "ffn"): "~$0.15-0.4"}
     print("############################################################")
     print("# GLM-5.2-FP8 PARTIAL-F1 multi-layer fidelity gate")
     print(f"#   layers=0..{layers-1}  mode={mode}  gpu={gpu}")
