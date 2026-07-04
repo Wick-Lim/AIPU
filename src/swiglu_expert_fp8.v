@@ -219,16 +219,25 @@ module swiglu_expert_fp8 #(
     // ===================================================================
     //  FSM
     // ===================================================================
-    localparam [2:0] S_IDLE = 3'd0,
-                     S_GUP  = 3'd1,   // prime gate/up matmuls (streaming goes live)
-                     S_GU   = 3'd2,   // stream a gate/up group
-                     S_GUW  = 3'd3,   // wait gate/up matmul drain + silu/merge
-                     S_DNP  = 3'd4,   // prime the down matmul
-                     S_DN   = 3'd5,   // stream a down group
-                     S_DNW  = 3'd6,   // wait down matmul drain
-                     S_DONE = 3'd7;
+    // ONE shared matmul now serves gate, up and down (u_mm_u removed).  The
+    // gate and up projections -- formerly two lockstep matmuls -- are now run
+    // SEQUENTIALLY on the single engine (gate pass, then up pass), each K-beat
+    // stream bit-identical to its old dedicated instance.  Same math, +HIDDEN
+    // beats per group (L3 intra-op serialization, within the compute budget).
+    localparam [3:0] S_IDLE  = 4'd0,
+                     S_GATEP = 4'd1,  // prime gate matmul (streaming goes live)
+                     S_GATE  = 4'd2,  // stream a gate group (x @ W_gate)
+                     S_GATEW = 4'd3,  // wait gate drain -> hold gate tile, start up
+                     S_UPP   = 4'd4,  // prime up matmul
+                     S_UP    = 4'd5,  // stream an up group (x @ W_up)
+                     S_UPW   = 4'd6,  // wait up drain -> launch silu(gate)*up merge
+                     S_GUW   = 4'd7,  // wait silu/merge -> next group or down
+                     S_DNP   = 4'd8,  // prime the down matmul
+                     S_DN    = 4'd9,  // stream a down group
+                     S_DNW   = 4'd10, // wait down matmul drain
+                     S_DONE  = 4'd11;
 
-    reg [2:0]    state;
+    reg [3:0]    state;
     reg [GW-1:0] grp;                 // current output tile-group
     reg [KW-1:0] kcnt;                // K beat counter while streaming
     reg [1:0]    pass_sel;            // registered pass descriptor -> w_sel
@@ -238,18 +247,26 @@ module swiglu_expert_fp8 #(
 
     // ===================================================================
     //  Shared GEMM operand drive.  PE_M token rows, ONE shared weight stream.
+    //  A SINGLE glm_matmul_fp8 now serves all three projections (gate, up,
+    //  down).  up_pass selects the UP weight/scale port into the shared engine
+    //  during the up pass; gate & down use the gate/down (w_col / w_scale_g)
+    //  ports.  Each pass is an independent, self-contained matmul run whose
+    //  inputs are bit-identical to the old dedicated instance.
     // ===================================================================
-    reg           mm_start;           // clocked pulse (gate/down matmul)
+    localparam integer NBK = (KMAX + BLK - 1) / BLK;   // K-blocks (w_scale depth)
+    reg           mm_start;           // clocked pulse (shared matmul start)
     reg  [KW-1:0] mm_k_len;           // clocked (latched at start)
-    reg           mm_start_u;         // clocked pulse (up matmul)
+    reg           up_pass;            // registered: this run is the UP projection
     wire          mm_in_valid;
-    wire          mm_in_valid_u;
     wire [16*PE_M-1:0] a_col;         // x[k] / h[k] for each of the PE_M rows
-    wire [8*TN-1:0] w_row_g;          // gate-or-down E4M3 weight lanes (SHARED)
-    wire [8*TN-1:0] w_row_u;          // up E4M3 weight lanes (gate/up pass; SHARED)
+    wire [8*TN-1:0] w_row_g;          // gate-or-down E4M3 weight lanes
+    wire [8*TN-1:0] w_row_u;          // up E4M3 weight lanes
+    // UP pass feeds W_up codes + up block-scales; gate/down feed W_{gate|down}.
+    wire [8*TN-1:0]      w_row_mm   = up_pass ? w_row_u   : w_row_g;
+    wire [16*TN*NBK-1:0] w_scale_mm = up_pass ? w_scale_u : w_scale_g;
     // the active per-row activation pow2 scale for whichever pass is starting.
     wire signed [7:0] hsh [0:PE_M-1]; // per-row down a_shift (from running h_emax)
-    wire [8*PE_M-1:0] mm_a_shift;     // packed per-row a_shift for the matmuls
+    wire [8*PE_M-1:0] mm_a_shift;     // packed per-row a_shift for the matmul
     genvar sr;
     generate
     for (sr = 0; sr < PE_M; sr = sr + 1) begin : ASH
@@ -258,34 +275,27 @@ module swiglu_expert_fp8 #(
     end
     endgenerate
 
-    // GATE/DOWN matmul (reused across both projections: gate then down).
+    // SHARED matmul -- reused across gate, up and down (was two instances).
     /* verilator lint_off UNUSEDSIGNAL */
     wire             g_busy, g_ov;
-    wire [16*MTN-1:0] g_c;            // PE_M x TN bf16 tile
-    glm_matmul_fp8 #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX), .BLK(BLK)) u_mm_g (
+    wire [16*MTN-1:0] g_c;            // PE_M x TN bf16 tile (gate | up | down)
+    glm_matmul_fp8 #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX), .BLK(BLK)) u_mm (
         .clk(clk), .rst(rst),
         .start(mm_start), .k_len(mm_k_len),
-        .in_valid(mm_in_valid), .a_col(a_col), .w_row(w_row_g),
-        .a_shift(mm_a_shift), .w_scale(w_scale_g),
+        .in_valid(mm_in_valid), .a_col(a_col), .w_row(w_row_mm),
+        .a_shift(mm_a_shift), .w_scale(w_scale_mm),
         .busy(g_busy), .out_valid(g_ov), .c_out(g_c)
     );
-
-    // UP matmul (lockstep with GATE during the gate/up pass; idle in down).
-    wire             u_busy, u_ov;
-    wire [16*MTN-1:0] u_c;
-    glm_matmul_fp8 #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX), .BLK(BLK)) u_mm_u (
-        .clk(clk), .rst(rst),
-        .start(mm_start_u), .k_len(mm_k_len),
-        .in_valid(mm_in_valid_u), .a_col(a_col), .w_row(w_row_u),
-        .a_shift(mm_a_shift), .w_scale(w_scale_u),
-        .busy(u_busy), .out_valid(u_ov), .c_out(u_c)
-    );
     /* verilator lint_on UNUSEDSIGNAL */
+
+    // gate tile captured after the gate pass, held for the silu*up merge that
+    // fires once the subsequent up pass completes (per output group).
+    reg [16*MTN-1:0] gate_hold;
 
     // ===================================================================
     //  SiLU(gate) and the silu*up merge (bf16 tail) -- PE_M*TN lanes at once.
     //  glm_act is LANES-independent, so one instance covers all B rows' gate
-    //  tiles; lane l = r*TN + t matches g_c / u_c packing (C[r][t] at 16*(r*TN+t)).
+    //  tiles; lane l = r*TN + t matches g_c packing (C[r][t] at 16*(r*TN+t)).
     // ===================================================================
     reg               act_in_valid;
     reg  [16*MTN-1:0] act_x_in;       // gate lanes fed to silu (PE_M x TN)
@@ -305,8 +315,10 @@ module swiglu_expert_fp8 #(
     // ===================================================================
     //  COMBINATIONAL matmul-operand + weight-request drive.
     // ===================================================================
-    wire stream_gu = (state == S_GU);
-    wire stream_dn = (state == S_DN);
+    wire stream_gate = (state == S_GATE); // gate projection stream (x, W_gate)
+    wire stream_up   = (state == S_UP);   // up   projection stream (x, W_up)
+    wire stream_x    = stream_gate | stream_up;  // both consume x
+    wire stream_dn   = (state == S_DN);
     localparam integer XIW = (HIDDEN > 1) ? $clog2(HIDDEN) : 1;
     localparam integer HIW = (INTER  > 1) ? $clog2(INTER)  : 1;
     wire [XIW-1:0] x_idx = kcnt[XIW-1:0];
@@ -316,19 +328,20 @@ module swiglu_expert_fp8 #(
     genvar ar;
     generate
     for (ar = 0; ar < PE_M; ar = ar + 1) begin : ACOL
-        assign a_col[16*ar +: 16] = stream_gu ? xbuf[ar][x_idx] :
+        assign a_col[16*ar +: 16] = stream_x  ? xbuf[ar][x_idx] :
                                     stream_dn ? hbuf[ar][h_idx] : 16'b0;
     end
     endgenerate
     assign w_row_g       = w_col;          // system FP8 weight response (gate/down)
     assign w_row_u       = w_col_up;       // up companion lanes
-    assign mm_in_valid   = stream_gu | stream_dn;
-    assign mm_in_valid_u = stream_gu;      // up matmul only during the gate/up pass
+    assign mm_in_valid   = stream_gate | stream_up | stream_dn;
     // per-beat weight code request.  w_sel/w_grp are the REGISTERED pass
     // descriptor (also address the per-pass block scales); w_k is the beat index.
-    // Independent of PE_M: the B rows share this one request stream.
-    assign w_req = stream_gu | stream_dn;
-    assign w_sel = pass_sel;
+    // The gate AND up passes both request w_sel=GATE (the system answers with
+    // BOTH the gate lanes on w_col and the up lanes on w_col_up); up_pass then
+    // selects w_col_up into the shared engine.  Independent of PE_M.
+    assign w_req = stream_gate | stream_up | stream_dn;
+    assign w_sel = pass_sel;                // SEL_GATE for gate & up, SEL_DOWN for down
     assign w_grp = grp[GW-1:0];
     assign w_k   = kcnt;
 
@@ -344,19 +357,19 @@ module swiglu_expert_fp8 #(
             grp          <= {GW{1'b0}};
             kcnt         <= {KW{1'b0}};
             pass_sel     <= SEL_GATE;
+            up_pass      <= 1'b0;
             mm_start     <= 1'b0;
-            mm_start_u   <= 1'b0;
             mm_k_len     <= {KW{1'b0}};
             act_in_valid <= 1'b0;
             act_x_in     <= {16*MTN{1'b0}};
             up_hold      <= {16*MTN{1'b0}};
+            gate_hold    <= {16*MTN{1'b0}};
             grp_hold     <= {GW{1'b0}};
             for (sxi = 0; sxi < PE_M; sxi = sxi + 1) xsh[sxi] <= 8'sd0;
         end else begin
             // ---- defaults (deassert pulses) ----
             done         <= 1'b0;
             mm_start     <= 1'b0;
-            mm_start_u   <= 1'b0;
             act_in_valid <= 1'b0;
 
             case (state)
@@ -365,40 +378,72 @@ module swiglu_expert_fp8 #(
                 if (start) begin
                     busy       <= 1'b1;
                     grp        <= {GW{1'b0}};
-                    state      <= S_GUP;
+                    state      <= S_GATEP;
                     kcnt       <= {KW{1'b0}};
                     pass_sel   <= SEL_GATE;
+                    up_pass    <= 1'b0;     // gate pass first
                     mm_start   <= 1'b1;     // start gate matmul
-                    mm_start_u <= 1'b1;     // start up   matmul
                     mm_k_len   <= k_len_gu;
                     for (sxi = 0; sxi < PE_M; sxi = sxi + 1)
                         xsh[sxi] <= xsh_comb[sxi];  // latch per-row x activation shift
                 end
             end
 
-            // ---- prime: streaming goes live this cycle; begin issuing next ----
-            S_GUP: begin
+            // ---- prime the GATE pass: streaming goes live next cycle ----
+            S_GATEP: begin
                 kcnt  <= {KW{1'b0}};
-                state <= S_GU;
+                state <= S_GATE;
             end
 
-            // ---- GATE/UP: stream HIDDEN K-beats into both matmuls ----
-            S_GU: begin
+            // ---- GATE: stream HIDDEN K-beats (x @ W_gate) into the shared engine ----
+            S_GATE: begin
                 if (kcnt == k_len_gu - 1'b1) begin
-                    state <= S_GUW;
+                    state <= S_GATEW;
                 end
                 kcnt <= kcnt + 1'b1;
             end
 
-            // ---- wait gate/up matmul -> silu -> *up -> h buffer ----
-            S_GUW: begin
+            // ---- wait gate drain -> hold gate tile, launch the UP pass on the
+            //      SAME engine (up_pass selects W_up codes + up block-scales) ----
+            S_GATEW: begin
+                if (g_ov) begin
+                    gate_hold <= g_c;        // hold gate tile for the silu*up merge
+                    grp_hold  <= grp;         // its destination group
+                    state     <= S_UPP;
+                    kcnt      <= {KW{1'b0}};
+                    up_pass   <= 1'b1;        // next run is the up projection
+                    mm_start  <= 1'b1;        // start up matmul
+                    mm_k_len  <= k_len_gu;
+                end
+            end
+
+            // ---- prime the UP pass ----
+            S_UPP: begin
+                kcnt  <= {KW{1'b0}};
+                state <= S_UP;
+            end
+
+            // ---- UP: stream HIDDEN K-beats (x @ W_up) into the shared engine ----
+            S_UP: begin
+                if (kcnt == k_len_gu - 1'b1) begin
+                    state <= S_UPW;
+                end
+                kcnt <= kcnt + 1'b1;
+            end
+
+            // ---- wait up drain -> launch silu(gate_hold) paired with the up tile ----
+            S_UPW: begin
                 if (g_ov) begin
                     act_in_valid <= 1'b1;
-                    act_x_in     <= g_c;      // gate tile -> silu (PE_M x TN)
-                    up_hold      <= u_c;      // pair up tile with silu output
-                    grp_hold     <= grp;
+                    act_x_in     <= gate_hold; // held gate tile -> silu (PE_M x TN)
+                    up_hold      <= g_c;        // up tile (this pass) pairs with silu
+                    up_pass      <= 1'b0;
+                    state        <= S_GUW;
                 end
+            end
 
+            // ---- wait silu/merge (h buffer write) -> next group or down ----
+            S_GUW: begin
                 if (act_ov) begin
                     if (grp == NG_GU[GW-1:0] - 1'b1) begin
                         // all gate/up groups done -> begin down projection
@@ -406,16 +451,17 @@ module swiglu_expert_fp8 #(
                         grp      <= {GW{1'b0}};
                         kcnt     <= {KW{1'b0}};
                         pass_sel <= SEL_DOWN;
+                        up_pass  <= 1'b0;
                         mm_start <= 1'b1;
                         mm_k_len <= k_len_dn;
                     end else begin
-                        grp        <= grp + 1'b1;
-                        kcnt       <= {KW{1'b0}};
-                        state      <= S_GUP;
-                        pass_sel   <= SEL_GATE;
-                        mm_start   <= 1'b1;
-                        mm_start_u <= 1'b1;
-                        mm_k_len   <= k_len_gu;
+                        grp      <= grp + 1'b1;
+                        kcnt     <= {KW{1'b0}};
+                        state    <= S_GATEP;
+                        pass_sel <= SEL_GATE;
+                        up_pass  <= 1'b0;
+                        mm_start <= 1'b1;
+                        mm_k_len <= k_len_gu;
                     end
                 end
             end
