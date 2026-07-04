@@ -30,11 +30,11 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
 | # | lever | mechanism | est saving | time cost | budget-safe? | effort | risk |
 |---|---|---|---|---|---|---|---|
 | **L0** ✅ | compact config | right-size PE_N/DDR_NCH/KV_RESIDENT/EFIFO/CACHE_SLOTS (result-invariant) | PE array halved + smaller fabric | more cycles | ✔ | done | low (**DONE**, byte-identical) |
-| **L1** ⭐ | **cross-op matmul sharing** | mla / router / swiglu GEMMs run at *different times* in a layer → one shared `glm_matmul_fp8` via an arbiter (K/PE_N reconfigured per use) | **~20–32K LUT** (≈3–4 instances × ~8K) | **≈ 0** (already sequential) | ✔ (free) | large refactor | med (arbiter + per-use reconfig) |
-| **L2** | tail vector-ALU sharing | one `glm_fp_pipe` (add/mul/exp/rsqrt) time-mux'd across softmax / RoPE / RMSNorm / act instead of duplicated fp32 logic | moderate (dup fp32) | small extra cycles | ✔ | med | med (scheduler) |
-| **L3** | intra-op serialization | swiglu's parallel gate/up matmuls → 1 (2× that op); PE_M/PE_N → 1 extreme | further PE-array cut | 2×+ that op | ✔ *within budget* | med | med (verify budget) |
-| **L4** | shared dequant/fold | after L1 the BFP accumulator + block-scale dequant fold is already one instance; further fold the drain | small | — | ✔ | low (falls out of L1) | low |
-| **L5** | memory-fabric trim | simplify crossbar arbitration; **do NOT cut QDEPTH** (Flash-bound needs the latency-hide) | small | none | ✔ (except QDEPTH) | med | med |
+| **L1** ✅ | **cross-op matmul sharing** | *(bounded, DONE)* swiglu gate/up GEMMs run at different times → one shared `u_mm` via a 1-bit `up_pass` arbiter + 2:1 weight mux (`u_mm_u` removed) | **~16K LUT** (2 swiglu × ~8K, 6→4 engines/block) | **≈ 0** (already sequential) | ✔ (free) | large refactor | **DONE byte-identical** (e8659bd) |
+| **L2** ❌ | tail vector-ALU sharing | *(assessed — NOT bounded-viable)* only `glm_softmax` instances the pipelined primitives, and its 4 pipes are **distinct ops** (exp/add/mul/rsqrt — nothing to merge); RMSNorm/RoPE/act use **inline `glm_fp.vh` fp32 macros**, not shareable module instances | small (fp32 tail ≪ FP8 GEMM) | small | ✔ | high (cross-module scheduler) | **skip — reward≪risk** |
+| **L3** ◐ | intra-op serialization | swiglu gate/up → 1 **captured by L1**; the remaining piece is the **cross-module 3-way hoist** (mla+router+swiglu → one engine) | further PE-array cut | 2×+ that op | ✔ *within budget* | high | **deferred** (needs PE_N=8 + top-level ports + arbiter) |
+| **L4** ✅ | shared dequant/fold | after L1 each `glm_matmul_fp8` already carries a single BFP-accumulate + block-scale fold; **nothing further** | small | — | ✔ | falls out of L1 | **subsumed by L1** |
+| **L5** ✅ | memory-fabric trim | *(assessed — already spent)* the 4 controllers (ddr5_xbar, kv_cache_pager, expert_cache_ctrl/pf) were **already trimmed** (6b2c82f, 899ea64): minimal-width regs, verilator-clean; QDEPTH off-limits (Flash latency-hide) | small | none | ✔ (except QDEPTH) | med | **no change (already minimal)** |
 | **L6** ⚠ | bit-serial FP8 MAC | 1-bit/cycle multiply → tiny multiplier | large per-PE | **16–32×** | ✖ **OVERSHOOTS budget** (compute becomes the bottleneck) | high | **high — skip** unless a deeper-idle regime is proven |
 | **L7** ⚠ | tail precision trade | bf16 tail → fp16/bf12 | moderate | none | n/a | med | **NOT byte-identical** (fidelity trade) — separate decision |
 | **L8** | repo dead-code quarantine | move the 44 non-chip modules (legacy TPU, bf16 golden, redundant `batched_moe`) out of the build | **0 on the chip** | — | ✔ | low | none (hygiene only) |
@@ -43,11 +43,13 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
 
 - **Phase A — resource right-sizing (DONE).** L0 compact config: `synth-glm-compact` / `sim-glm-compact`,
   byte-identical token (`{0,11,11}`), defaults untouched. [`OPERATION_FLOW.md`](OPERATION_FLOW.md) §10.
-- **Phase B — shared compute (the big structural win).** L1 cross-op matmul sharing (elegant,
-  ~free in time) → then L2 tail-ALU sharing. Target ~2–3× die reduction. **Gate:** the system TB
-  token stays byte-identical + the cycle-emulation confirms compute is still stall-dominated (E2).
-- **Phase C — bounded serialization.** L3 intra-op + L4 shared fold + L5 fabric trim, each spending
-  from the compute budget and re-checked against E2. Stop before compute overtakes the Flash stall.
+- **Phase B — shared compute (DONE, bounded).** L1 cross-op matmul sharing landed on swiglu
+  (gate/up → one `u_mm`, 6→4 engines/block, byte-identical). L2 tail-ALU sharing **assessed and
+  skipped** (fp32 tail is inline-macro'd + distinct ops → not a bounded win; reward ≪ FP8-GEMM area).
+- **Phase C — bounded serialization (mostly subsumed / deferred).** L3's swiglu part was captured by
+  L1; L4 (shared fold) is subsumed (one fold per engine); L5 (fabric trim) was already spent. The
+  **only remaining lever is the cross-module 3-way hoist** (mla+router+swiglu → one engine) — invasive
+  (PE_N=8 + top-level ports + arbiter), **deferred to after E1** so the LUT payoff can justify the risk.
 - **Phase D — validate & tape-target.** E1 measure the real LUT/DSP/BSRAM on the vendor flow
   (Gowin EDA / nextpnr) to confirm the fit on the target FPGA (e.g. GW5AT-138), and E2 pin the
   exact serialization budget. **This is where the estimates become numbers.**
@@ -79,7 +81,20 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
   past that (e.g. L6 bit-serial) throughput drops — the levers are ordered to respect it.
 
 ## Status
-- **Phase A: DONE** (compact config committed, byte-identical).
-- **Phase B: planned** — L1 cross-op matmul sharing is the recommended next step (biggest area
-  win, ~free in time, byte-identical). L2 follows.
-- **Phases C/D: planned**, D gated on E1 (Gowin EDA) for real numbers.
+- **Phase A: DONE** (L0 compact config committed, byte-identical).
+- **Phase B: DONE (bounded).** **L1 landed** (e8659bd): swiglu gate/up merged onto one `u_mm`
+  engine → **6→4 FP8 GEMM engines/block, ~16K LUT** by-construction, **byte-identical** (token
+  `{4,31,20}` gworst_rel 0.00689655; swiglu 1024 err/tol 0.1004; swiglu_pem 513; decoder 9 — all
+  == baseline). **L2 assessed and skipped** (only softmax uses shareable primitive modules and its
+  4 pipes are distinct ops; RMSNorm/RoPE/act use inline `glm_fp.vh` macros — a cross-module fp32
+  scheduler is high-risk for a fp32-tail reward that is ≪ the FP8-GEMM area).
+- **All L1-style bounded merges are now EXHAUSTED:** after L1, every chip module holds exactly
+  **one** `glm_matmul_fp8` (mla `u_mm_fp8` already time-shares its 7 projections; router `u_gemv`;
+  swiglu `u_mm`; mtp `u_proj`). L4 is subsumed (one fold per engine); L5 was already trimmed.
+- **Phase C remaining = the cross-module 3-way hoist (L3).** Hoist mla+router+swiglu onto a
+  *single* shared engine at the decoder-block level. This is the last real area lever but is
+  **invasive**: PE_N reconcile (mla=4, router tile=8, swiglu TN=4 → PE_N=8), new top-level operand
+  ports, and a 3-way arbiter — high byte-identical risk. **Deferred:** its payoff (4→3 engines/block)
+  is **unmeasurable here** (yosys ABC wall), so it should be gated on **E1 (Gowin EDA)** proving the
+  LUT delta justifies the risk, rather than done blind.
+- **Phase D: gated on E1** (Gowin EDA) for the real LUT/DSP/BSRAM numbers on GW5AT-138.
