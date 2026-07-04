@@ -36,13 +36,40 @@ die. Throughput ≈ `Flash_BW / [(1−h)·footprint] · K`.
 - **`glm_fp8_system`** — the compute-domain core: the die + the memory subsystem.
 - Memories are TB-modeled here; real DDR5 / ONFI-Flash / USB-C PHYs are vendor IP (out of scope).
 
-## 1. Boot — resident-set load (Flash → DDR5)
+## 1. Boot — execution conditions & resident-set load (Flash → DDR5)
 
-At power-up **`boot_loader`** DMAs the **resident set** — everything touched *every* token
-(attention weights, the dense-FFN weights, the MoE router `W_g`, embeddings, LM-head, norm gammas)
-— from Flash into the 64 GB DDR5 fast tier. Its registered **`done` gate is the single release**
-for inference. The **256 routed experts stay in Flash** (753 GB ≫ 64 GB) and are demand-streamed
-per token (§4). Pure DMA — no arithmetic, byte-exact.
+**Inference is NOT released by power-on** — it is released by `boot_loader.done`. The full power-on
+→ ready sequence (its *execution conditions*, in order):
+
+| # | condition | what | who |
+|---|---|---|---|
+| 1 | **power** | all rails up | board |
+| 2 | **clocks stable** | `host_clk` (USB), `core_clk` (compute), memory clk — PLLs locked | board / vendor IP |
+| 3 | **reset sequenced** | `host_rst` / `core_rst` (per-domain, sync active-high) cleanly de-asserted (`reset_sync`) | RTL |
+| 4 | **memory PHY init** | DDR5 training + Flash controller init | vendor IP |
+| 5 | **model present in Flash** | the 753 GB FP8 model **pre-written** (one-time provisioning, `ckpt_pack.py` / `flash_layout.py`) | manufacturing / setup |
+| 6 | 🔑 **`boot_loader.done`** | DMA the **~28 GB resident set** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas) **Flash → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, 9240 tests, BMC-proven) |
+| 7 | **USB enumerated** | host driver loaded, endpoint open | host + vendor USB IP |
+
+The **256 routed experts stay in Flash** (753 GB ≫ 64 GB DDR5) and are demand-streamed per token
+(§4). Boot 6 is pure DMA — no arithmetic, byte-exact.
+
+**Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + resident load (~28 GB /
+50–100 GB/s ≈ 0.3–0.6 s) + USB enum (~ms) ≈ **~1–2 s power-on → ready**. Short boot, not instant-on.
+
+**Three timescales:** ① *one-time provisioning* — write the 753 GB model to Flash. ② *every
+power-on* — conditions 1–7 (~1–2 s). ③ *per token* — §2 (demand-stream experts from Flash; KV
+lives in DDR5, per session).
+
+**Host interface (what USB-C carries — all on `host_clk`):** in = `start` (pulse), `prompt_tok`
+(token ID), `start_pos`, `s_len`; out = `next_tok` (token ID), `tok_valid`, `busy`, `done`. Just
+token IDs + position/length — the heavy weight/KV traffic never crosses USB-C (it is all inside
+`glm_fp8_system` on `core_clk`).
+
+> **Real-hardware note.** The RTL takes clocks/resets as ports and treats DDR5 / Flash / USB PHYs as
+> vendor IP (conditions 2, 4, 7 are the board/vendor bring-up — device-plan Phase D1,
+> [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The RTL's own execution condition is the
+> `boot_loader.done` gate (6) once those are up.
 
 ## 2. Per-token decode — the pipeline
 

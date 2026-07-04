@@ -52,6 +52,35 @@ like Coral/Hailo, which only run tiny models).
 
 ---
 
+## 1a. Power-on behavior (plug → ready → tokens)
+
+The user experience is close to *"plug in, use it,"* with **a short boot** — not instant-on, and
+with **one one-time setup**:
+
+- **One-time provisioning (factory/first setup):** the 753 GB model is written to the internal
+  Flash (`ckpt_pack.py` / `flash_layout.py`). Done once; survives power cycles.
+- **Every power-on (~1–2 s [EST]):** power → clocks/PLL lock → resets → DDR5 PHY training + Flash
+  init → **`boot_loader` streams the ~28 GB resident set Flash→DDR5** → its `done` **releases
+  inference** → USB device enumerates on the host. **Inference is gated by `boot_loader.done`, not
+  by power-on.** (Full condition list + RTL detail: [`OPERATION_FLOW.md`](OPERATION_FLOW.md) §1.)
+- **Per request:** the host sends token IDs + position over USB-C; the box streams the demand
+  experts from Flash, runs the model, returns next tokens. **Session KV lives in the box's DDR5** —
+  the host only exchanges tokens.
+
+**What crosses USB-C:** only `start` / `prompt_tok` / `start_pos` / `s_len` in and
+`next_tok` / `tok_valid` / `busy` / `done` out — token IDs + control. The heavy weight/KV traffic
+never leaves the box.
+
+**Two power inputs, one data cable.** Because the box is self-powered (§7), the physical picture is:
+a **DC/PD power input** + a **USB-C data cable** to the host. It is not a bus-powered stick; think
+"powered external box that appears to the host as a local AI endpoint after a ~1–2 s boot."
+
+**Device-readiness signaling (to build):** the host driver should surface the boot state (booting →
+loading resident set → ready) so the app can show "warming up" instead of failing calls before
+`done`. (Phase D2.)
+
+---
+
 ## 2. Current state (honest baseline)
 
 **Done (the core IP — see [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) "Keep"):**
