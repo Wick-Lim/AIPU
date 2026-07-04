@@ -660,6 +660,68 @@ def _load_bf16_tail(torch, layer, tens):
         print(f"[layer] partial load_state_dict note: {e}")
 
 
+def _patch_naive_moe(torch, layer, tens):
+    """Route the 256 FUSED routed experts (HF `GlmMoeDsaNaiveMoe`, params
+       gate_up_proj[256,4096,6144] + down_proj[256,6144,2048]) through OUR fp8
+       `_gemm` per expert, using the REAL per-expert checkpoint weights+scales
+       (mlp.experts.{e}.{gate,up,down}_proj.{weight,weight_scale_inv}).  Mirrors the
+       naive loop -- gate/up computed separately (== the `.chunk(2)` of gate_up),
+       silu(gate)*up, down, top_k weighting, index_add -- but every GEMM is our
+       exact-BFP vs fp32-accumulate contract under `_LAYER_SCHEME`.  Returns the
+       number of experts wired (should be 256).  Frees the model's stacked random
+       expert params."""
+    import re
+    import glm_fp8_contract as contract
+    exp = getattr(getattr(layer, "mlp", None), "experts", None)
+    if exp is None:
+        return 0
+    ew = {}
+    for k in list(tens.keys()):
+        m = re.match(r"mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$", k)
+        if not m:
+            continue
+        e = int(m.group(1)); proj = m.group(2)
+        skey = k[:-len(".weight")] + ".weight_scale_inv"
+        if skey not in tens:
+            continue
+        ew.setdefault(e, {})[proj] = (tens[k], tens[skey])
+    experts = {e: v for e, v in ew.items() if len(v) == 3}
+    if not experts:
+        return 0
+    act_fn = getattr(exp, "act_fn", None)
+    num_experts = int(getattr(exp, "num_experts", N_ROUTED_EXPERTS))
+
+    def forward(hidden_states, top_k_index, top_k_weights):
+        final = torch.zeros_like(hidden_states)
+        mask = torch.nn.functional.one_hot(top_k_index, num_classes=num_experts).permute(2, 1, 0)
+        hit = torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero()
+        for ei in hit:
+            e = int(ei[0])
+            if e >= num_experts or e not in experts:
+                continue
+            pos, tok = torch.where(mask[e])
+            cur = hidden_states[tok].to(torch.bfloat16)
+            wg, sg = experts[e]["gate_proj"]
+            wu, su = experts[e]["up_proj"]
+            wd, sd = experts[e]["down_proj"]
+            gate = _gemm(torch, contract, cur, wg, sg, _LAYER_SCHEME)
+            up = _gemm(torch, contract, cur, wu, su, _LAYER_SCHEME)
+            h = (act_fn(gate) if act_fn is not None else _silu(torch, gate)) * up
+            out = _gemm(torch, contract, h.to(torch.bfloat16), wd, sd, _LAYER_SCHEME)
+            out = out * top_k_weights[tok, pos, None].to(out.dtype)
+            final.index_add_(0, tok, out.to(final.dtype))
+        return final
+
+    exp.forward = forward
+    for pn in ("gate_up_proj", "down_proj"):                      # free the ~19 GB stacked randoms
+        if getattr(exp, pn, None) is not None:
+            try:
+                setattr(exp, pn, torch.nn.Parameter(torch.empty(0), requires_grad=False))
+            except Exception:
+                pass
+    return len(experts)
+
+
 def _compare_layers_hf(torch, transformers, layer_indices, weight_map, opener,
                        tail, seed):
     """Chain the real HF layers, running the whole chain twice (gold then ours),
@@ -817,28 +879,26 @@ def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, s
         if not tens:
             raise RuntimeError(f"no tensors cached for layer {i}")
         layer = base.layers[i]
-        npatch = len(_patch_fp8_linears(torch, layer, tens))           # fp8 -> _gemm
-        _load_bf16_tail(torch, layer, tens)                            # norms/gate/bias
+        # per-Linear fp8: attention projections + shared_experts (+ dense FFN if dense)
+        npatch = len(_patch_fp8_linears(torch, layer, tens))
+        _load_bf16_tail(torch, layer, tens)                            # norms / router gate / bias
         is_moe = i >= N_DENSE
-        # COVERAGE GUARD: a MoE layer must have its 256 routed experts wired to real
-        # weights, or the router would silently select RANDOM-weight experts -> a
-        # meaningless gold==ours match.  HF's GlmMoeDsa keeps the routed experts in a
-        # FUSED `GlmMoeDsaNaiveMoe` module (mlp.experts), NOT as per-expert nn.Linear,
-        # so `_patch_fp8_linears` (per-Linear) reaches only attention + shared_experts.
+        n_moe = 0
         if is_moe:
-            n_exp_tens = sum(1 for k in tens
-                             if ".experts." in k and k.endswith(".weight"))
-            if npatch < N_ROUTED_EXPERTS:
+            # the 256 FUSED routed experts (GlmMoeDsaNaiveMoe) -> our _gemm per expert
+            n_moe = _patch_naive_moe(torch, layer, tens)
+            # COVERAGE GUARD: if the routed experts aren't fully wired, the router would
+            # select RANDOM-weight experts -> a meaningless gold==ours match.  Fail loud.
+            if n_moe < N_ROUTED_EXPERTS:
+                n_exp_tens = sum(1 for k in tens
+                                 if ".experts." in k and k.endswith(".weight"))
                 raise RuntimeError(
-                    f"layer {i}: MoE routed experts NOT patched (only {npatch} fp8 "
-                    f"Linears; {n_exp_tens} real expert weights ARE loaded from cached "
-                    f"shards).  HF represents the 256 experts as a FUSED "
-                    f"`GlmMoeDsaNaiveMoe` (mlp.experts), so per-Linear patching can't "
-                    f"reach them -- mode=model currently supports DENSE layers (N<="
-                    f"{N_DENSE}).  MoE-inclusive (N>{N_DENSE}) needs fused-expert "
-                    f"patching (a scoped follow-on).")
-        print(f"[model] layer {i} ({'MoE' if is_moe else 'dense'}): patched {npatch} fp8 Linears")
-        patched_total += npatch
+                    f"layer {i}: only {n_moe}/{N_ROUTED_EXPERTS} routed experts wired "
+                    f"({n_exp_tens} expert weights in tens) -- expert shards not fully "
+                    f"cached; run `--download-only 1 --layers {n_layers}` first.")
+        print(f"[model] layer {i} ({'MoE' if is_moe else 'dense'}): "
+              f"patched {npatch} Linears + {n_moe} routed experts")
+        patched_total += npatch + n_moe
     print(f"[model] loaded {n_layers} layers, patched {patched_total} fp8 Linears total")
 
     # embeddings + final norm + lm_head (bf16 tail)
@@ -920,6 +980,33 @@ def _compare_impl(n_layers, mode, seed=0):
 
     used_mode = mode
     result = dict(mode_requested=mode, n_layers=n_layers)
+
+    # ---- mode=introspect: dump the MoE expert class source + param layout ----
+    if mode == "introspect":
+        import inspect
+        from transformers import AutoConfig, AutoModelForCausalLM
+        icfg = AutoConfig.from_pretrained(CKPT_DIR, trust_remote_code=True)
+        icfg.num_hidden_layers = max(int(n_layers), N_DENSE + 1)     # need one MoE layer
+        icfg.num_nextn_predict_layers = 0
+        with torch.device("meta"):                                  # cheap: no weights
+            m = AutoModelForCausalLM.from_config(icfg, trust_remote_code=True)
+        base = getattr(m, "model", m)
+        mlp = base.layers[N_DENSE].mlp
+        exp = mlp.experts
+        print(f"=== INTROSPECT: MoE at layer {N_DENSE} ===")
+        print(f"mlp type={type(mlp).__name__}  experts type={type(exp).__name__}")
+        print(f"experts params: "
+              + ", ".join(f"{n}{tuple(p.shape)}" for n, p in exp.named_parameters()))
+        print(f"experts buffers: "
+              + ", ".join(f"{n}{tuple(b.shape)}" for n, b in exp.named_buffers()))
+        for cls, label in [(type(exp), "experts"), (type(mlp), "mlp")]:
+            try:
+                print(f"\n----- {label}.forward source ({cls.__name__}) -----")
+                print(inspect.getsource(cls.forward))
+            except Exception as e:
+                print(f"(no source for {cls.__name__}.forward: {e})")
+        result.update(mode_used="introspect")
+        return result
 
     # ---- mode=model: TRUNCATED FULL-MODEL forward (DSA IndexShare threaded) ----
     if mode == "model":
