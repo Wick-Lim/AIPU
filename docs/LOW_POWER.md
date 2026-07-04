@@ -1,0 +1,118 @@
+# Low-power design — the bit-exact path to a cool single box
+
+**Requirement:** the accelerator must be low-power. **Decision (this project):** stay **byte-identical**
+(output == real GLM-5.2-FP8 golden), push a **single box as low as possible**, and add fidelity-trade
+levers only if the bit-exact floor misses. This doc is the honest energy budget, the lever ladder,
+and what is built vs. staged.
+
+## 1. The one fact that governs power: it's ~80 % Flash
+
+`J/token ≈ bytes_moved × energy/bit`. Two anchors decide everything:
+
+- **NAND read energy is ~24–26× DRAM/bit** ([`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md)).
+- The die is **75–80 % Flash-bound** — it sits idle waiting on the expert stream
+  ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md), [`ULTRA_PERF.md`](ULTRA_PERF.md)).
+
+So per-token energy splits roughly:
+
+| bucket | share | why | can we cut it? |
+|---|---|---|---|
+| **Flash routed-expert bytes** | **~80 %** | top-8/256 experts/MoE-layer streamed from Flash every token (753 GB ≫ 64 GB DDR5, can't all reside) | **only** by moving fewer bytes or moving them less often |
+| DRAM / cache / KV | ~10–15 % | resident set + latent-KV in DDR5 | HBM (energy/bit), smaller footprint |
+| **compute die** | **~20 % and idle** | ~80 GFLOP/token on a die that's 75–80 % stalled | DVFS, gating, die-shrink (all done/free — see §4) |
+
+**The blunt conclusion: DVFS, die-shrink and clock-gating only touch the ~20 % compute slice.
+Real low power is won on the ~80 % Flash bytes — cut them, or amortize each fetch across more
+tokens/users.** Everything below is ranked by that truth.
+
+## 2. The irreducible floor
+
+The active experts **must** be re-read from Flash every token (the model is fixed; the 753 GB
+routed-expert set can't reside in 64 GB DDR5). That sets a hard J/token floor. The *only* bit-exact
+ways under it are: **(a) fewer bytes per fetch** (lossless compression), **(b) fewer fetches per
+token** (amortize one weight-load across K tokens or B users), **(c) more of the hot working set
+resident** (bigger DDR5 → higher hit-rate → fewer Flash misses; a hardware-$ lever). Compute tricks
+cannot touch the floor.
+
+## 3. Bit-exact lever ladder (J/token, single-user [EST])
+
+Stacking on the ~9 J/token baseline (numbers are modeled `bytes × energy/bit`, not silicon watts):
+
+| lever | mechanism | J/token | status |
+|---|---|---|---|
+| baseline | — | ~9 | — |
+| `flash_xbar` ×N + deep queue | N× Flash BW + latency-hide | ~9 | ✅ built (7.99× hide + N× bank) |
+| `weight_decomp` (lossless) | 1.34× fewer Flash bytes | ~6.7 | ✅ built, bit-exact (Huffman, 5.97 b/sym) |
+| MTP/spec **K=2** | verify 2 tokens per weight-load (K_eff 1.7) | ~4.5 | ✅ built, spec==greedy exact |
+| grouped MoE **union-skip** batch | B rows share 1 expert fetch (÷ up to B) | ↓ at B>1 | ✅ built, byte-identical |
+| **DVFS** (compute f·V ↓) | spend the 4–5× compute slack (§4) | −~15 % total | **free, byte-identical — RTL ready, vendor operating-point** |
+| **spec high-K** (resident draft) | ~1–3 B DDR5 draft proposes K=4–8, target verifies once → K_eff **3–5** → **÷2–3 on the 80 %** | **~1.5–3** | ⏳ **staged next** (dominant bit-exact lever, `ULTRA_PERF.md` #4, high effort) |
+
+**Projected bit-exact floor: ~9 → ~1.5–3 J/token [EST], single box.** The dominant remaining lever
+is **spec high-K amortization** — it divides the ~80 % Flash term, which no compute trick can.
+
+## 4. DVFS — the free, byte-identical compute-power lever (new)
+
+A Flash-bound die **should run slow and cool.** Because the token window is 75–80 % Flash-stall, the
+compute has a **~4–5× frequency-reduction budget**: drop the die clock (and, at lower f, the supply
+voltage) until compute just fills the Flash-stall shadow — **zero throughput loss** (throughput is
+set by Flash, not compute). `P_dyn ∝ C·V²·f`, so a 4–5× f cut is a 4–5× compute-dynamic cut at
+constant V, and more with V scaling. It is **result-invariant** (same math, slower clock) — the same
+"compute is nearly free" slack that shrinks the die ([`MINIATURIZATION.md`](MINIATURIZATION.md)).
+
+**Measured mechanism** (`test/glm_fp8_system_perf_tb.v`, EXPERT_STALL=1, token stays == golden):
+
+| FLASH_LAT | exposed `stall` | note |
+|---|---|---|
+| 256  | 777  | token `ALL 3 PASSED` |
+| 2048 | **6153** | 8× latency → 7.9× stall — **the Flash-stall shadow scales linearly with Flash cost** |
+
+The slice keeps most experts cached (h≈98 %, tiny experts) so it is not yet stall-dominated; at real
+753 B scale (h≈27 % measured, huge experts) the roofline puts the window at **75–80 % Flash-bound**,
+i.e. **compute ≈ 20–25 %** of the token → the **~4–5× DVFS budget**. Honest scope: DVFS trims the
+~20 % compute slice, so **~15 % of total energy** — free and elegant, but **not** the dominant lever.
+The operating point (exact f/V) is a **vendor-flow step**; the RTL is already latency-tolerant, so no
+Verilog change is needed to enable it.
+
+## 5. Already-built power wins (compute + idle)
+
+- **Idle-die clock gating** (`clk_en_ctrl`): **73.75 % of idle-dynamic power gated** (measured
+  gated-cycle fraction), formally safe (13 064 checks — never gates an advancing cluster).
+- **BFP fixed-point accumulator**: **−87.6 % cells** vs fp32-accumulate → lower switching energy.
+- **FP8 E4M3 (4×4 mantissa)**: frees DSPs, far less energy/MAC than fp32.
+- **Die-shrink L0/L1**: compact config + swiglu engine-share (6→4 GEMM/block) → area-proportional
+  static+dynamic ↓, byte-identical ([`MINIATURIZATION.md`](MINIATURIZATION.md)).
+
+These are real but bounded — they act on the ~20 % compute slice.
+
+## 6. Explicitly OFF the table (per the bit-exact decision)
+
+Bigger single-box wins exist but **change the output** — deferred unless §3's floor misses the target,
+then revisited as a separate fidelity decision:
+
+- **Dynamic top-k expert pruning** (k_eff<8): ÷1.3–1.6× fewer routed bytes — *cheapest big lever*,
+  low effort ([`ULTRA_PERF.md`](ULTRA_PERF.md) #7). **NOT bit-exact.**
+- **Contextual SwiGLU activation sparsity**: fetch only active W_up cols / W_down rows, ÷1.5–3×
+  (#6). **NOT bit-exact.**
+- **Lossy sub-FP8 for cold experts**: large, but a fidelity trade.
+
+## 7. Honest gaps
+
+- **Every J/token here is [EST]** — a `bytes × energy/bit` model, **not** a silicon/P&R wattmeter.
+- **No real watt number exists** — it needs the vendor flow (Gowin / nextpnr) on the placed netlist;
+  the same abc/KMAX wall that blocks the LUT count blocks power extraction here.
+- **The 73.75 % gating** is a measured *cycle* fraction, not a power meter.
+- **spec high-K** (the floor-setter) is **not built** — it is the staged next step.
+
+## 8. Verification invariant
+
+Every bit-exact lever is a *result-invariant restructuring*: the system TB token must stay
+`== standalone glm_model_fp8` (the same gate as `sim-glm-compact` and the MoE union-skip). DVFS,
+die-shrink, gating, compression, MTP and batching all pass it today; spec high-K must pass it before
+landing. Power is optimized **without ever moving the decoded token.**
+
+## Status
+- **Energy budget + DVFS budget: characterized** (this doc; DVFS mechanism measured, real-scale [EST]).
+- **Built:** flash_xbar, weight_decomp 1.34×, MTP K=2, union-skip, clock-gating 73.75 %, die-shrink L0/L1.
+- **Staged next (dominant):** spec high-K resident-draft amortization → the ~1.5–3 J/token floor.
+- **Gated on vendor flow:** the real watt number and the DVFS operating point (Gowin / nextpnr).

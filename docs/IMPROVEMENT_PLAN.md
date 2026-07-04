@@ -54,6 +54,10 @@ Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendo
 
 ## P4 — Energy-specific (J/token)
 
+> **Full low-power design + the bit-exact roadmap to ~1.5–3 J/token [EST] is in
+> [`LOW_POWER.md`](LOW_POWER.md)** (energy is ~80 % Flash bytes → amortize the fetch; DVFS on the
+> 75–80 %-idle die is a free, byte-identical compute-power lever; spec high-K is the staged floor-setter).
+
 The Flash byte movement is ~80 % of per-token energy. P2 (decompress, MTP, hit-rate) is the main
 energy lever — it directly cuts Flash bytes. P3.2 (clock gating) trims idle. Beyond RTL:
 
