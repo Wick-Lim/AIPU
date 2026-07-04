@@ -632,6 +632,14 @@ def _patch_fp8_linears(torch, layer, tens):
                 return y
             return forward
         module.forward = make_forward()
+        # Free the module's own (random-init or empty) weight -- the patched forward
+        # ignores it and uses the captured real fp8 W.  Critical for MoE layers: it
+        # reclaims the ~38 GB fp32 (or ~19 GB bf16) of 256-expert random weights.
+        try:
+            if getattr(module, "weight", None) is not None:
+                module.weight = torch.nn.Parameter(torch.empty(0), requires_grad=False)
+        except Exception:
+            pass
         patched.append(mod_name)
     return patched
 
@@ -789,8 +797,18 @@ def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, s
         cfg.num_nextn_predict_layers = 0                      # drop the MTP head
     # Build with REAL init on CPU (NOT meta+to_empty): keeps computed buffers valid
     # (rotary inv_freq, causal masks) -- we then overwrite only the real params.
-    print(f"[model] building truncated GlmMoeDsa (num_hidden_layers={n_layers}) on CPU ...")
-    model = AutoModelForCausalLM.from_config(cfg, trust_remote_code=True)
+    # For N > first_k_dense_replace the MoE layer(s) instantiate 256 expert modules;
+    # random-init in fp32 is ~38 GB/layer.  Build in bf16 to halve the construction
+    # peak; the patched fp8 forwards then FREE each module's random weight (above), so
+    # the resident cost is the real fp8 experts (~9.5 GB/MoE layer), not the init.
+    build_dtype = torch.bfloat16 if int(n_layers) > N_DENSE else torch.float32
+    print(f"[model] building truncated GlmMoeDsa (num_hidden_layers={n_layers}, "
+          f"build_dtype={build_dtype}) on CPU ...")
+    try:
+        model = AutoModelForCausalLM.from_config(cfg, trust_remote_code=True,
+                                                 torch_dtype=build_dtype)
+    except TypeError:
+        model = AutoModelForCausalLM.from_config(cfg, trust_remote_code=True)
     base = getattr(model, "model", model)
 
     patched_total = 0
@@ -799,9 +817,29 @@ def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, s
         if not tens:
             raise RuntimeError(f"no tensors cached for layer {i}")
         layer = base.layers[i]
-        patched_total += len(_patch_fp8_linears(torch, layer, tens))   # fp8 -> _gemm
+        npatch = len(_patch_fp8_linears(torch, layer, tens))           # fp8 -> _gemm
         _load_bf16_tail(torch, layer, tens)                            # norms/gate/bias
-    print(f"[model] loaded {n_layers} layers, patched {patched_total} fp8 Linears")
+        is_moe = i >= N_DENSE
+        # COVERAGE GUARD: a MoE layer must have its 256 routed experts wired to real
+        # weights, or the router would silently select RANDOM-weight experts -> a
+        # meaningless gold==ours match.  HF's GlmMoeDsa keeps the routed experts in a
+        # FUSED `GlmMoeDsaNaiveMoe` module (mlp.experts), NOT as per-expert nn.Linear,
+        # so `_patch_fp8_linears` (per-Linear) reaches only attention + shared_experts.
+        if is_moe:
+            n_exp_tens = sum(1 for k in tens
+                             if ".experts." in k and k.endswith(".weight"))
+            if npatch < N_ROUTED_EXPERTS:
+                raise RuntimeError(
+                    f"layer {i}: MoE routed experts NOT patched (only {npatch} fp8 "
+                    f"Linears; {n_exp_tens} real expert weights ARE loaded from cached "
+                    f"shards).  HF represents the 256 experts as a FUSED "
+                    f"`GlmMoeDsaNaiveMoe` (mlp.experts), so per-Linear patching can't "
+                    f"reach them -- mode=model currently supports DENSE layers (N<="
+                    f"{N_DENSE}).  MoE-inclusive (N>{N_DENSE}) needs fused-expert "
+                    f"patching (a scoped follow-on).")
+        print(f"[model] layer {i} ({'MoE' if is_moe else 'dense'}): patched {npatch} fp8 Linears")
+        patched_total += npatch
+    print(f"[model] loaded {n_layers} layers, patched {patched_total} fp8 Linears total")
 
     # embeddings + final norm + lm_head (bf16 tail)
     _set_param(torch, base, "embed_tokens.weight",
@@ -851,6 +889,13 @@ def _print_model_result(result):
 # ============================================================================
 def _compare_impl(n_layers, mode, seed=0):
     _ensure_on_path()
+    # Pick up shards committed by a prior download_layers run: a WARM container keeps
+    # its old volume view, so without reload it can't see freshly-cached expert shards
+    # (the cause of a MoE layer silently loading too few experts).
+    try:
+        volume.reload()
+    except Exception:
+        pass
     import torch
     import glm_fp8_contract as contract
 

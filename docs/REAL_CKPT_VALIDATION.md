@@ -192,12 +192,23 @@ fp32-accumulate reference, with the **top-8 fully preserved**. This is the first
 exercises the **cross-layer DSA index threading** (the exact thing standalone layers could not),
 and it passes. The `model.forward` fix retired the "larger effort with its own uncertainties" caveat.
 
-**Scope (honest):** truncated to the **3 dense layers** (not yet the MoE stack — `N≥4` adds a
-256-expert layer needing A100-class memory) and a short (8-token) prompt; `gold` is the
-fp32-accumulate reference (the documented accumulator isolation), not HF's native FP8 kernel. Next
-increments: `N=4` (the dense→MoE seam) on A100, then deeper `N`.
+**Scope (honest):** truncated to the **3 dense layers** and a short (8-token) prompt; `gold` is the
+fp32-accumulate reference (the documented accumulator isolation), not HF's native FP8 kernel.
+
+**MoE-inclusive (`N≥4`) — attempted, blocked by a fused-expert representation (honest).** Pushing to
+`N=4` (the dense→MoE seam) surfaced that HF's `GlmMoeDsa` keeps the 256 routed experts in a **fused
+`GlmMoeDsaNaiveMoe`** module (`mlp.experts`), **not** as per-expert `nn.Linear`. So the per-Linear
+fp8 patcher reaches only attention + `shared_experts` (8 Linears/layer), **not** the routed experts
+— even though all **768 real expert weights load fine** from the cached shards (verified: shards
+38–40 hold layer-3's `mlp.experts.*`, 1536 tensors). A **coverage guard** now *fails loudly* in this
+case (rather than silently comparing router-selected **random-weight** experts, which would give a
+meaningless `gold==ours` match). MoE-inclusive fidelity therefore needs **fused-expert patching**
+(override `GlmMoeDsaNaiveMoe.forward` to route each selected expert through our `_gemm` with its real
+fp8 weight+scale) — a **scoped follow-on**, not done here. Two Modal fixes landed along the way:
+`volume.reload()` (warm containers missing freshly-cached shards) and bf16 build + free-weight-after-
+patch (avoid the ~38 GB fp32 expert random-init).
 
 **Fidelity standing:** operator-level → assembled multi-layer FFN → **truncated full-model token
-chain (3 dense layers) argmax-identical + top-8 preserved, DSA threaded** (**A−, firmer**). Full A
-now needs the MoE-inclusive chain (`N≥4`) and ultimately deeper depth / the full 753 B run
-(multi-GPU) — the DSA-plumbing blocker itself is **retired**.
+chain (3 dense layers) argmax-identical + top-8 preserved, DSA threaded** (**A−, firmer**). The
+**DSA-plumbing blocker is retired**; the remaining path to full A is the **MoE-inclusive chain**
+(needs fused-expert patching) and ultimately deeper depth / the full 753 B run (multi-GPU).
