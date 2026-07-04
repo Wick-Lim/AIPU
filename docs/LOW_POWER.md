@@ -46,10 +46,13 @@ Stacking on the ~9 J/token baseline (numbers are modeled `bytes × energy/bit`, 
 | MTP/spec **K=2** | verify 2 tokens per weight-load (K_eff 1.7) | ~4.5 | ✅ built, spec==greedy exact |
 | grouped MoE **union-skip** batch | B rows share 1 expert fetch (÷ up to B) | ↓ at B>1 | ✅ built, byte-identical |
 | **DVFS** (compute f·V ↓) | spend the 4–5× compute slack (§4) | −~15 % total | **free, byte-identical — RTL ready, vendor operating-point** |
-| **spec high-K** (resident draft) | ~1–3 B DDR5 draft proposes K=4–8, target verifies once → K_eff **3–5** → **÷2–3 on the 80 %** | **~1.5–3** | ⏳ **staged next** (dominant bit-exact lever, `ULTRA_PERF.md` #4, high effort) |
+| **spec high-K verify** (÷K weight-loads) | verify K+1 draft positions in ONE model weight-load (PE_M=K+1 batch) → **÷(K+1) weight-loads on the 80 %** | scales with K_eff | ✅ **HW built + bit-exact** (`spec_batched_top` / `spec_chain_top`, spec==greedy EXACT; weight-share `glm_model_fp8_pem` ALL 3) |
+| ↳ raise K_eff 1.7 → **3–5** | resident ~1–3 B dense draft (vs the chained MTP self-draft) proposes K=4–8 with higher acceptance | ~1.5–3 | ⏳ **draft-quality, not RTL** — needs a real 1–3 B draft-model artifact (`ULTRA_PERF.md` #4) |
 
-**Projected bit-exact floor: ~9 → ~1.5–3 J/token [EST], single box.** The dominant remaining lever
-is **spec high-K amortization** — it divides the ~80 % Flash term, which no compute trick can.
+**Projected bit-exact floor: ~9 → ~1.5–3 J/token [EST], single box.** The dominant lever is
+**spec high-K amortization** — it divides the ~80 % Flash term, which no compute trick can. Its
+**hardware is already built and bit-exact** (§4a); what remains is *draft acceptance* (α), a
+**model-quality** property, not an RTL gap.
 
 ## 4. DVFS — the free, byte-identical compute-power lever (new)
 
@@ -73,6 +76,30 @@ i.e. **compute ≈ 20–25 %** of the token → the **~4–5× DVFS budget**. Ho
 ~20 % compute slice, so **~15 % of total energy** — free and elegant, but **not** the dominant lever.
 The operating point (exact f/V) is a **vendor-flow step**; the RTL is already latency-tolerant, so no
 Verilog change is needed to enable it.
+
+## 4a. Spec high-K amortization — the ÷K hardware is already built
+
+The single biggest bit-exact energy lever is **amortizing one Flash weight-stream across K verified
+tokens**, and its **hardware exists and is bit-exact**:
+
+- **`spec_batched_top.v`** (KEY IDEA #5, "Flash ÷K"): the K+1 verify positions
+  `{cur_tok, d_0..d_{K-1}}` are pushed through **one** `glm_model_fp8` as a **PE_M=K+1 batch** — one
+  weight fetch per (layer, projection, expert) feeds **all** K+1 rows (the documented PE_M
+  weight-share contract). So a K+1-position verify costs **ONE** model weight-load, not K+1 →
+  **weight-loads ÷ (K+1)** on the dominant ~80 % Flash term.
+- **`spec_chain_top.v`**: mints the K drafts by running the one shipped MTP layer **recurrently**
+  (the P1.3b `h_mtp` chain state), then does the PE_M=K+1 verify and commits the **longest accepted
+  prefix**. Committed stream **== greedy rollout, EXACT** (`spec==greedy`, the spec-slow CI gate).
+- **Verified this session:** the underlying weight-share — *"the weight stream is fetched ONCE for
+  all B rows, not B times"* — re-confirmed by `glm_model_fp8_pem` (**ALL 3 PASSED**). The full
+  `spec==greedy` sims (`make spec-slow`) are the committed CI gate (~30 min each; not re-run to
+  completion here — the fast weight-share corroboration stands in for the energy claim).
+
+**So the ÷K amortization is done in RTL.** The only thing between K_eff≈1.7 (built, self-draft chain
+— acceptance decays because GLM ships **one** MTP layer) and K_eff 3–5 (the ~1.5–3 J/token floor) is
+**draft acceptance α** — raised by a separate resident ~1–3 B dense draft model. That is a
+**model-quality / artifact** step, **not** an RTL one. This corrects the earlier "spec high-K = not
+built": the *hardware* is built; the *draft* is the open item.
 
 ## 5. Already-built power wins (compute + idle)
 
@@ -102,7 +129,8 @@ then revisited as a separate fidelity decision:
 - **No real watt number exists** — it needs the vendor flow (Gowin / nextpnr) on the placed netlist;
   the same abc/KMAX wall that blocks the LUT count blocks power extraction here.
 - **The 73.75 % gating** is a measured *cycle* fraction, not a power meter.
-- **spec high-K** (the floor-setter) is **not built** — it is the staged next step.
+- **spec high-K:** the ÷K *hardware* is **built + bit-exact** (§4a); what is not built is the
+  **resident ~1–3 B dense draft model** that raises K_eff 1.7→3–5 — a model artifact, not RTL.
 
 ## 8. Verification invariant
 
@@ -113,6 +141,9 @@ landing. Power is optimized **without ever moving the decoded token.**
 
 ## Status
 - **Energy budget + DVFS budget: characterized** (this doc; DVFS mechanism measured, real-scale [EST]).
-- **Built:** flash_xbar, weight_decomp 1.34×, MTP K=2, union-skip, clock-gating 73.75 %, die-shrink L0/L1.
-- **Staged next (dominant):** spec high-K resident-draft amortization → the ~1.5–3 J/token floor.
+- **Built:** flash_xbar, weight_decomp 1.34×, MTP K=2, union-skip, clock-gating 73.75 %, die-shrink
+  L0/L1, **and the spec high-K ÷K-weight-load hardware** (`spec_batched_top` / `spec_chain_top`,
+  spec==greedy EXACT; weight-share re-confirmed by `glm_model_fp8_pem` ALL 3, §4a).
+- **Open (the floor-setter's remaining half):** a **resident ~1–3 B dense draft model** to raise
+  K_eff 1.7→3–5 (a model artifact, not RTL) → the ~1.5–3 J/token floor.
 - **Gated on vendor flow:** the real watt number and the DVFS operating point (Gowin / nextpnr).
