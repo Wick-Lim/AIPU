@@ -9,6 +9,12 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 `zai-org/GLM-5.2-FP8` reliably**. The mindset shifts from *demonstrate + measure a mechanism* to
 *run the real model correctly, at full scale, robustly, and ship it.*
 
+> **Two tracks.** This doc is the **RTL / silicon track** (make the chip correct, full-scale,
+> robust, synthesizable). The **device / appliance track** — the USB-C external box (form factor,
+> power, thermal, host software, enclosure, manufacturing, pricing) — is in
+> [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md). Its first gates (real-model fidelity + FPGA fit)
+> are P1.1 and the vendor-flow measurement here.
+
 ---
 
 ## The research → product gap (what must change)
