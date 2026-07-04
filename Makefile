@@ -202,6 +202,10 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_decoder_block_fp8_sim test/glm_decoder_block_fp8_tb.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
 	@printf '[%s] ' "glm_decoder_block_fp8"; $(VVP) $(BUILD_DIR)/glm_decoder_block_fp8_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_decoder_block_fp8"; exit 1; }
+	@# glm_decoder_block_fp8 UNION-SKIP: PE_M>1 MoE loop fetches ONLY the union of experts any row selected (< N_EXPERT), byte-identical vs PE_M=1 per row.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_decoder_block_fp8_union_sim test/glm_decoder_block_fp8_union_tb.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
+	@printf '[%s] ' "glm_decoder_block_fp8(union-skip)"; $(VVP) $(BUILD_DIR)/glm_decoder_block_fp8_union_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_decoder_block_fp8_union"; exit 1; }
 	@# glm_model_fp8: FULL GLM-5.2-FP8 forward pass (embed -> L FP8 layers -> norm -> LM head -> next-token).
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_model_fp8_sim test/glm_model_fp8_tb.v src/glm_model_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
 	@printf '[%s] ' "glm_model_fp8"; $(VVP) $(BUILD_DIR)/glm_model_fp8_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \

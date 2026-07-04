@@ -436,7 +436,8 @@ module glm_decoder_block_fp8 #(
         T_ACC    = 5'd9,    // scale+accumulate expert y into facc (1 elt/cycle/row)
         T_FCOMB  = 5'd10,   // finalize fbuf from facc (MoE, 1 elt/cycle/row)
         T_RADD2  = 5'd11,   // y = h + fbuf (bf16, per-elt, per-row)
-        T_DONE   = 5'd12;
+        T_DONE   = 5'd12,
+        T_ESCAN  = 5'd13;   // PE_M>1: scan expert axis, skip non-union experts
     reg [4:0] state;
 
     // residual-add element cursor (shared by T_RADD1 / T_RADD2)
@@ -450,6 +451,37 @@ module glm_decoder_block_fp8 #(
     reg                      exp_is_shared;
     // next routed-expert slot (PE_M==1 path), addresses sel_e[0][.].
     wire [TKIW-1:0] exp_nxt = exp_i[TKIW-1:0] + 1'b1;
+
+    //========================================================================
+    // UNION-SKIP scan cursor (PE_M>1 path only -- mirrors batched_moe.v S_SCAN)
+    //   The naive PE_M>1 loop visits ALL N_EXPERT routed experts, one shared
+    //   Flash fetch each, even ones no batched row selected.  Because the
+    //   workload is Flash-bound, fetching an unused expert wastes the bottleneck.
+    //   Instead we SCAN the expert axis and evaluate ONLY the UNION of experts
+    //   some row selected, SKIPPING (never fetching) the rest.  `esc` is the scan
+    //   cursor 0..N_EXPERT; the terminal value N_EXPERT ends the routed loop and
+    //   the always-on shared expert runs exactly as before.  A skipped expert
+    //   contributed gate=0 to every row, so the per-row combine is UNCHANGED
+    //   (byte-identical output); we just issue FEWER fetches.  DEAD at PE_M==1:
+    //   that path keeps the committed per-row TOPK loop and never enters T_ESCAN.
+    //========================================================================
+    localparam integer ECW = $clog2(N_EXPERT + 1);
+    reg [ECW-1:0]           esc;          // union scan cursor (0..N_EXPERT)
+    // any_has : is the current scan candidate `esc` in the UNION -- did ANY of the
+    // PE_M rows select it?  Pure combinational over the captured routing (sel_e).
+    reg          any_has;
+    integer      ahr, aht;
+    always @* begin
+        any_has = 1'b0;
+        for (ahr = 0; ahr < PE_M; ahr = ahr + 1)
+            for (aht = 0; aht < TOPK; aht = aht + 1)
+                // esc < N_EXPERT whenever membership is tested (T_ESCAN guards the
+                // terminal esc==N_EXPERT first); the low-bit compare is the exact
+                // expert-id match in range.
+                if ((esc < ECW'(N_EXPERT)) &&
+                    (sel_e[ahr][aht] == esc[EIDXW-1:0]))
+                    any_has = 1'b1;
+    end
 
     //========================================================================
     // PER-ROW MoE gate + active mask (combinational from fw_eidx + the captured
@@ -571,6 +603,7 @@ module glm_decoder_block_fp8 #(
             comb_i     <= {$clog2(MODEL_DIM+1){1'b0}};
             exp_i      <= {EVW{1'b0}};
             exp_is_shared <= 1'b0;
+            esc        <= {ECW{1'b0}};
             for (rr=0; rr<PE_M; rr=rr+1) begin
                 for (ii=0; ii<MODEL_DIM; ii=ii+1) begin
                     xbuf[rr][ii] <= 16'h0; nrm[rr][ii] <= 16'h0; hbuf[rr][ii] <= 16'h0;
@@ -712,10 +745,40 @@ module glm_decoder_block_fp8 #(
                     //   PE_M==1 : first routed = row 0's slot-0 expert (== committed).
                     //   PE_M>1  : iterate all experts -> start at expert 0.
                     fw_shared  <= 1'b0;
-                    if (PE_M == 1) fw_eidx <= rt_sel_idx[EIDXW*0 +: EIDXW];
-                    else           fw_eidx <= {EIDXW{1'b0}};
-                    em_start   <= 1'b1;
-                    state      <= T_EXPW;
+                    if (PE_M == 1) begin
+                        // committed path: launch row 0's slot-0 expert directly.
+                        fw_eidx  <= rt_sel_idx[EIDXW*0 +: EIDXW];
+                        em_start <= 1'b1;
+                        state    <= T_EXPW;
+                    end else begin
+                        // UNION-SKIP: scan the expert axis from 0, fetch/evaluate
+                        // only union members (T_ESCAN drives fw_eidx + em_start).
+                        esc   <= {ECW{1'b0}};
+                        state <= T_ESCAN;
+                    end
+                end
+            end
+            //---------------------------------------------------------------- expert union scan (PE_M>1)
+            T_ESCAN: begin
+                // Mirror batched_moe.v S_SCAN: advance the expert cursor until a
+                // UNION member (any_has) or past the last expert.  Non-members are
+                // SKIPPED with NO weight fetch (em_start stays deasserted this cyc)
+                // -- the Flash-bandwidth win.  Never entered at PE_M==1.
+                if (esc == ECW'(N_EXPERT)) begin
+                    // whole routed union processed -> run the shared expert (wt 1).
+                    exp_is_shared <= 1'b1;
+                    fw_shared     <= 1'b1;
+                    fw_eidx       <= {EIDXW{1'b0}};
+                    em_start      <= 1'b1;
+                    state         <= T_EXPW;
+                end else if (any_has) begin
+                    // esc is in the union -> ONE shared fetch feeds all B rows.
+                    fw_shared <= 1'b0;
+                    fw_eidx   <= esc[EIDXW-1:0];
+                    em_start  <= 1'b1;
+                    state     <= T_EXPW;
+                end else begin
+                    esc <= esc + 1'b1;      // not selected by any row -> skip (no fetch)
                 end
             end
             //---------------------------------------------------------------- expert wait
@@ -742,23 +805,31 @@ module glm_decoder_block_fp8 #(
                     if (exp_is_shared) begin
                         comb_i <= {$clog2(MODEL_DIM+1){1'b0}};
                         state  <= T_FCOMB;
-                    end else if (exp_i == EVW'(NEVAL-1)) begin
-                        // routed experts done -> run shared expert (weight 1).
-                        exp_is_shared <= 1'b1;
-                        fw_shared     <= 1'b1;
-                        fw_eidx       <= {EIDXW{1'b0}};
-                        em_start      <= 1'b1;
-                        state         <= T_EXPW;
+                    end else if (PE_M == 1) begin
+                        // ---- committed PE_M==1 per-row TOPK loop (UNCHANGED) ----
+                        if (exp_i == EVW'(NEVAL-1)) begin
+                            // routed experts done -> run shared expert (weight 1).
+                            exp_is_shared <= 1'b1;
+                            fw_shared     <= 1'b1;
+                            fw_eidx       <= {EIDXW{1'b0}};
+                            em_start      <= 1'b1;
+                            state         <= T_EXPW;
+                        end else begin
+                            // next routed expert = row 0's slot exp_nxt expert.
+                            exp_i      <= exp_i + 1'b1;
+                            fw_shared  <= 1'b0;
+                            fw_eidx    <= sel_e[0][exp_nxt];
+                            em_start   <= 1'b1;
+                            state      <= T_EXPW;
+                        end
                     end else begin
-                        // next routed expert.
-                        //   PE_M==1 : next = row 0's slot exp_nxt expert.
-                        //   PE_M>1  : next expert index = exp_i+1.
-                        exp_i      <= exp_i + 1'b1;
-                        fw_shared  <= 1'b0;
-                        if (PE_M == 1) fw_eidx <= sel_e[0][exp_nxt];
-                        else           fw_eidx <= EIDXW'(exp_i) + 1'b1;
-                        em_start   <= 1'b1;
-                        state      <= T_EXPW;
+                        // ---- PE_M>1 UNION-SKIP ----
+                        // advance the scan cursor past the expert just evaluated and
+                        // re-scan for the next union member (T_ESCAN skips / never
+                        // fetches non-selected experts; when the cursor reaches
+                        // N_EXPERT it launches the shared expert).
+                        esc   <= esc + 1'b1;
+                        state <= T_ESCAN;
                     end
                 end else begin
                     comb_i <= comb_i + 1'b1;
