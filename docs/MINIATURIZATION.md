@@ -30,7 +30,7 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
 | # | lever | mechanism | est saving | time cost | budget-safe? | effort | risk |
 |---|---|---|---|---|---|---|---|
 | **L0** ✅ | compact config | right-size PE_N/DDR_NCH/KV_RESIDENT/EFIFO/CACHE_SLOTS (result-invariant) | PE array halved + smaller fabric | more cycles | ✔ | done | low (**DONE**, byte-identical) |
-| **L1** ✅ | **cross-op matmul sharing** | *(bounded, DONE)* swiglu gate/up GEMMs run at different times → one shared `u_mm` via a 1-bit `up_pass` arbiter + 2:1 weight mux (`u_mm_u` removed) | **~16K LUT** (2 swiglu × ~8K, 6→4 engines/block) | **≈ 0** (already sequential) | ✔ (free) | large refactor | **DONE byte-identical** (e8659bd) |
+| **L1** ✅ | **cross-op matmul sharing** | *(bounded, DONE)* swiglu gate/up GEMMs run at different times → one shared `u_mm` via a 1-bit `up_pass` arbiter + 2:1 weight mux (`u_mm_u` removed) | **~12K LUT4** (2 swiglu × 6186 measured matmul core, 6→4 engines/block; −1519 generic cells/expert measured) | **≈ 0** (already sequential) | ✔ (free) | large refactor | **DONE byte-identical** (e8659bd) |
 | **L2** ❌ | tail vector-ALU sharing | *(assessed — NOT bounded-viable)* only `glm_softmax` instances the pipelined primitives, and its 4 pipes are **distinct ops** (exp/add/mul/rsqrt — nothing to merge); RMSNorm/RoPE/act use **inline `glm_fp.vh` fp32 macros**, not shareable module instances | small (fp32 tail ≪ FP8 GEMM) | small | ✔ | high (cross-module scheduler) | **skip — reward≪risk** |
 | **L3** ◐ | intra-op serialization | swiglu gate/up → 1 **captured by L1**; the remaining piece is the **cross-module 3-way hoist** (mla+router+swiglu → one engine) | further PE-array cut | 2×+ that op | ✔ *within budget* | high | **deferred** (needs PE_N=8 + top-level ports + arbiter) |
 | **L4** ✅ | shared dequant/fold | after L1 each `glm_matmul_fp8` already carries a single BFP-accumulate + block-scale fold; **nothing further** | small | — | ✔ | falls out of L1 | **subsumed by L1** |
@@ -83,7 +83,8 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
 ## Status
 - **Phase A: DONE** (L0 compact config committed, byte-identical).
 - **Phase B: DONE (bounded).** **L1 landed** (e8659bd): swiglu gate/up merged onto one `u_mm`
-  engine → **6→4 FP8 GEMM engines/block, ~16K LUT** by-construction, **byte-identical** (token
+  engine → **6→4 FP8 GEMM engines/block, ≈12K LUT4** (2 × 6186 measured matmul core; −1519 generic
+  cells/expert measured via yosys `stat`, [`PPA_FP8.md`](PPA_FP8.md) §1.3), **byte-identical** (token
   `{4,31,20}` gworst_rel 0.00689655; swiglu 1024 err/tol 0.1004; swiglu_pem 513; decoder 9 — all
   == baseline). **L2 assessed and skipped** (only softmax uses shareable primitive modules and its
   4 pipes are distinct ops; RMSNorm/RoPE/act use inline `glm_fp.vh` macros — a cross-module fp32

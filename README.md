@@ -116,7 +116,7 @@ Full FP8 forward pass runs and predicts the correct next token.
 |---|---|---|
 | `fp8_e4m3.vh` | E4M3 decode / encode-RNE+saturate / 4×4 mantissa multiply | **exhaustive** — ALL 66069 vs fp64 |
 | `glm_matmul_fp8.v` | block-scaled FP8 GEMM ([128,128], dynamic act); **BFP fixed-point accumulator** (bit-exact at ACC_FRAC=18, **−87.6% cells** vs fp32-accumulate) | 224 tests; real **K=6144** bit-exact |
-| `swiglu_expert_fp8.v` | gate/up/down GEMMs FP8, bf16 silu tail; **PE_M-batched** | 1024 + PE_M 513 (0 extra weight BW) |
+| `swiglu_expert_fp8.v` | gate/up/down GEMMs FP8 on **one shared engine** (L1: `up_pass` arbiter, `u_mm_u` removed → 6→4 GEMM engines/block), bf16 silu tail; **PE_M-batched** | 1024 + PE_M 513 (0 extra weight BW), byte-identical |
 | `mla_attn_fp8.v` | 7 weight projections FP8, bf16 attn/rope/norm/softmax/dsa; **PE_M-batched, per-row pos/s_len** | slice 7; **real-dim (Q2048/KV512/…) worst rel 5.48e-4**; PE_M 6 |
 | `moe_router_fp8.v` | gate GEMV FP8, bf16 sigmoid/topk/renorm; **PE_M-batched** | 185 + real 256/top-8 + PE_M 192 |
 | `glm_decoder_block_fp8.v` | one full FP8 decoder layer; **grouped MoE + union-skip** (PE_M>1 fetches only the *union* of selected experts) | 9 tests; union-skip byte-identical (*"evaluated 3 == distinct-selected, skipped 5 of 8, bit-exact"*) |
@@ -164,8 +164,10 @@ C8 loopback closed; 2-domain `reset_sync` + CDC sign-off; full-config elaboratio
 | `glm_matmul_fp8.v` fold-pipeline (Ph1) | register the block-dequant / accumulate-fold drain (`DEQ_LAT +1`, latency-transparent) | **+25% fmax** on the isolated fold segment (64.2 → 80.7 MHz; full 2×2/K256 45 → 70 MHz), **bit-identical** (ALL 224) |
 
 The die is only ~20–25% utilized (Flash-starved), so compute-side wins (the −87.6%-cell
-accumulator, fmax fixes, BMC) improve area/power/timing/correctness but **do not move tok/s** —
-Flash bandwidth does. The striping strategy for that bandwidth is in
+accumulator, the **L0/L1 die-shrink** — compact config + swiglu engine-share, both byte-identical,
+[`MINIATURIZATION.md`](docs/MINIATURIZATION.md), fmax fixes, BMC) improve area/power/timing/
+correctness but **do not move tok/s** — Flash bandwidth does. That same idleness is *why* the
+die-shrink is free: there is a ~4–5× compute-slowdown budget to spend on sharing/serialization. The striping strategy for that bandwidth is in
 [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md).
 
 ---
@@ -177,7 +179,7 @@ Flash bandwidth does. The striping strategy for that bandwidth is in
 - **[`docs/ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)** — accelerator architecture: exact config, MLA + DSA + MoE detail, the fp64-golden methodology, memory/streaming, RTL build order.
 - **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (FP8 die + 64 GB DDR5 + 1 TB Flash, e.g. a USB-C box): tiering, expert caching, the bottleneck/perf/cost model.
 - **Evidence:** [`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md) (real-checkpoint bit-exact + T4) · [`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md) (operators at real dims) · [`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md) (real sky130 area/P&R) · [`MODAL_VALIDATE.md`](docs/MODAL_VALIDATE.md) (GPU validation harness).
-- **Perf / physical:** [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) · [`ULTRA_PERF.md`](docs/ULTRA_PERF.md) · [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md) · [`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md) (cycle-accurate: the memory-stall mechanism measured on real RTL cycles) · [`MINIATURIZATION.md`](docs/MINIATURIZATION.md) (die shrink plan: compute is nearly free on a Flash-bound die → shared/serial engines) · [`PPA_FP8.md`](docs/PPA_FP8.md) · [`FORMAL.md`](docs/FORMAL.md).
+- **Perf / physical:** [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) · [`ULTRA_PERF.md`](docs/ULTRA_PERF.md) · [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md) · [`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md) (cycle-accurate: the memory-stall mechanism measured on real RTL cycles) · [`MINIATURIZATION.md`](docs/MINIATURIZATION.md) (die shrink: compute is nearly free on a Flash-bound die → shared engines. **L0 compact config + L1 landed** — swiglu gate/up merged → 6→4 FP8 GEMM engines/block, byte-identical) · [`PPA_FP8.md`](docs/PPA_FP8.md) · [`FORMAL.md`](docs/FORMAL.md).
 - **Scale / memory:** [`P12_SCALEUP.md`](docs/P12_SCALEUP.md) · [`P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md) · [`ROADMAP.md`](docs/ROADMAP.md).
 - **Scalar core substrate:** [`SPEC.md`](SPEC.md) · [`docs/ISA.md`](docs/ISA.md) · [`docs/PPA.md`](docs/PPA.md).
 
@@ -193,6 +195,8 @@ make formal      # bounded model checking (yosys-smtbmc + z3) of the memory cont
 make cache-study # GLM-trace hit-rate / batching / prefetch / decompress / layout measurements
 make lint        # verilator --lint-only -Wall
 make synth-glm   # yosys whole-chip structural gate on the product top glm_fp8_system_cdc
+make synth-glm-compact  # same gate on the FPGA-miniaturization config (PE_N=2/DDR_NCH=2/…, byte-identical)
+make sim-glm-compact    # system TB proving the compact config decodes the SAME token stream
 make all         # test + hazard + unittests + lint + synth + synth-glm + formal (full CI)
 ```
 

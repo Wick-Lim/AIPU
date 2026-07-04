@@ -93,7 +93,8 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
    evaluate **only the UNION** of experts any of the B rows selected (a combinational `any_has`
    skip — non-selected experts are **never fetched**). For each union expert, fetch its SwiGLU
    weights **once** and run `swiglu_expert_fp8` at PE_M over all B rows; each row accumulates
-   `gate·expert(x)` only if it selected that expert. Byte-identical to per-row; up to ~32× fewer
+   `gate·expert(x)` only if it selected that expert. (Inside the expert, gate/up/down share **one**
+   FP8 GEMM engine — §10a.) Byte-identical to per-row; up to ~32× fewer
    Flash expert-fetches at small B (the aggregate-throughput lever). Then the always-on **shared
    expert** (weight 1). (`batched_moe.v` is the standalone reference of this dispatch.)
 
@@ -221,3 +222,17 @@ count is emitted here — `synth-glm-compact` elaborates + `check -assert`s + `s
 hierarchy. The **area reduction is by construction** (fewer PE columns / channels / ring+FIFO+cache
 entries); the **byte-identical token is the verified invariant** (`make sim-glm-compact`). A real
 LUT/FF delta needs the vendor flow (Gowin / nextpnr) on the elaborated compact netlist.
+
+### 10a. Structural engine sharing (L1 — landed, byte-identical)
+Beyond the *parametric* compact config (L0 above), the die also shrinks *structurally*: because
+gate / up / down run at **different times** inside one expert, `swiglu_expert_fp8` now runs all
+three on **one shared `glm_matmul_fp8`** (a 1-bit `up_pass` register + 2:1 weight/scale mux selects
+the up-projection port; the old parallel `u_mm_u` engine is gone). Effect: swiglu 2→1 GEMM engines,
+so each decoder block drops from **6→4** FP8 GEMM engines (dense + MoE swiglu each shed one) — the
+freed matmul core is **6186 LUT4** each (measured, `PPA_FP8.md` §1.3), so **≈12K LUT4/block**;
+the per-expert generic-cell delta is a measured **−1519**. After L1 **every chip module holds exactly one `glm_matmul_fp8`**
+(mla already time-shares its 7 projections on one engine; router one; mtp one), so the bounded
+byte-identical merges are exhausted; the last area lever is the invasive cross-module 3-way hoist,
+deferred to after vendor measurement. This is free in time (the Flash-bound die has the slack) and
+keeps the decoded token byte-identical (`{4,31,20}`, gworst_rel 0.00689655). Full lever catalog and
+status in [`MINIATURIZATION.md`](MINIATURIZATION.md).

@@ -39,13 +39,25 @@ ltp measured for 3 representative slices (small / mid / default) because each lt
 
 Top-level ltp could not be emitted: yosys flagged false combinational loops in `rmsnorm_unit`'s iterative fp32_add `sumsq` reduce. Leaf-path ltps used instead — sufficient to pin the limiter.
 
-### 1.3 MoE expert (`glm_act` SiLU + 2× `glm_matmul_fp8`)
+### 1.3 MoE / dense expert (`glm_act` SiLU + one shared `glm_matmul_fp8`, post-L1)
 KMAX reduced to 256 (NB=2) for all measurements — the module's literal default KMAX=16384 (NB=128) does not synthesize in a bounded time. The fmax path is KMAX-independent; only block-scale bank fan-out scales with KMAX.
+
+**L1 engine-share (landed, e8659bd).** The expert previously carried **two** `glm_matmul_fp8`
+engines (gate on one, up on the other). Because gate/up/down run at different times, L1 merged
+them onto **one shared engine** (an `up_pass` register + 2:1 weight mux). Re-measured generic-cell
+delta below; the decoded token is byte-identical (see [`MINIATURIZATION.md`](MINIATURIZATION.md)).
 
 | Config | cells (generic) | ltp | LUT4 |
 |---|---|---|---|
-| DEFAULT (HIDDEN=128, INTER=64, TN=4, BLK=128) | 28615 (glm_act 24535 = 86%; 2× glm_matmul_fp8 @1073; glue 942) | **497** (inside glm_matmul_fp8) | FP8 matmul core (PE_N=4) = 6186 $lut measured; full-design abc -lut 4 killed >220s |
-| LARGER (HIDDEN=256, INTER=128, TN=8) | 54699 = 1.91× (glm_act 49067 = 2.00×; glm_matmul_fp8 1437 ea = 1.34×) | **689** (inside glm_matmul_fp8) | not measured (full-design abc exceeds budget) |
+| **DEFAULT, post-L1** (HIDDEN=128, INTER=64, TN=4, BLK=128) | **27096** (glm_act 24535 = 91%; **1× glm_matmul_fp8 @1105**; glue+arbiter 1456) | **497** (inside glm_matmul_fp8) | FP8 matmul core (PE_N=4) = 6186 $lut measured; full-design abc -lut 4 killed >220s |
+| DEFAULT, pre-L1 (2 engines, for the delta) | 28615 (glm_act 24535; 2× glm_matmul_fp8 @1073; glue 942) | 497 | — |
+| LARGER, pre-L1 (HIDDEN=256, INTER=128, TN=8) | 54699 = 1.91× (glm_act 49067 = 2.00×; glm_matmul_fp8 1437 ea = 1.34×) | **689** (inside glm_matmul_fp8) | not measured (full-design abc exceeds budget) |
+
+**L1 delta (measured):** 28615 → 27096 generic cells (**−1519**, one engine dropped less the added
+`up_pass` mux/FSM). The freed **matmul core is ~6186 LUT4** (the LUT-heavy part; `glm_act`'s SiLU
+LUT dominates the generic-cell count but maps to far fewer LUTs). Per decoder block **two** such
+experts (dense + MoE swiglu) each shed one engine → **6→4 FP8 GEMM engines/block, ≈ 2×6186 ≈ 12K
+LUT4** freed before wrapper glue.
 
 ### 1.4 `ddr5_xbar` — N_CH-channel banked DDR5 read fabric
 `src/ddr5_xbar.v`. ADDR_W=32, DATA_W=256, TAG_W=8, RESP_QD=4 held at defaults.
