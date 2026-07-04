@@ -51,7 +51,7 @@ UNITS := instruction_decoder register_file memory tile_memory vector_alu \
 
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all build test hazard axi soc unittests cache-study formal formal-ind bitacc sim wave lint synth synth-glm cdc ppa clean
+.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint synth synth-glm cdc ppa clean
 
 all: test hazard unittests lint synth synth-glm formal
 
@@ -226,15 +226,10 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_decode_top_sim test/spec_decode_top_tb.v src/spec_decode_top.v src/glm_model_fp8.v src/mtp_head_fp8.v src/spec_decode_seq.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
 	@printf '[%s] ' "spec_decode_top"; $(VVP) $(BUILD_DIR)/spec_decode_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_decode_top"; exit 1; }
-	@# spec_batched_top: batched-verify -- K+1 draft positions verified in ONE PE_M=K+1 model weight-load (Flash verify /K+1); spec==greedy.
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_batched_top_sim test/spec_batched_top_tb.v src/spec_batched_top.v src/glm_model_fp8.v src/spec_decode_seq.v src/mtp_head_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
-	@printf '[%s] ' "spec_batched_top"; $(VVP) $(BUILD_DIR)/spec_batched_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: spec_batched_top"; exit 1; }
-	@# spec_chain_top (task B8): K-step MTP chain with promoted verify/MTP/embed pull ports --
-	@# committed stream == greedy rollout EXACT (spec==greedy safety). (accept-path K_eff coverage: followup.)
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_chain_top_sim test/spec_chain_top_tb.v src/spec_chain_top.v src/mtp_head_fp8.v src/glm_model_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/spec_decode_seq.v src/glm_fp_pipe.v
-	@printf '[%s] ' "spec_chain_top"; $(VVP) $(BUILD_DIR)/spec_chain_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: spec_chain_top"; exit 1; }
+	@# spec_batched_top / spec_chain_top run the FULL model forward many times (K x
+	@#   scenarios) and are minutes-long in iverilog -- moved to `make spec-slow` so the
+	@#   fast `unittests` path completes (same rationale as `bcov`). They still gate on
+	@#   spec==greedy; run them via `make spec-slow`.
 	@# glm_fp8_soc: TOP-LEVEL SoC -- compute die + expert_cache_pf + kv_cache_pager + Flash arbiter == standalone model.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_fp8_soc_sim test/glm_fp8_soc_tb.v src/glm_fp8_soc.v src/glm_model_fp8.v src/expert_cache_pf.v src/expert_cache_ctrl.v src/kv_cache_pager.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
 	@printf '[%s] ' "glm_fp8_soc"; $(VVP) $(BUILD_DIR)/glm_fp8_soc_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -444,6 +439,21 @@ cache-study:
 # `unittests`/`all` because each iverilog elaboration of the nested MoE datapath is
 # minutes-long (esp. B=8).  See test/batched_moe_bcov_tb.v.
 BCOV_SRC := src/batched_moe.v src/swiglu_expert_fp8.v src/glm_matmul_fp8.v src/glm_act.v src/glm_fp_pipe.v
+# spec-slow: the speculative-decode top harnesses. They run the full model forward
+#   many times (K x accept/reject/mixed scenarios) -> minutes-long in iverilog, so they
+#   are kept OUT of `unittests`; run explicitly. Both gate on spec==greedy (safety).
+spec-slow:
+	@mkdir -p $(BUILD_DIR)
+	@# spec_batched_top: batched-verify -- K+1 draft positions in ONE PE_M=K+1 model weight-load; spec==greedy.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_batched_top_sim test/spec_batched_top_tb.v src/spec_batched_top.v src/glm_model_fp8.v src/spec_decode_seq.v src/mtp_head_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
+	@printf '[%s] ' "spec_batched_top"; $(VVP) $(BUILD_DIR)/spec_batched_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: spec_batched_top"; exit 1; }
+	@# spec_chain_top (task B8): K-step MTP chain; committed stream == greedy rollout EXACT (spec==greedy).
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_chain_top_sim test/spec_chain_top_tb.v src/spec_chain_top.v src/mtp_head_fp8.v src/glm_model_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/spec_decode_seq.v src/glm_fp_pipe.v
+	@printf '[%s] ' "spec_chain_top"; $(VVP) $(BUILD_DIR)/spec_chain_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: spec_chain_top"; exit 1; }
+	@echo "spec-slow: spec_batched_top + spec_chain_top passed (spec==greedy)"
+
 bcov:
 	@mkdir -p $(BUILD_DIR)
 	@set -e; for bp in 1:2:11 2:1:22 3:3:33 5:0:55 8:3:44; do \
