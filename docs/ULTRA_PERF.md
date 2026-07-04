@@ -19,7 +19,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind F
 
 | # | Opportunity | Mechanism (1-line) | Quantified impact **[EST]** | Where | Effort | Ceiling? |
 |---|-------------|--------------------|------------------------------|-------|--------|----------|
-| 1 | **Expert-grouped layer-synchronous batched MoE** | Fetch the per-layer expert *union* once from Flash, reuse across B token-rows | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user | system-arch | high | ✅ |
+| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **INTEGRATED in `glm_decoder_block_fp8`** | Fetch the per-layer expert *union* once from Flash, reuse across B token-rows (the PE_M>1 grouped MoE now scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; union-fetch realized (multi-distinct-token dispatcher + paged KV remain) | rtl-here | high | ✅ |
 | 2 | **PE_M batch-widening of FP8 wrappers** — ✅ **DONE (4/4), verified** | **All four** FP8 wrappers (swiglu/router/mla/**mtp**) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Verified bit-exact in the regression: **swiglu 513, router 192, mla 6, mtp 44** (+ mla `ppos`/`pslen`/`sparse-perrow`); the weight-share check confirms *"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"* — e.g. mtp `{cn/pw/gn/aw/kc/fw/lw}` beats identical at PE_M=3 (0 extra weight BW) | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW | **rtl-here** | **✅ done** | (enabler) |
 | 3 | **Stronger weight decompressor (context-rANS)** | Spend idle die on context-modeled rANS in Flash→DDR5 refill path | 1.34×→**1.5–1.7×** fewer Flash bytes → ~16→18–20 tok/s, ~3.8→3.0 J/tok | **rtl-here** | high | ✅ |
 | 4 | **Resident dense draft model → high-K spec decode** | ~1–3B DDR5-resident draft proposes K=4–8; target verifies in one pass | K_eff 1.7→**3–5** → ~2–3× single-user, **bit-exact** | rtl-here* | high | ✅ |
@@ -50,7 +50,9 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   for this repo), and it does **not** cut J/token (the sense energy is the cost). The compute core is reusable
   verified RTL.
 - **Aggregate batching (#1/#2/#3-knee)** — the datacenter regime. Reframes batching from the doc's "~1.5×"
-  (a B=32, LRU-hit-rate artifact) to a **6–8× aggregate** lever via expert-union reuse. New knee at **B≈256**
+  (a B=32, LRU-hit-rate artifact) to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch
+  half is now integrated + verified in `glm_decoder_block_fp8`** (PE_M>1 fetches only the selected-expert
+  union). New knee at **B≈256**
   (all 256 experts active: `E[distinct]=256·(1−0.96875^B)`), new ceiling = the compute roofline
   **~50 tok/s aggregate @100 GB/s Flash**, reached near B≈355. Per-user latency floors at ~0.14 tok/s → an
   **offline/throughput product, not chat**.
@@ -116,6 +118,14 @@ The only thing that needs to be *invented*; the math die is ready.
    into a PE_M tile, fetch the ~37 MB expert from Flash/DDR5 **once**, run the grouped GEMM, scatter back;
    (c) advance all B tokens to L+1 in lockstep. Union ≤256 experts ≤9.5 GB → resident in 64 GB DDR5; the
    union is the **only** Flash traffic, shared across all B rows.
+   **✅ (b) is now INTEGRATED + verified.** `glm_decoder_block_fp8` (PE_M>1) already fetches **only** the
+   union of experts any row selected — a `T_ESCAN` scan over the expert axis with a combinational `any_has`
+   membership test skips every non-union expert (reference pattern: `batched_moe.v`). Verified BYTE-IDENTICAL:
+   `glm_decoder_block_fp8_union_tb` ALL 4 (*"PE_M=2 evaluated 3 experts == distinct-selected, skipped 5 of 8,
+   bit-exact"*), `glm_model_fp8_pem` ALL 3, decoder TB ALL 9. Effect: up to **~32×** fewer Flash expert
+   fetches at small batch (real 256-expert config), realizing this lever's aggregate footprint reduction
+   **in the model**; ~no benefit at B≈256 (union≈all). What still needs inventing is the *multi-distinct-token*
+   scatter/gather dispatcher (a)/(c) across B independent tokens and the paged KV (#15) below.
 3. **Paged KV (#15).** Extend kv_cache_pager from single-ring to a block table `(seq_id, logical_pos)→page`
    + per-seq append_count + shared pool + per-seq DSA gather. MLA latent KV ~1 KB/tok/layer → B=256 at few-K
    ctx fits the DDR5 freed by the shrunken (one-layer-union) expert cache.

@@ -42,7 +42,8 @@ placement** numbers with the timing-driven resizer engaged — most of the P&R f
 synthesis. Post-placement timing is **fully met at 40 ns (25 MHz) with +15.89 ns slack** →
 critical path ≈ 24 ns → **~41 MHz post-placement**, *better* than the pre-route 35.4 ns
 because the resizer buffers/upsizes the dequant/fold path — a direct, measured confirmation of
-the "pipeline the fold stage → higher fmax" thesis below.
+the "pipeline the fold stage → higher fmax" thesis, which has **since been applied in RTL** (see
+item 2 below: fold-drain pipelined, 2×2/K256 45 → 70 MHz on real sky130 cells).
 
 **Where it stops, and why (environment, not design).** The flow died at **CTS** with
 `illegal instruction`: `openroad/orfs` ships an **amd64-only** OpenROAD binary, and on this
@@ -59,13 +60,22 @@ host-architecture limit.
    sequential) is a concrete area for the FP8 GEMM tile, replacing the cell-count `[EST]`
    of `docs/PPA_FP8.md` with a PDK-mapped number.
 
-2. **The fmax-limiting path is REAL and confirms PPA_FP8's thesis.** The pipelined MAC
+2. **The fmax-limiting path is REAL, and the pipeline fix is now APPLIED.** The pipelined MAC
    closes at ~131 MHz (7.6 ns), but `glm_matmul_fp8`'s own register-to-register path is
    35.4 ns (~28 MHz) — i.e. the **block-dequant / accumulate-fold logic AROUND the
    pipelined MAC, not the MAC itself, is the fmax limiter**. This is exactly the
-   "fmax-limiting paths" `docs/PPA_FP8.md` flagged, now measured on real cells: the
-   actionable fix is to pipeline the dequant/fold stage (the accumulator drain), which
-   would lift the GEMM toward the MAC's ~131 MHz.
+   "fmax-limiting paths" `docs/PPA_FP8.md` flagged, now measured on real cells — and **now
+   fixed** (Ph1): the dequant/fold stage (the accumulator drain) has been pipelined in
+   `src/glm_matmul_fp8.v`, registering `acc_sel_r`/`wf_sel_r` before the block-scale
+   `fp32_mul_pipe` so `fixed_to_fp32` (48-bit leading-one + barrel-shift + RNE) no longer
+   shares a stage with the mul's 24×24 mantissa multiply. `DEQ_LAT +1`, latency-transparent
+   via `out_valid`; data **bit-identical** (`glm_matmul_fp8_tb` ALL 224, err/tol 0.4317
+   unchanged; all consumers pass). Real sky130_fd_sc_hd (tt) timing confirms the win: the
+   isolated fold segment `accx → fixed_to_fp32 → block-scale mul` drops **15,576 → 12,390 ps
+   (−20.5%, 64.2 → 80.7 MHz)** and the full 2×2/K256 module **22,186 → 14,189 ps
+   (45 → 70 MHz)**. (The PE 4×4 pre-route 35.4 ns global path is the `c_out` positional-shifter
+   topo artifact `PPA_FP8.md` flags — deliberately untouched; the ORFS post-placement resizer
+   above already resolves it.)
 
 ## Honest scope (what would take it to full physical sign-off)
 

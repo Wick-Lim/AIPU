@@ -80,6 +80,35 @@ accumulator gap on real weights, nothing else.
 
 ---
 
+## Related — `modal_partial_f1.py`: assembled real-weight FFN (partial-F1)
+
+`tools/modal_partial_f1.py` is a **companion, budget-capped** Modal app
+(CPU download → $1 smoke gate → T4 compare, ~$4–5 total) that extends the tier-1
+*operator* result one level up the stack: instead of comparing single Linears, it
+**assembles the first 6 real decoder layers** of `zai-org/GLM-5.2-FP8` (layers 0–2
+dense SwiGLU, 3–5 the 256-expert MoE + shared expert) into a real-weight FFN and runs
+**our exact-BFP FP8 contract** for every Linear against a fp32-accumulate reference at
+the same per-token `a_shift`, covering the **dense→MoE transition**.
+
+- **`mode=ffn` (measured, PASS):** argmax proxy **6/6**, worst `max_abs` **0.0015**
+  (mean `rms_abs` 0.0002) — the assembled multi-GEMM real-weight FFN is numerically
+  **faithful**. (`bf16_exact 0/6144` and the large `max_rel` are the known
+  exact-BFP-vs-fp32-accumulate ~1-ULP and near-zero-denominator artifacts — not bugs;
+  `max_abs` is the meaningful signal.)
+- **HF cross-check (partial):** the real `GlmMoeDsa` arch **loads and all 6 layers
+  build** with our FP8 Linears patched in (8 per MoE layer). The **full
+  token-chain-vs-HF is BLOCKED** by GLM-5.2's **DSA IndexShare** — shared DSA layers
+  need top-k indices threaded from a full-indexer layer, so standalone layers are **not
+  independent** (an architectural dependency of `GlmMoeDsa`, not a kwarg);
+  `position_embeddings` + float32 blockers were fixed first.
+
+Full write-up + numbers: [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md)
+("Partial-F1" section). Fidelity standing: operator-level → **assembled multi-layer
+FFN on real weights, faithful (borderline-A)**; the full-model token-chain-vs-HF
+(true A) still needs the HF standalone-layer plumbing solved or the full 753B run.
+
+---
+
 ## Honest caveats
 
 - **`GlmMoeDsa` loader support.** The arch is `GlmMoeDsaForCausalLM`

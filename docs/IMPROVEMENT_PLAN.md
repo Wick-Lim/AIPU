@@ -13,6 +13,14 @@ So every lever is one of: **raise Flash_BW**, **raise hit-rate h**, **shrink foo
 formal) improved cost/thermals/correctness but does **not** move tok/s or J/token until Flash is
 unblocked. This plan targets the real bottleneck.
 
+**The memory-stall mechanism this plan rests on is now measured on real RTL cycles.**
+`glm_fp8_system` gained an `EXPERT_STALL` parameter (default 0 = byte-identical to the committed
+system) that clock-gates the compute die for exactly the cycles a demand-miss is being serviced by
+Flash, so `cyc_per_tok` **grows with `FLASH_LAT`** as a direct measurement (flat 7947 → 8607 @
+`FLASH_LAT=256`) while the token stays bit-exact — matching the exposed demand-stall
+(`stall = 3·FLASH_LAT + 9`, slope = miss count). This upgrades the roofline's stall term from
+*assumed* to *counted*; see [`CYCLE_EMULATION.md`](CYCLE_EMULATION.md).
+
 Baseline (measured h, [EST] BW): Flash 50 GB/s, h=27 %, K=1 → **~3 tok/s single-user**, ~8–10 J/token.
 
 Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendor IP) · 🔴 out of RTL scope.
@@ -35,6 +43,7 @@ Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendo
 | 2.1 | **Expert decompressor** in the Flash→DDR5 path | 🟢 | FP8 expert weights have entropy < 8 bits; store them losslessly-compressed in Flash and decompress on-chip during fetch (e.g. a lightweight zero-RLE / dictionary / Huffman decoder). Cuts Flash bytes/expert ~1.3–1.6× → effective Flash_BW ↑ and Flash energy ↓ by the same factor. Build a `weight_decomp` unit + verify decompressed == original FP8. **✅ DONE: canonical-Huffman `weight_decomp`, bit-exact lossless, measured 1.34× on representative FP8 weights (5.97 bits/sym); 8 tests.** | **~1.34×** measured tok/s + Flash energy |
 | 2.2 | **MTP K>1 / better draft** — verify more tokens per weight-load | 🟢 | Extend `spec_decode_seq` to a K>1 multi-token draft (longest-accepted-prefix). **✅ DONE + MEASURED: DRAFT_K>1 support (g_kn batch verifier), spec==greedy EXACT for K=1/2/3 (1379 tests), backward-compat (621 + formal intact), K=1 byte-identical. Eff tok/pass (chained-decay, the shipped 1-MTP-layer reality) at α=0.7: K=1→1.69, K=2→2.08, K=3→2.17. HONEST: the shipped model has 1 MTP layer so K>1 must chain the head autoregressively (acceptance decays) → K=2 is the sweet spot; K=3+ is marginal unless a deeper MTP stack lands.** | **K=2 ≈ +23 %** over K=1 (chained) |
 | 2.3 | **Higher cache hit-rate h** — bigger cache + predictor-driven prefetch | 🟢 | Wire `expert_predictor` into `expert_cache_pf` prefetch. **❌ MEASURED NO-OP at GLM cache size (`expert_prefetch_top`):** at SLOTS=900 (>reuse distance) the predictor hints the most-popular expert, which LRU **already keeps resident** → 0 prefetches issued, hit-rate byte-identical to baseline; deep LOOKAHEAD 1/2/3 identical. Only helps in the narrow regime just *below* the reuse-distance knee (SLOTS=550: 0%→4.6%). **Conclusion: hit-rate is capped by fine-grained-routing entropy, not prefetch cleverness — this lever does not move the real config.** | **~0 %** at real cache size (honest) |
+| 2.4 | **Union-skip grouped MoE** (batch axis) — fetch only the union of selected experts | 🟢 | The PE_M>1 grouped MoE in `glm_decoder_block_fp8` scans the expert axis (`T_ESCAN`) and fetches **only** the union of experts any of the B rows selected (combinational `any_has` membership), not all N_EXPERT. **✅ DONE: BYTE-IDENTICAL — `glm_decoder_block_fp8_union_tb` ALL 4 (*"PE_M=2 evaluated 3 experts, skipped 5 of 8, bit-exact"*), `glm_model_fp8_pem` ALL 3, decoder TB ALL 9; reference pattern `batched_moe.v`.** The PE_M batch-widen enabler is **DONE 4/4** (swiglu/router/mla/mtp). Realizes ULTRA_PERF #1's aggregate footprint reduction **in the model**. | up to **~32×** fewer Flash expert fetches at small batch; ~0 at B≈256 (union≈all) |
 
 ## P3 — Hide latency / raise utilization
 

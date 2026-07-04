@@ -129,12 +129,17 @@ concern.
 - **Embeddings + LM head, DSA index** — the LM head GEMV and index reads are large and constant.
 
 **Batching (B rows) changes the channel arithmetic in strategy A's favor.** With `B` tokens
-processed per weight fetch (the PE_M-batch path, verified separately), a layer's *union* of
-active experts approaches all 256 as `B` grows (`E[distinct] = 256·(1−0.96875^B)`, where
-`0.96875 = 1−8/256`), so the
+processed per weight fetch (the **PE_M-batch path — now complete: DONE 4/4 across
+swiglu/router/mla/mtp, and the union-fetch integrated in `glm_decoder_block_fp8`**, all verified
+bit-exact), a layer's *union* of active experts approaches all 256 as `B` grows
+(`E[distinct] = 256·(1−0.96875^B)`, where `0.96875 = 1−8/256`), so the
 fetch set is large and naturally spreads across channels — the pigeonhole tail shrinks and
-`N_CH > 8` becomes useful even under strategy A. **Striping (B) and batching compose:** B keeps
-single-user balanced, batching keeps aggregate balanced.
+`N_CH > 8` becomes useful even under strategy A. The decoder block's PE_M>1 MoE loop already
+fetches **only** that union (a `T_ESCAN` scan + combinational `any_has` skip of non-union experts),
+so **the batch axis of this striping story is realized in the model, not just modeled** — up to
+~32× fewer expert fetches at small batch, ~none at B≈256 (union≈all). See
+[`ULTRA_PERF.md`](ULTRA_PERF.md) #1. **Striping (per-token, strategy A/B) and batching compose:**
+striping keeps single-user balanced, batching keeps aggregate balanced.
 
 ---
 

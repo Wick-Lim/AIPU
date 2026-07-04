@@ -210,7 +210,13 @@ can't be statically placed — it's a **caching + scheduling** problem:
 - **Batching**: many tokens/sequences route to overlapping experts → load once, reuse across
   the batch (biggest throughput lever; costs latency). **RTL-measured** through the committed
   `expert_cache_ctrl` at 34 GB cache: batch 1 / 8 / 32 → **26.5 % / 29.7 % / 50.5 %** hit rate
-  (same router picks, only access order changes — isolating batching as the lever).
+  (same router picks, only access order changes — isolating batching as the lever). **The stronger
+  batching lever is expert-*union* reuse** — fetch each layer's union of selected experts once and
+  share it across B rows — now realized in RTL: `glm_decoder_block_fp8`'s PE_M>1 MoE loop fetches
+  **only** the union (`T_ESCAN` scan + `any_has` skip), and the PE_M batch-widen is **DONE 4/4**
+  (swiglu/router/mla/mtp), all bit-exact. This reframes aggregate batching from the ~1.5×
+  hit-rate view (§7.2) to a **6–8× aggregate** lever near B≈256; see
+  [`ULTRA_PERF.md`](ULTRA_PERF.md) #1 and [`FLASH_STRIPING.md`](FLASH_STRIPING.md) §4.
 - **Prefetch/predict**: speculate next experts (the next layer's router is cheap and runs ahead)
   and DMA into DDR5 during the current layer's compute → hide the **big Flash fetch latency**.
   Built + measured as **`src/expert_cache_pf.v`** (a prefetch hint port + demand-priority
@@ -285,6 +291,10 @@ Flash-bound.
 - **Streaming weight-pull interfaces** (`w_req`/`w_col` + per-[128,128]-block bf16 scales) on
   every unit — the weight *source is abstracted*, so DDR5/Flash/host can drive them.
 - The **`mtp_head`** for speculative decoding.
+- **PE_M batch-widening (4/4)** on all FP8 wrappers (`swiglu_expert_fp8` / `moe_router_fp8` /
+  `mla_attn_fp8` / `mtp_head_fp8`) — B token-rows share one weight fetch, verified bit-exact — and
+  **union-skip grouped MoE** in `glm_decoder_block_fp8` (PE_M>1 fetches only the selected-expert
+  union: `T_ESCAN` scan + `any_has` skip), the batch-axis footprint-reduction lever (ULTRA_PERF #1).
 - A small-scale DMA append/gather streaming datapath (`tpu_soc`/`axi_master_dma`/
   `scatter_gather`/`cdc_async_fifo`) exercising the control logic.
 

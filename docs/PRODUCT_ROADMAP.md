@@ -17,7 +17,7 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 |---|---|---|
 | Correctness scope | operator-level bit-exact vs the FP8 contract on **synthetic** weights; argmax 4/31/20 on the slice | the **real 753 GB checkpoint** produces the **real model's tokens** end-to-end |
 | Scale | small faithful slice (MODEL_DIM 128, 6 layers, 8 experts) | full config (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
-| Batching/KV | PE_M batch shares pos/s_len/KV (dense-decode regime); ÷K is TB-driven; batched_moe covers B=4 | per-position causal KV at production widths; real draft chaining; full B coverage |
+| Batching/KV | PE_M batch-widening done on all 4 FP8 wrappers (swiglu/router/mla/mtp), shares pos/s_len/KV (dense-decode regime); grouped MoE **union-skips** to only the selected experts (byte-identical); ÷K is TB-driven; batched_moe covers B=4 | per-position causal KV at production widths; real draft chaining; full B coverage |
 | Memory | DDR5/Flash/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC + directed TBs at slice | coverage closure, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
@@ -89,7 +89,9 @@ one thing the slice cannot.
 
 - **Keep (the core IP):** the FP8 datapath, MLA/DSA/MoE, the memory-system controllers
   (expert_cache_pf, kv_cache_pager, ddr5_xbar, flash_xbar, weight_loader, boot_loader), the
-  batching stack (PE_M wrappers + model + batched_moe + spec_batched_top), the optimizations
+  batching stack (PE_M batch-widening **complete on all four FP8 wrappers** — swiglu/router/mla/mtp
+  — + model + batched_moe + spec_batched_top, and the PE_M>1 grouped MoE now **union-skips** to
+  fetch only the experts any row selected, byte-identical), the optimizations
   (BFP accumulator, parallel indexer, decompressor), the formal harnesses, the bit-accuracy kit.
   These are the hard, validated parts — they carry forward.
 - **Change (the mindset):** every prototype "demonstrates the mechanism / honest gap / TB-driven"

@@ -235,6 +235,16 @@ over tile memory, and owns the latent cache.
   AXI-master DMA gather of exactly those experts from T1/T2 into the resident expert buffer;
   shared expert + MLA proj + norms are HOT/resident, routed experts COLD/streamed. **Batching
   tokens amortizes loads** (route a whole batch, load each needed expert once).
+  - **Batching realized in the RTL slice [BUILT].** All four FP8 wrappers
+    (`swiglu_expert_fp8`, `moe_router_fp8`, `mla_attn_fp8`, `mtp_head_fp8`) now carry a `PE_M`
+    parameter with `[0:PE_M-1]` per-row buffers, so **B token rows share ONE weight-fetch
+    stream** — verified bit-exact and weight-share ("PE_M=B issues the same weight beats as
+    PE_M=1 → B rows, 1 fetch stream"; regression: swiglu 513 / router 192 / mla 6 / mtp 44).
+    In `glm_decoder_block_fp8` the `PE_M>1` grouped MoE fetches **only the UNION of the
+    selected experts** across the batch (an expert-axis scan + combinational membership test,
+    not all `N_EXPERT`) — **byte-identical** to per-row routing. On the real 256-expert config
+    this is up to **~32× fewer Flash expert fetches** at small batch (union of ≤8 vs 256), with
+    the benefit tending to 1× as `B→256` where the union approaches the full expert set.
 
 ---
 

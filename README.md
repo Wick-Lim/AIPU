@@ -30,21 +30,31 @@ exhaustive enumeration, a real PDK, or a formal solver).
 |---|---|---|
 | **Operator bit-accuracy vs the real checkpoint** | published `GLM-5.2-FP8` safetensors (`kv_a_proj` F8_E4M3) | **9216/9216 = 100%** bf16-exact, **argmax 16/16** ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)) |
 | **Real MoE experts on GPU** | real expert weights, Modal T4 | **argmax-preserving** (tier1) |
+| **Modal partial-F1** — assembled real-weight FFN | first **6 real** `GLM-5.2-FP8` layers (dense 0–2 + MoE 3–5), our FP8 Linears, vs HF | **argmax 6/6**, worst `max_abs` **0.0015** — numerically faithful ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)) |
 | **FP8 E4M3 arithmetic** | fp64, **exhaustive** | **ALL 66069** (256 decodes + all 256×256 multiplies) |
 | **Operators at REAL GLM-5.2 dims** | fp64 goldens | GEMM **K=6144**, router **256/top-8**, SwiGLU **2048**, MLA real geo — all bit-exact ([`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md)) |
 | **Full FP8 forward pass** (slice) | fp8 golden | **next-token argmax == golden** |
+| **F0 assembled-model cross-check** — independent numpy ref | RTL **fp64 golden**, every per-layer stage | **bit-exact** (256/256 logits + 128/128 @ 2×; argmax numpy == golden == DUT) — validates the assembly, torch/HF-free (`tools/glm_full_ref_np.py`) |
 | **Real sky130 place-and-route** (`glm_matmul_fp8`) | SkyWater sky130 PDK, OpenROAD | synth→floorplan→**legalized placement**, **357,320 µm²**, post-placement timing **MET** (+15.89 ns) ([`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md)) |
 | **Memory-system controllers** | z3 | **BMC** (6 controllers) + **unbounded k-induction** ([`FORMAL.md`](docs/FORMAL.md)) |
-| **PE_M batch path** (0 extra weight BW) | per-row single-token refs | swiglu **513** / router **192** / mla **6** — *"4 rows == 1 fetch stream"* |
+| **Cycle-accurate memory-stall mechanism** | assembled system, **real RTL cycles** | exposed stall is exactly **`3·FLASH_LAT + 9`**; faithful `cyc_per_tok` **grows** with Flash latency (flat 7947 → **8607** @ FLASH_LAT=256) ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)) |
+| **PE_M batch path** (0 extra weight BW) — **4/4 wrappers** | per-row single-token refs | swiglu **513** / router **192** / mla **6** / mtp **44** — bit-exact + weight-share, *"B rows == 1 fetch stream"* |
 
 **Modeled, not silicon — flagged [EST].** All throughput/energy figures come from a
 bandwidth-roofline model (`tokens/s ≈ Flash_BW / [(1−h)·footprint] · K`), **not** from a routed
 netlist or silicon: single-user **~3 → ~30+ tok/s** and **~9 → ~3 J/token** [EST] after stacking
 the Flash levers. Read them as an optimistic ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md),
-[`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)). The roofline's *memory-stall mechanism* is,
-however, now **measured on real RTL cycles** (assembled system, cycle-accurate): the exposed stall
-is exactly linear in Flash latency (`stall = 3·FLASH_LAT + 9`) and proportional to miss count — so
-the mechanism is validated even though the absolute tok/s is not ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)).
+[`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)). What *is* measured — the proven row above — is
+the roofline's underlying **memory-stall mechanism**, now validated on real RTL cycles (stall exactly
+`3·FLASH_LAT + 9`, faithful `cyc_per_tok` grows with Flash latency); the absolute tok/s stays [EST]
+([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)).
+
+**Fidelity — borderline-A.** The model *assembly* is bit-exact against an independent numpy reference
+(F0), and the real-weight FFN of the first six `GLM-5.2-FP8` layers is numerically faithful on GPU
+(Modal partial-F1, argmax 6/6). The remaining step to a full A — a full-model token-chain compared
+against HuggingFace — is blocked by GLM-5.2's **DSA IndexShare** (shared DSA layers need top-k indices
+from a full-indexer layer, so standalone layers aren't independent), *not* by any operator gap
+([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)).
 
 **Out of scope** (vendor IP / not attempted): DDR5/Flash/USB-C **PHYs** (TB-stubbed), the
 **tokenizer** (software), **full-chip FPGA P&R + board bring-up** (ASIC/tapeout is out of scope — the product is an FPGA card), and a **full-model 8×H200 GPU
@@ -109,9 +119,15 @@ Full FP8 forward pass runs and predicts the correct next token.
 | `swiglu_expert_fp8.v` | gate/up/down GEMMs FP8, bf16 silu tail; **PE_M-batched** | 1024 + PE_M 513 (0 extra weight BW) |
 | `mla_attn_fp8.v` | 7 weight projections FP8, bf16 attn/rope/norm/softmax/dsa; **PE_M-batched, per-row pos/s_len** | slice 7; **real-dim (Q2048/KV512/…) worst rel 5.48e-4**; PE_M 6 |
 | `moe_router_fp8.v` | gate GEMV FP8, bf16 sigmoid/topk/renorm; **PE_M-batched** | 185 + real 256/top-8 + PE_M 192 |
-| `glm_decoder_block_fp8.v` | one full FP8 decoder layer | 9 tests, dense + MoE |
+| `glm_decoder_block_fp8.v` | one full FP8 decoder layer; **grouped MoE + union-skip** (PE_M>1 fetches only the *union* of selected experts) | 9 tests; union-skip byte-identical (*"evaluated 3 == distinct-selected, skipped 5 of 8, bit-exact"*) |
 | **`glm_model_fp8.v`** | **full FP8 forward pass** | **next-token argmax == fp8 golden** |
 | `mtp_head_fp8.v` | FP8 multi-token-prediction (t+2) head; **PE_M-batched** | 6 + PE_M 44 (all weight ports: B rows == 1 fetch) |
+
+**Batching is complete — 4/4 FP8 wrappers** (swiglu / router / mla / mtp) carry a `PE_M` param + per-row
+buffers, verified bit-exact and weight-sharing (*"B rows == 1 fetch stream"*). On top of that the PE_M>1
+**grouped MoE** in `glm_decoder_block_fp8` fetches only the **union** of selected experts (a `T_ESCAN`
+scan + combinational `any_has`), byte-identical to the all-expert path — up to **~32× fewer Flash expert
+fetches** at small batch on the real 256-expert config (≈ no benefit at B≈256, where the union ≈ all).
 
 ### Single-module system (real-753B memory/streaming hardware) — BUILT
 
@@ -145,6 +161,7 @@ C8 loopback closed; 2-domain `reset_sync` + CDC sign-off; full-config elaboratio
 | `spec_decode_seq.v` K>1 | multi-token speculative draft | **K=2 ≈ +23%** (spec == greedy) |
 | `clk_en_ctrl.v` | gate the ~75%-idle die | **74% of idle dynamic power gated** |
 | `expert_prefetch_top.v` | predictor-driven prefetch | **measured NO-OP** (popular experts already resident — honest) |
+| `glm_matmul_fp8.v` fold-pipeline (Ph1) | register the block-dequant / accumulate-fold drain (`DEQ_LAT +1`, latency-transparent) | **+25% fmax** on the isolated fold segment (64.2 → 80.7 MHz; full 2×2/K256 45 → 70 MHz), **bit-identical** (ALL 224) |
 
 The die is only ~20–25% utilized (Flash-starved), so compute-side wins (the −87.6%-cell
 accumulator, fmax fixes, BMC) improve area/power/timing/correctness but **do not move tok/s** —
@@ -211,4 +228,11 @@ as the control/integration substrate. Detail in [`SPEC.md`](SPEC.md) / [`docs/IS
 20K** (GW2A-18, ~49% LUT, ~0 DSP) — fp32 does not (`mla_attn` alone ≈ 396 DSP-equiv, 8× the
 device), which is the point of FP8: its 4×4 mantissa multiply frees the scarce DSP and spends
 LUTs on the accumulator. This is a **silicon-fabric sanity test, not the deliverable** (the board
-cannot run GLM-5.2); the target is a **large (data-center-class) FPGA** with the DDR5+Flash system. Because the workload is Flash-bandwidth-bound (the die sits ~75–80% idle behind Flash), an FPGA card is the committed product — an ASIC's faster compute would be largely wasted, so ASIC is out of scope.
+cannot run GLM-5.2); the target is a **large (data-center-class) FPGA** with the DDR5+Flash system.
+A partitioned `synth_ecp5` of the six memory-system controllers already sums to **~71,475 LUT4 — ~85%
+of an ECP5-85 on the controllers alone** — so the full system does **not** fit an ECP5-85 and needs a
+larger FPGA; the compute die's ECP5 size is **not yet measured** (a yosys-0.66 `synth_ecp5` scalability
+limit — an earlier "die 32–64× over" figure was a `KMAX` synth artifact, since disproven)
+([`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md)). Because the workload is Flash-bandwidth-bound (the die
+sits ~75–80% idle behind Flash), an FPGA card is the committed product — an ASIC's faster compute would
+be largely wasted, so ASIC is out of scope.
