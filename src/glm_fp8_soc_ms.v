@@ -12,23 +12,22 @@
 // Differs from glm_fp8_soc (the single-token PE_M=1 SoC) in exactly the
 // multi-seq dimensions -- the weight-pull responders (em_*/gn_*/aw_*/rw_*/
 // fw_*/fn_*/lw_*) are PE_M-AGNOSTIC and pass straight through to the model,
-// same as the PE_M=1 SoC.  For a focused, verifiable top this module wires the
-// FFN/expert weights DIRECTLY (no expert_cache_pf / flash arbiter -- those are
-// orthogonal bandwidth optimisations carried over from glm_fp8_soc later).
+// same as the PE_M=1 SoC.  Includes the routed-expert cache (expert_cache_pf).
 //
-// REAL KV PATH: unlike glm_fp8_soc (which STUBS kc_ckv/kc_krope from the TB and
-// uses the pager only as a timing/window model), here the pager ACTUALLY serves
-// the model's KV: model.kc_req -> pager.gather (gather_seq = model.kc_seq),
-// pager.row_valid -> model.kc_valid, pager.row_out -> {kc_krope,kc_ckv}.  The
-// model waits in its K_RDWAIT handshake, so resident (1-cycle) and cold-fetch
-// (Flash) latencies both work.
+// REAL PER-LAYER KV STORE: unlike glm_fp8_soc (which STUBS kc_ckv/kc_krope from
+// the TB), this module OWNS the KV data in kv_mem -- L*NSEQ windows (one per
+// (layer, sequence)) x KV_RESIDENT positions.  The host WRITES it during prefill/
+// decap (per (seq, layer, pos)); the model READS it COMBINATIONALLY (window =
+// db_layer*NSEQ+kc_seq, position = kc_idx), kc_valid = 1-cycle registered kc_req
+// -- the SAME read contract/timing as the verified glm_fp8_soc stub.  The pager
+// runs alongside as the per-sequence resident-window / Flash-overflow timing model.
 //
 // HOST FSM (one batched decode step):
-//   IDLE -> PREFILL (append each sequence s's s_len_r[s] prompt latents into
-//   its own pager window, seq by seq) -> RUN (one PE_M=B forward) -> DECAP
-//   (append each sequence's new decode-token latent at position s_len_r[s]) ->
-//   DONE (commit B argmax tokens).  Row r decodes at position s_len_r[r] with
-//   sequence id r (PER_ROW_POS/SLEN/SEQ=1).
+//   IDLE -> PREFILL (write each sequence's s_len_r[s] prompt latents for EACH of
+//   the L layers into kv_mem, seq by seq) -> RUN (one PE_M=B forward) -> DECAP
+//   (write each sequence's new decode-token latent for each layer) -> DONE (commit
+//   B argmax tokens).  Row r decodes at position s_len_r[r] with sequence id r
+//   (PER_ROW_POS/SLEN/SEQ=1).
 //
 // STYLE: synchronous, ACTIVE-HIGH reset; no latch; deterministic.
 //============================================================================
@@ -69,6 +68,7 @@ module glm_fp8_soc_ms #(
     parameter integer EFIFO_DEPTH = 16,
     // ---- derived (do NOT override) ----
     parameter integer NSEQ       = PE_M,
+    parameter integer WINW       = (L*PE_M <= 1) ? 1 : $clog2(L*PE_M),  // KV window id = layer*NSEQ+seq
     parameter integer SWIN       = PE_M*TOPK_ATTN,               // multi-seq attention scratch
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
     parameter integer SEQW       = (PE_M  <= 1) ? 1 : $clog2(PE_M),
@@ -157,22 +157,24 @@ module glm_fp8_soc_ms #(
     output wire [DIMW-1:0]               lw_k,
     input  wire [LM_TN*16-1:0]           lw_col,
 
-    //========================== latent-KV read DATA STUB ====================
-    //  Like glm_fp8_soc: the KV DATA (c_kv|k_rope) is served by the TB/PHY keyed
-    //  on (kc_seq, db_layer, kc_idx) -- the model's KV is PER-LAYER, while the
-    //  pager models the per-sequence resident WINDOW + Flash timing (kc_seq ->
-    //  gather_seq).  kc_valid is the 1-cycle registered ack of kc_req.
+    //========================== latent-KV read (REAL, module-owned) =========
+    //  The KV DATA is now stored IN this module (kv_mem, a real per-(layer,seq)
+    //  KV store the host populates during prefill), not stubbed from the TB.  The
+    //  model's PER-LAYER read (db_layer, kc_seq, kc_idx) is served COMBINATIONALLY
+    //  from kv_mem[db_layer*NSEQ+kc_seq][kc_idx]; kc_valid is the 1-cycle registered
+    //  ack of kc_req (the verified read contract, same timing as glm_fp8_soc).
+    //  kc_req/kc_idx/kc_seq are exposed for observability.
     output wire                          kc_req,
     output wire [IDXW-1:0]               kc_idx,
     output wire [SEQW-1:0]               kc_seq,     // multi-seq: which sequence's window
-    input  wire [KV_LORA*16-1:0]         kc_ckv,
-    input  wire [ROPE*16-1:0]            kc_krope,
 
     //========================== KV append (latent ROW source) ===============
-    //  During PREFILL/DECAP the host appends one latent row per (seq,pos); the
-    //  ROW BYTES come from this stub (kv_row_in) -- the computed latent a real
-    //  datapath writes back.  kv_seq_sel/kv_row_sel tell the stub which (seq,pos).
+    //  During PREFILL/DECAP the host writes one latent row per (seq, LAYER, pos)
+    //  into kv_mem AND appends to the pager (window model); the ROW BYTES come from
+    //  kv_row_in -- the computed latent a real prefill datapath writes back.
+    //  kv_seq_sel/kv_layer_sel/kv_row_sel tell the source which (seq, layer, pos).
     output wire [SEQW-1:0]               kv_seq_sel,
+    output wire [LAYW-1:0]               kv_layer_sel,
     output wire [KVPOSW-1:0]             kv_row_sel,
     input  wire [ROW_BITS-1:0]           kv_row_in,
     output wire [ROW_BITS-1:0]           kv_row_out, // pager gathered row (observability)
@@ -219,11 +221,14 @@ module glm_fp8_soc_ms #(
         end
     endgenerate
 
-    // model KV read: kc_req/kc_idx/kc_seq are TOP outputs (drive the stub + the
-    // pager window model); kc_ckv/kc_krope are TOP inputs (stubbed, per-layer);
-    // kc_valid is the 1-cycle registered ack of kc_req (the verified read contract).
+    // model KV read: kc_req/kc_idx/kc_seq are TOP outputs (drive the module's kv_mem
+    // read + the pager window model); kc_ckv/kc_krope are served COMBINATIONALLY from
+    // kv_mem (below); kc_valid is the 1-cycle registered ack of kc_req -- the SAME
+    // read contract/timing as the verified glm_fp8_soc stub.
     reg                       kc_valid_r;
     always @(posedge clk) if (rst) kc_valid_r <= 1'b0; else kc_valid_r <= kc_req;
+    wire [KV_LORA*16-1:0]     kc_ckv_w;
+    wire [ROPE*16-1:0]        kc_krope_w;
 
     glm_model_fp8 #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
@@ -244,7 +249,7 @@ module glm_fp8_soc_ms #(
         .aw_req(aw_req), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(aw_k),
         .aw_col(aw_col), .aw_scale(aw_scale),
         .kc_req(kc_req), .kc_idx(kc_idx), .kc_seq(kc_seq),
-        .kc_ckv(kc_ckv), .kc_krope(kc_krope), .kc_valid(kc_valid_r),
+        .kc_ckv(kc_ckv_w), .kc_krope(kc_krope_w), .kc_valid(kc_valid_r),
         .rw_req(rw_req), .rw_k(rw_k), .rw_col(rw_col), .rw_scale(rw_scale),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
@@ -263,15 +268,18 @@ module glm_fp8_soc_ms #(
     reg [2:0]        hstate;
     reg [SEQW-1:0]   cur_seq;                  // sequence being (pre)filled
     reg [IDXW:0]     cur_pos;                  // position within cur_seq's prompt
-    reg              ap_valid;                 // drive a pager append this cycle
+    reg [LAYW-1:0]   cur_layer;                // layer being written (each (seq,pos) has L latents)
+    reg              ap_valid;                 // drive a KV write / pager append this cycle
     reg [SEQW-1:0]   ap_seq;
+    reg [LAYW-1:0]   ap_layer;
     reg [KVPOSW-1:0] ap_pos;
 
     // this sequence's prompt length (per-seq s_len)
     wire [IDXW:0]    cur_slen = s_len_vec[(IDXW+1)*cur_seq +: (IDXW+1)];
 
-    assign kv_seq_sel = ap_seq;
-    assign kv_row_sel = ap_pos;
+    assign kv_seq_sel   = ap_seq;
+    assign kv_layer_sel = ap_layer;
+    assign kv_row_sel   = ap_pos;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -283,8 +291,10 @@ module glm_fp8_soc_ms #(
             mdl_start <= 1'b0;
             cur_seq   <= {SEQW{1'b0}};
             cur_pos   <= {(IDXW+1){1'b0}};
+            cur_layer <= {LAYW{1'b0}};
             ap_valid  <= 1'b0;
             ap_seq    <= {SEQW{1'b0}};
+            ap_layer  <= {LAYW{1'b0}};
             ap_pos    <= {KVPOSW{1'b0}};
         end else begin
             done      <= 1'b0;
@@ -295,9 +305,10 @@ module glm_fp8_soc_ms #(
                 H_IDLE: begin
                     busy <= 1'b0;
                     if (start) begin
-                        busy    <= 1'b1;
-                        cur_seq <= {SEQW{1'b0}};
-                        cur_pos <= {(IDXW+1){1'b0}};
+                        busy      <= 1'b1;
+                        cur_seq   <= {SEQW{1'b0}};
+                        cur_pos   <= {(IDXW+1){1'b0}};
+                        cur_layer <= {LAYW{1'b0}};
                         // empty prompts -> straight to RUN
                         if (s_len_vec[0 +: (IDXW+1)] == {(IDXW+1){1'b0}} && PE_M == 1)
                             hstate <= H_RUN;
@@ -306,15 +317,22 @@ module glm_fp8_soc_ms #(
                     end
                 end
                 H_PREFILL: begin
-                    // append (cur_seq, cur_pos) if this sequence has a prompt key here.
+                    // write EACH LAYER's latent of (cur_seq, cur_pos) (the model's KV
+                    //   is per-layer).  Inner loop = layer; then position; then sequence.
                     if (cur_pos < cur_slen) begin
                         ap_valid <= 1'b1;
                         ap_seq   <= cur_seq;
+                        ap_layer <= cur_layer;
                         ap_pos   <= {{(KVPOSW-(IDXW+1)){1'b0}}, cur_pos};
-                        cur_pos  <= cur_pos + 1'b1;
+                        if (cur_layer == (L-1)) begin       // all L layers of this pos done
+                            cur_layer <= {LAYW{1'b0}};
+                            cur_pos   <= cur_pos + 1'b1;
+                        end else
+                            cur_layer <= cur_layer + 1'b1;
                     end else begin
                         // this sequence's prefill done -> next sequence (or RUN)
-                        cur_pos <= {(IDXW+1){1'b0}};
+                        cur_pos   <= {(IDXW+1){1'b0}};
+                        cur_layer <= {LAYW{1'b0}};
                         if (cur_seq == (NSEQ-1)) begin
                             hstate <= H_RUN;
                         end else begin
@@ -328,19 +346,26 @@ module glm_fp8_soc_ms #(
                 end
                 H_RUNW: begin
                     if (mdl_done) begin
-                        next_tok <= mdl_argmax;        // capture B argmax tokens
-                        cur_seq  <= {SEQW{1'b0}};
-                        hstate   <= H_DECAP;
+                        next_tok  <= mdl_argmax;       // capture B argmax tokens
+                        cur_seq   <= {SEQW{1'b0}};
+                        cur_layer <= {LAYW{1'b0}};
+                        hstate    <= H_DECAP;
                     end
                 end
                 H_DECAP: begin
-                    // append each sequence's decode-token latent at position s_len_r[seq].
+                    // write each sequence's decode-token latent at position s_len_r[seq]
+                    //   into EACH LAYER's window (layer inner, then sequence).
                     ap_valid <= 1'b1;
                     ap_seq   <= cur_seq;
+                    ap_layer <= cur_layer;
                     ap_pos   <= {{(KVPOSW-(IDXW+1)){1'b0}},
                                  s_len_vec[(IDXW+1)*cur_seq +: (IDXW+1)]};
-                    if (cur_seq == (NSEQ-1)) hstate <= H_DONE;
-                    else                     cur_seq <= cur_seq + 1'b1;
+                    if (cur_layer == (L-1)) begin
+                        cur_layer <= {LAYW{1'b0}};
+                        if (cur_seq == (NSEQ-1)) hstate <= H_DONE;
+                        else                     cur_seq <= cur_seq + 1'b1;
+                    end else
+                        cur_layer <= cur_layer + 1'b1;
                 end
                 H_DONE: begin
                     done      <= 1'b1;
@@ -378,6 +403,31 @@ module glm_fp8_soc_ms #(
         .append_count(), .resident_lo(), .overflowed(),
         .ecc_serr(), .ecc_derr()
     );
+
+    //------------------------------------------------------------------------
+    // 3b) REAL PER-LAYER KV STORE (kv_mem): the module OWNS the KV data (vs the
+    //    glm_fp8_soc TB-stub).  L*NSEQ windows x KV_RESIDENT positions, one row per
+    //    (layer, sequence, position); the host writes it during prefill/decap and
+    //    the model reads it COMBINATIONALLY (kc_valid = registered kc_req -- the SAME
+    //    contract/timing as the proven stub).  window = layer*NSEQ + seq.  (Cold /
+    //    Flash overflow of kv_mem beyond KV_RESIDENT is future work; the pager above
+    //    already models that window/timing.)
+    //------------------------------------------------------------------------
+    localparam integer RPTRW  = (KV_RESIDENT <= 1) ? 1 : $clog2(KV_RESIDENT);
+    reg  [ROW_BITS-1:0] kv_mem [0:L*NSEQ*KV_RESIDENT-1];
+    wire [WINW-1:0]     ap_win = ap_layer*NSEQ + ap_seq;    // write (layer,seq) window
+    wire [WINW-1:0]     g_win  = db_layer*NSEQ + kc_seq;    // read  (layer,seq) window
+    // write on prefill/decap (kv_row_in is the (seq,layer,pos) latent the host feeds)
+    always @(posedge clk)
+        if (ap_valid)
+            kv_mem[ap_win*KV_RESIDENT + ap_pos[RPTRW-1:0]] <= kv_row_in;
+    // combinational read: serve the model's per-layer KV.  kc_idx (the key position,
+    //   < KV_RESIDENT) is used DIRECTLY -- part-selecting kc_idx[RPTRW-1:0] would read
+    //   past its IDXW width when IDXW < RPTRW and poison the index with X.
+    reg [ROW_BITS-1:0] kv_rd;
+    always @* kv_rd = kv_mem[g_win*KV_RESIDENT + kc_idx];
+    assign kc_ckv_w   = kv_rd[0          +: KV_LORA*16];
+    assign kc_krope_w = kv_rd[KV_LORA*16 +: ROPE*16];
 
     //------------------------------------------------------------------------
     // 4) ROUTED-EXPERT CACHE (demand-only): detect each distinct (layer, expert)

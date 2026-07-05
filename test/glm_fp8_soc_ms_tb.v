@@ -343,15 +343,29 @@ module glm_fp8_soc_ms_tb;
     wire                      gn_req_w, gn_which_w; wire [DIMW-1:0] gn_idx_w; reg [15:0] gn_val_w;
     wire                      aw_req_w; wire [3:0] aw_sel_w; wire [A_GRPW-1:0] aw_grp_w; wire [A_KCW-1:0] aw_k_w;
     reg  [PE_N*8-1:0]         aw_col_w; reg [16*PE_N*A_NB-1:0] aw_scale_w;
-    wire                      kc_req_w; wire [IDXW-1:0] kc_idx_w; wire [SEQW-1:0] kc_seq_w; reg [KV_LORA*16-1:0] kc_ckv_w; reg [ROPE*16-1:0] kc_krope_w;
+    wire                      kc_req_w; wire [IDXW-1:0] kc_idx_w; wire [SEQW-1:0] kc_seq_w;
     wire                      rw_req_w; wire [R_KW-1:0] rw_k_w; reg [8*N_EXPERT-1:0] rw_col_w; reg [16*N_EXPERT*R_NB-1:0] rw_scale_w;
     wire                      fw_req_w; wire [1:0] fw_sel_w; wire [FF_GWD-1:0] fw_grp_w; wire [FF_KWD-1:0] fw_k_w;
     wire                      fw_shared_w; wire [EIDXW-1:0] fw_eidx_w;
     reg  [8*TN-1:0]           fw_col_w, fw_col_up_w; reg [16*TN*FF_NB_D-1:0] fw_scale_g_w, fw_scale_u_w;
     wire                      fn_req_w; wire [DIMW-1:0] fn_idx_w; reg [15:0] fn_val_w;
     wire                      lw_req_w; wire [VTW-1:0] lw_vtile_w; wire [DIMW-1:0] lw_k_w; reg [LM_TN*16-1:0] lw_col_w;
-    wire [SEQW-1:0]           kv_seq_sel_w; wire [KVPOSW_TB-1:0] kv_row_sel_w; wire [ROW_BITS_TB-1:0] kv_row_out_w;
+    wire [SEQW-1:0]           kv_seq_sel_w; wire [LAYW-1:0] kv_layer_sel_w;
+    wire [KVPOSW_TB-1:0]      kv_row_sel_w; wire [ROW_BITS_TB-1:0] kv_row_out_w;
+    reg  [ROW_BITS_TB-1:0]    kv_row_in_w;
     wire                      flash_req_w; wire [KVPOSW_TB-1:0] flash_idx_w; wire [SEQW-1:0] flash_seq_w;
+    // REAL per-layer KV: feed kv_row_in with the (seq, layer, pos) latent from the
+    //   SAME CKV/KRP the reference uses -> the module's kv_mem stores + serves it.
+    integer kvi;
+    always @* begin
+        kv_row_in_w = {ROW_BITS_TB{1'b0}};
+        if (kv_row_sel_w < S_MAX) begin
+            for (kvi=0; kvi<KV_LORA; kvi=kvi+1)
+                kv_row_in_w[16*kvi +: 16] = CKV[kv_seq_sel_w][kv_layer_sel_w][kv_row_sel_w[IDXW-1:0]][kvi];
+            for (kvi=0; kvi<ROPE; kvi=kvi+1)
+                kv_row_in_w[16*(KV_LORA+kvi) +: 16] = KRP[kv_seq_sel_w][kv_layer_sel_w][kv_row_sel_w[IDXW-1:0]][kvi];
+        end
+    end
     wire                      ecf_req_w; wire [EIDXW-1:0] ecf_eid_w; reg ecf_done_w;
     wire [31:0]               ec_hits_w, ec_misses_w;
     integer ecf_cnt; reg ecf_active;
@@ -380,9 +394,8 @@ module glm_fp8_soc_ms_tb;
         .fn_req(fn_req_w), .fn_idx(fn_idx_w), .fn_val(fn_val_w),
         .lw_req(lw_req_w), .lw_vtile(lw_vtile_w), .lw_k(lw_k_w), .lw_col(lw_col_w),
         .kc_req(kc_req_w), .kc_idx(kc_idx_w), .kc_seq(kc_seq_w),
-        .kc_ckv(kc_ckv_w), .kc_krope(kc_krope_w),
-        .kv_seq_sel(kv_seq_sel_w), .kv_row_sel(kv_row_sel_w),
-        .kv_row_in({ROW_BITS_TB{1'b0}}), .kv_row_out(kv_row_out_w),
+        .kv_seq_sel(kv_seq_sel_w), .kv_layer_sel(kv_layer_sel_w), .kv_row_sel(kv_row_sel_w),
+        .kv_row_in(kv_row_in_w), .kv_row_out(kv_row_out_w),
         .flash_req(flash_req_w), .flash_idx(flash_idx_w), .flash_seq(flash_seq_w),
         .flash_done(1'b0), .flash_row({ROW_BITS_TB{1'b0}}),
         .ec_flash_req(ecf_req_w), .ec_flash_expert_id(ecf_eid_w), .ec_flash_done(ecf_done_w),
@@ -427,9 +440,7 @@ module glm_fp8_soc_ms_tb;
         4'd6:scaw=ScW_o[db_layer_w]; default:scaw=16'h3F80; endcase
         for (tw=0;tw<PE_N;tw=tw+1) aw_scale_w[16*tw+:16]=scaw;
     end
-    always @(kc_idx_w or kc_seq_w or db_layer_w or start_w) begin kc_ckv_w={KV_LORA*16{1'b0}}; kc_krope_w={ROPE*16{1'b0}};
-        for (cdw=0;cdw<KV_LORA;cdw=cdw+1) kc_ckv_w[16*cdw+:16]=CKV[kc_seq_w][db_layer_w][kc_idx_w][cdw];
-        for (cdw=0;cdw<ROPE;cdw=cdw+1)    kc_krope_w[16*cdw+:16]=KRP[kc_seq_w][db_layer_w][kc_idx_w][cdw]; end
+    // (no KV read responder: the SoC's kv_mem serves the model's KV directly)
     always @(rw_k_w or db_layer_w or start_w) begin rw_col_w={8*N_EXPERT{1'b0}}; rw_scale_w={16*N_EXPERT*R_NB{1'b0}};
         for (rew=0;rew<N_EXPERT;rew=rew+1) begin rw_col_w[8*rew+:8]=Wg[db_layer_w][rw_k_w][rew]; rw_scale_w[16*rew+:16]=ScWg[db_layer_w]; end end
     always @(fw_grp_w or fw_k_w or fw_sel_w or fw_shared_w or fw_eidx_w or db_layer_w or start_w) begin dmodew=(db_layer_w<N_DENSE)?1'b0:1'b1;
