@@ -417,11 +417,23 @@ module mla_attn_fp8 #(
     //   PE_M per-row indexer runs (and the standalone PE_M=1 reference) score against
     //   the SAME kidx_buf -- each row diverges only through its own query qrot[r].
     //   At DSA_REAL_IDX=0 this buffer is reset to 0 and never read (no pre-fetch).
-    reg [15:0]     kidx_buf [0:S_MAX-1][0:NOPE-1];      // per-key index vector (bf16)
+    // PER-SEQUENCE index buffers (A2): kidx_buf[seq][key][dim].  DSA_REAL_IDX=1 +
+    //   PER_ROW_SEQ=1 pre-fetches EACH sequence's candidate keys (they live in
+    //   different KV windows), so each row's indexer scores against ITS OWN seq's
+    //   vectors.  PER_ROW_SEQ=0 uses only seq 0 (byte-identical to the single-buf
+    //   pre-multi-seq path).
+    reg [15:0]     kidx_buf [0:PE_M-1][0:S_MAX-1][0:NOPE-1];  // per-(seq,key) index vector (bf16)
     reg [IDXW:0]   pf_j;                                // pre-fetch key counter (0..s_reg-1)
+    reg [SEQW-1:0] pf_seq;                              // pre-fetch sequence counter (0..pf_nseq-1)
     localparam PF_REQ = 1'b0, PF_WAIT = 1'b1;
     reg            pf_st;                               // pre-fetch cache handshake sub-state
-    integer        pfd;                                 // pre-fetch lane loop var
+    integer        pfd, pfs;                            // pre-fetch lane / seq loop vars
+    // #sequences to pre-fetch: 1 when shared-seq (byte-identical), else PE_M.
+    localparam integer PF_NSEQ = (PER_ROW_SEQ == 0) ? 1 : PE_M;
+    // the sequence of the row currently being scored by the indexer (DSA answer
+    //   reads that seq's index buffer).  PER_ROW_SEQ=0 -> seq 0 (byte-identical).
+    wire [SEQW-1:0] dsa_row_seq = (PER_ROW_SEQ == 0) ? {SEQW{1'b0}}
+                                                     : seq_qr[SEQW*dsa_row +: SEQW];
 
     //========================================================================
     // PER-ROW CAUSAL EXTENT resolve (combinational; latched at start).  Row 0 =
@@ -850,9 +862,10 @@ module mla_attn_fp8 #(
             dsa_row    <= {DRW{1'b0}};
             u_cnt      <= {(IDXW+1){1'b0}};
             un_pres    <= 1'b0; un_cnt <= {(IDXW+1){1'b0}};
-            pf_j       <= {(IDXW+1){1'b0}}; pf_st <= PF_REQ;
-            for (rr=0; rr<S_MAX; rr=rr+1)
-                for (pfd=0; pfd<NOPE; pfd=pfd+1) kidx_buf[rr][pfd] <= 16'h0;
+            pf_j       <= {(IDXW+1){1'b0}}; pf_seq <= {SEQW{1'b0}}; pf_st <= PF_REQ;
+            for (pfs=0; pfs<PE_M; pfs=pfs+1)
+                for (rr=0; rr<S_MAX; rr=rr+1)
+                    for (pfd=0; pfd<NOPE; pfd=pfd+1) kidx_buf[pfs][rr][pfd] <= 16'h0;
             for (rr=0; rr<PE_M; rr=rr+1) begin
                 ctx_acc[rr] <= 32'h0;
                 vrd_word[rr]  <= {VMEMW{1'b0}};   // sync-read pipeline (VSTORE_SYNC_RD=1)
@@ -1127,9 +1140,10 @@ module mla_attn_fp8 #(
                         //   key's index vector (c_kv[j][0:NOPE]) into kidx_buf ONCE,
                         //   then run the per-row indexer against it.  (DENSE never
                         //   pulls keys, so it skips straight to S_DSA below.)
-                        pf_j  <= {(IDXW+1){1'b0}};
-                        pf_st <= PF_REQ;
-                        state <= S_DSAPF;
+                        pf_j   <= {(IDXW+1){1'b0}};
+                        pf_seq <= {SEQW{1'b0}};
+                        pf_st  <= PF_REQ;
+                        state  <= S_DSAPF;
                     end else begin
                         for (d_i=0; d_i<NOPE; d_i=d_i+1)
                             dsa_qidx[16*d_i +: 16] <= qrot[0][d_i];
@@ -1151,6 +1165,9 @@ module mla_attn_fp8 #(
                 case (pf_st)
                     PF_REQ: begin
                         kc_idx <= pf_j[IDXW-1:0];
+                        // PER_ROW_SEQ=1: fetch pf_seq's candidate keys from its window
+                        //   (folds to 0 -> byte-identical when PER_ROW_SEQ=0).
+                        kc_seq <= (PER_ROW_SEQ == 0) ? {SEQW{1'b0}} : pf_seq;
                         kc_req <= 1'b1;
                         pf_st  <= PF_WAIT;
                     end
@@ -1158,14 +1175,21 @@ module mla_attn_fp8 #(
                         if (kc_valid) begin
                             kc_req <= 1'b0;
                             for (pfd=0; pfd<NOPE; pfd=pfd+1)
-                                kidx_buf[pf_j[IDXW-1:0]][pfd] <= kc_ckv[16*pfd +: 16];
+                                kidx_buf[pf_seq][pf_j[IDXW-1:0]][pfd] <= kc_ckv[16*pfd +: 16];
                             if (pf_j == s_reg - 1'b1) begin
-                                for (d_i=0; d_i<NOPE; d_i=d_i+1)
-                                    dsa_qidx[16*d_i +: 16] <= qrot[0][d_i];
-                                dsa_slen  <= slen_r[(IDXW+1)*0 +: (IDXW+1)];
-                                dsa_start <= 1'b1;
-                                dsa_row   <= {DRW{1'b0}};
-                                state     <= S_DSA;
+                                // this sequence's keys done -> next sequence, or launch DSA
+                                if (pf_seq == (PF_NSEQ-1)) begin
+                                    for (d_i=0; d_i<NOPE; d_i=d_i+1)
+                                        dsa_qidx[16*d_i +: 16] <= qrot[0][d_i];
+                                    dsa_slen  <= slen_r[(IDXW+1)*0 +: (IDXW+1)];
+                                    dsa_start <= 1'b1;
+                                    dsa_row   <= {DRW{1'b0}};
+                                    state     <= S_DSA;
+                                end else begin
+                                    pf_seq <= pf_seq + 1'b1;
+                                    pf_j   <= {(IDXW+1){1'b0}};
+                                    pf_st  <= PF_REQ;
+                                end
                             end else begin
                                 pf_j  <= pf_j + 1'b1;
                                 pf_st <= PF_REQ;
@@ -1185,7 +1209,7 @@ module mla_attn_fp8 #(
                     //   constant-folds; the buffer read is masked when DSA_REAL_IDX=0.
                     if (DSA_REAL_IDX != 0) begin
                         for (d_i=0; d_i<NOPE; d_i=d_i+1)
-                            dsa_kidx[16*d_i +: 16] <= kidx_buf[dsa_key_idx][d_i];
+                            dsa_kidx[16*d_i +: 16] <= kidx_buf[dsa_row_seq][dsa_key_idx][d_i];
                     end else begin
                         dsa_kidx <= {NOPE*16{1'b0}};
                     end

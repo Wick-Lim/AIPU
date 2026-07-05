@@ -23,7 +23,7 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 |---|---|---|
 | Correctness scope | operator bit-exact + a **truncated full-model token chain on real weights** (dense→MoE seam, real 256-expert route, DSA threaded, argmax-identical on a real prompt — DSA-IndexShare + fused-expert blockers retired) | the **full 753 GB checkpoint** produces the real model's tokens **at full depth** end-to-end |
 | Scale | small faithful slice (128/6/8); the **full 753B config elaborates clean** (verilator, 0 errors) | full config *simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
-| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0; **a batched multi-seq top `glm_fp8_soc_ms` (PE_M=B model + real NSEQ-window pager + host FSM: prefill B seqs → 1 forward → commit B tokens; per-row bit-exact)** | productionize the batched top (expert cache/Flash arbiter, real per-layer KV path); per-seq DSA prefetch (SPARSE); real draft chaining; full B coverage |
+| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0; **a batched multi-seq top `glm_fp8_soc_ms` (PE_M=B model + real NSEQ-window pager + host FSM: prefill B seqs → 1 forward → commit B tokens; per-row bit-exact)**; **`DSA_REAL_IDX=1` (query-dependent IndexShare) works under multi-seq via a per-sequence `kidx_buf` pre-fetch** | real per-layer KV data path (pager-served vs stub); real draft chaining; full B coverage |
 | Memory | DDR5/Flash/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (+ clk_throttle) + directed TBs at slice; **verilator line/toggle/branch coverage** (`make coverage`, 87.8% line merged) | coverage *closure*, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
@@ -76,10 +76,13 @@ one thing the slice cannot.
   separate decodes): a host FSM prefills B sequences into their own windows (`append_seq`), runs
   ONE batched forward (row r → sequence r via `seq_vec`; `kc_seq` → `gather_seq`), and commits B
   next tokens — each row bit-exact vs a per-seq PE_M=1 model, query-side weights shared, dense +
-  sparse (`glm_fp8_soc_ms_tb`, 3 cases). **Remains:** a REAL per-layer KV data path (the pager
-  serving the model's per-layer KV vs today's per-(seq,layer) stub + window model); per-seq DSA
-  *prefetch* for `DSA_REAL_IDX=1` (real query-dependent IndexShare) under multi-seq; real draft
-  chaining; full B-coverage for batched_moe; **scale-up VERIFIED at B=4** (`glm_model_fp8_multiseq4_tb`:
+  sparse (`glm_fp8_soc_ms_tb`, 3 cases). And **`DSA_REAL_IDX=1` (real query-dependent IndexShare)
+  now works under multi-seq** — the DSA index pre-fetch carries a PER-SEQUENCE `kidx_buf[seq]` so
+  each row scores its top-K against ITS OWN sequence's key vectors (`mla_attn_fp8_multiseq_dsareal_tb`,
+  4 sparse cases, per-row bit-exact; byte-identical for `DSA_REAL_IDX=0` and single-seq). **Remains:**
+  a REAL per-layer KV data path (the pager serving the model's per-layer KV vs today's per-(seq,layer)
+  stub + window model — a subtle pager-served position≥1 read issue reverted it; needs dedicated
+  debug); real draft chaining; full B-coverage for batched_moe; **scale-up VERIFIED at B=4** (`glm_model_fp8_multiseq4_tb`:
   4 different sequences batched in one forward, all 4 rows per-row bit-exact vs per-seq PE_M=1, dense
   AND sparse, ~52% fewer attn-weight beats than 4 separate decodes); real-checkpoint validation
   (the standing P1.1 gate — needs a GPU host) remains.

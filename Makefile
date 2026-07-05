@@ -201,6 +201,11 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_fp8_multiseq_sim test/mla_attn_fp8_multiseq_tb.v src/mla_attn_fp8.v src/glm_matmul_fp8.v src/glm_matmul_pipe.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
 	@printf '[%s] ' "mla_attn_fp8(multi-seq)"; $(VVP) $(BUILD_DIR)/mla_attn_fp8_multiseq_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: mla_attn_fp8_multiseq"; exit 1; }
+	@# mla_attn_fp8 MULTI-SEQ + DSA_REAL_IDX=1 (A2): SPARSE query-DEPENDENT selection with the
+	@# PER-SEQUENCE kidx_buf pre-fetch -- each row scores against its OWN sequence's index vectors.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_fp8_multiseq_dsareal_sim test/mla_attn_fp8_multiseq_dsareal_tb.v src/mla_attn_fp8.v src/glm_matmul_fp8.v src/glm_matmul_pipe.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
+	@printf '[%s] ' "mla_attn_fp8(multi-seq DSA-real)"; $(VVP) $(BUILD_DIR)/mla_attn_fp8_multiseq_dsareal_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mla_attn_fp8_multiseq_dsareal"; exit 1; }
 	@# mla_attn_fp8 SWIN-vs-S_MAX decouple (task B7): attention scratch sized by SWIN (top-K window),
 	@# key indices still span S_MAX. Proves SWIN=8 out === SWIN=64(=S_MAX) out bit-exact at S_MAX=64.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_fp8_swin_decouple_sim test/mla_attn_fp8_swin_decouple_tb.v src/mla_attn_fp8.v src/glm_matmul_fp8.v src/glm_matmul_pipe.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
