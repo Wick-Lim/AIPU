@@ -228,6 +228,11 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_model_fp8_multiseq_sim test/glm_model_fp8_multiseq_tb.v src/glm_model_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
 	@printf '[%s] ' "glm_model_fp8(multi-seq)"; $(VVP) $(BUILD_DIR)/glm_model_fp8_multiseq_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_model_fp8_multiseq"; exit 1; }
+	@# glm_model_fp8 MULTI-SEQ SCALE-UP (A2): B=4 DIFFERENT sequences batched in ONE forward --
+	@# all 4 rows per-row bit-exact vs per-seq PE_M=1; dense + sparse; query-side weights shared (~52%).
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_model_fp8_multiseq4_sim test/glm_model_fp8_multiseq4_tb.v src/glm_model_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
+	@printf '[%s] ' "glm_model_fp8(multi-seq B=4)"; $(VVP) $(BUILD_DIR)/glm_model_fp8_multiseq4_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_model_fp8_multiseq4"; exit 1; }
 	@# mtp_head_fp8: FP8 multi-token-prediction head (W_proj+decoder_block_fp8 FP8, bf16 LM head + norms).
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mtp_head_fp8_sim test/mtp_head_fp8_tb.v src/mtp_head_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
 	@printf '[%s] ' "mtp_head_fp8"; $(VVP) $(BUILD_DIR)/mtp_head_fp8_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \

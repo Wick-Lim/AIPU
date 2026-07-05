@@ -79,8 +79,10 @@ one thing the slice cannot.
   sparse (`glm_fp8_soc_ms_tb`, 3 cases). **Remains:** a REAL per-layer KV data path (the pager
   serving the model's per-layer KV vs today's per-(seq,layer) stub + window model); per-seq DSA
   *prefetch* for `DSA_REAL_IDX=1` (real query-dependent IndexShare) under multi-seq; real draft
-  chaining; full B-coverage for batched_moe; scale-up (B>2 is general by construction — the union
-  build loops over PE_M — but untested at B=4+) + real-checkpoint validation (GPU host).
+  chaining; full B-coverage for batched_moe; **scale-up VERIFIED at B=4** (`glm_model_fp8_multiseq4_tb`:
+  4 different sequences batched in one forward, all 4 rows per-row bit-exact vs per-seq PE_M=1, dense
+  AND sparse, ~52% fewer attn-weight beats than 4 separate decodes); real-checkpoint validation
+  (the standing P1.1 gate — needs a GPU host) remains.
 
 ### P2 — Productize the RTL (robustness)
 - P2.1 ECC on DDR5 + Flash; error detection / correction / retry / recovery paths.
