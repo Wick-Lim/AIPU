@@ -138,6 +138,18 @@ module mla_attn_fp8 #(
     //   in extent: the shared DSA/score/cache pass covers max(s_len_r), and each
     //   row's scores for keys j>=s_len_r are masked to bf16 -inf before its softmax.
     parameter integer PER_ROW_SLEN = 0,
+    // PER_ROW_SEQ=0 (default): all PE_M rows share ONE KV sequence (the SHARED-
+    //   CONTEXT assumption below); seq_vec IGNORED, kc_seq tied 0 -- byte-IDENTICAL
+    //   to the pre-multi-seq datapath.  =1: each row r belongs to its OWN sequence
+    //   seq_r (row 0 = seq 0; rows 1.. = seq_vec slices), so B DIFFERENT sequences
+    //   are batched TOGETHER -- they SHARE the weight/projection fetch (W_uk/W_uv
+    //   etc. are seq-independent) but each attends its OWN KV window.  Because rows
+    //   in different sequences never share a key, the union-skip merge is replaced
+    //   by a PER-ROW-SLOT assignment (each selected key gets its own union slot,
+    //   tagged with union_seq) and kc_seq routes each fetch to the right window.
+    //   REQUIRES SWIN >= PE_M*TOPK (worst-case no-dedup union) and, for now,
+    //   DSA_REAL_IDX=0 (the shared-prefix kidx_buf prefetch is not yet per-seq).
+    parameter integer PER_ROW_SEQ = 0,
     // DSA_REAL_IDX=0 (default): the dsa_indexer is driven with ZERO key index
     //   vectors (dsa_kidx<=0), so every key scores 0 and top-K keeps keys
     //   0..min(S,TOPK)-1 by lower-index tie-break -- Q-INDEPENDENT (byte-identical
@@ -193,6 +205,7 @@ module mla_attn_fp8 #(
     // ---- derived (do NOT override) ----
     parameter integer QK_DIM    = NOPE + ROPE,
     parameter integer IDXW      = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
+    parameter integer SEQW      = (PE_M  <= 1) ? 1 : $clog2(PE_M),   // per-row sequence-id width (PER_ROW_SEQ; <=PE_M distinct seqs)
     parameter integer SWINW     = (SWIN  <= 1) ? 1 : $clog2(SWIN),   // union-slot index width (addresses SWIN-sized scratch)
     parameter integer HQK       = H_HEADS * QK_DIM,   // q width
     parameter integer HNOPE     = H_HEADS * NOPE,     // k_nope width
@@ -238,6 +251,11 @@ module mla_attn_fp8 #(
     //   `s_len`.  With the default PER_ROW_SLEN=0 this port is ignored and every row
     //   shares `s_len`, so an unconnected s_len_vec is SAFE (shared-extent, byte-id).
     input  wire [(IDXW+1)*PE_M-1:0]    s_len_vec,  // per-row causal extents (rows 1..; row 0 = `s_len`)
+    // PER-ROW SEQUENCE ids (ONLY consulted when PER_ROW_SEQ=1): row r attends the
+    //   KV window of sequence seq_vec[SEQW*r +: SEQW] (row 0 always = seq 0).  With
+    //   the default PER_ROW_SEQ=0 this port is ignored (all rows share seq 0), so an
+    //   unconnected seq_vec is SAFE (shared-seq, byte-identical).
+    input  wire [SEQW*PE_M-1:0]        seq_vec,    // per-row sequence ids (rows 1..; row 0 = seq 0)
 
     // ---- x input (latched at start) -- PE_M rows, row-major packed ----
     //   row r element k = x_vec[16*(MODEL_DIM*r + k) +: 16]
@@ -251,9 +269,11 @@ module mla_attn_fp8 #(
     input  wire [PE_N*8-1:0]           w_col,      // PE_N FP8 E4M3 weight lanes
     input  wire [16*PE_N*NB-1:0]       w_scale,    // bf16 block scales (sel,grp)
 
-    // ---- cache read (past-key latents from caller's KV cache) -- SHARED across rows ----
+    // ---- cache read (past-key latents from caller's KV cache) -- SHARED across rows,
+    //      EXCEPT kc_seq which (PER_ROW_SEQ=1) selects the fetched key's sequence WINDOW ----
     output reg                         kc_req,
     output reg  [IDXW-1:0]             kc_idx,     // requested causal key j
+    output reg  [SEQW-1:0]             kc_seq,     // PER_ROW_SEQ=1: key j's sequence window (else 0)
     input  wire [KV_LORA*16-1:0]       kc_ckv,     // cached c_kv[j]   (bf16)
     input  wire [ROPE*16-1:0]          kc_krope,   // cached k_rope[j] (bf16, roped)
     input  wire                        kc_valid,
@@ -303,6 +323,7 @@ module mla_attn_fp8 #(
     reg [POSW*PE_M-1:0] pos_qr;                        // PER-ROW query positions (latched): row0=pos, rows=pos_vec
     reg [IDXW:0]   s_reg;                              // SHARED S causal keys latched = max(s_len_r) (KV prefix / DSA / score / cache extent)
     reg [(IDXW+1)*PE_M-1:0] slen_r;                    // PER-ROW causal extents (latched): row0=s_len, rows=s_len_vec (PER_ROW_SLEN=1) else all=s_len
+    reg [SEQW*PE_M-1:0] seq_qr;                        // PER-ROW sequence ids (latched): row0=0, rows=seq_vec (PER_ROW_SEQ=1) else all 0
 
     reg [15:0] qlora     [0:PE_M-1][0:Q_LORA-1];       // x*W_dq        (per row)
     reg [15:0] qlora_n   [0:PE_M-1][0:Q_LORA-1];       // RMSNorm(qlora)(per row)
@@ -364,6 +385,12 @@ module mla_attn_fp8 #(
     reg [IDXW:0]   sel_cnt_r  [0:PE_M-1];             // per-row valid count = min(slen_r,TOPK)
     reg [IDXW-1:0] union_list [0:S_MAX-1];            // distinct keys across all rows (ascending); values span full S_MAX
     reg [IDXW:0]   u_cnt;                             // union size == #distinct keys fetched once (<= SWIN)
+    // PER_ROW_SEQ=1: the sequence WINDOW of each union slot's key (slot -> seq).
+    //   In multi-seq mode the union build assigns one slot PER (row,selected-key)
+    //   -- no cross-seq dedup -- so kc_seq=union_seq[ksel] routes each fetch to the
+    //   right KV window.  Tied 0 / unused when PER_ROW_SEQ=0 (byte-identical).
+    //   REQUIRES S_MAX >= PE_M*TOPK (union depth) and SWIN >= PE_M*TOPK (scratch).
+    reg [SEQW-1:0] union_seq  [0:S_MAX-1];
     // COMPACT SCRATCH SLOT MAP (B7): rowslot2union[r][i] = the UNION SLOT (0..u_cnt-1)
     //   holding row r's OWN selected key sel_list_r[r][i].  Built in S_UNION beside
     //   union_list.  scores/vstore are union-slot-indexed, so the read side converts
@@ -417,6 +444,18 @@ module mla_attn_fp8 #(
             if (slen_next[(IDXW+1)*sl_r +: (IDXW+1)] > s_max_next)
                 s_max_next = slen_next[(IDXW+1)*sl_r +: (IDXW+1)];
         end
+    end
+
+    // PER-ROW SEQUENCE resolve (combinational; latched at start).  Row 0 = seq 0;
+    //   rows 1.. take seq_vec slice iff PER_ROW_SEQ=1, else 0.  PER_ROW_SEQ=0 ->
+    //   every row = seq 0 -> byte-identical (seq folds away, kc_seq stays 0).
+    reg [SEQW*PE_M-1:0] seq_next;
+    integer             sq_r;
+    always @* begin
+        for (sq_r = 0; sq_r < PE_M; sq_r = sq_r + 1)
+            seq_next[SEQW*sq_r +: SEQW] =
+                ((sq_r == 0) || (PER_ROW_SEQ == 0)) ? {SEQW{1'b0}}
+                                                    : seq_vec[SEQW*sq_r +: SEQW];
     end
 
     //========================================================================
@@ -782,10 +821,11 @@ module mla_attn_fp8 #(
             busy       <= 1'b0;
             done       <= 1'b0;
             out        <= {MODEL_DIM*16*PE_M{1'b0}};
-            kc_req     <= 1'b0; kc_idx <= {IDXW{1'b0}};
+            kc_req     <= 1'b0; kc_idx <= {IDXW{1'b0}}; kc_seq <= {SEQW{1'b0}};
             pos_qr     <= {POSW*PE_M{1'b0}};
             s_reg      <= {(IDXW+1){1'b0}};
             slen_r     <= {((IDXW+1)*PE_M){1'b0}};
+            seq_qr     <= {SEQW*PE_M{1'b0}};
             rnq_start  <= 1'b0; rnk_start <= 1'b0;
             rnq_x_valid<= 1'b0; rnq_g_valid <= 1'b0;
             rnk_x_valid<= 1'b0; rnk_g_valid <= 1'b0;
@@ -936,6 +976,8 @@ module mla_attn_fp8 #(
                     //   the shared DSA/score/cache pass covers every row's keys.
                     s_reg  <= s_max_next;
                     slen_r <= slen_next;
+                    // latch PER-ROW sequence ids (PER_ROW_SEQ=1; else all 0 -> byte-id).
+                    seq_qr <= seq_next;
                     for (rr=0; rr<PE_M; rr=rr+1)
                         for (s_i=0; s_i<MODEL_DIM; s_i=s_i+1)
                             xbuf[rr][s_i] <= x_vec[16*(MODEL_DIM*rr + s_i) +: 16];
@@ -1179,23 +1221,45 @@ module mla_attn_fp8 #(
             //   the shared selection in the same order and the slot map is the identity
             //   -> byte-identical to the pre-B7 S_MAX-key-indexed scratch.
             S_UNION: begin
-                un_cnt = {(IDXW+1){1'b0}};
-                for (uk = 0; uk < S_MAX; uk = uk + 1) begin
-                    un_pres = 1'b0;
-                    // record, for EVERY (row,row-slot) that selected key uk, the
-                    //   union slot un_cnt this key is about to occupy (blocking un_cnt
-                    //   == #distinct present keys with value < uk == this key's slot).
+                if (PER_ROW_SEQ == 0) begin
+                    // SHARED-SEQ (default, byte-identical): merge identical key
+                    //   INDICES across rows into one ascending distinct-key list.
+                    un_cnt = {(IDXW+1){1'b0}};
+                    for (uk = 0; uk < S_MAX; uk = uk + 1) begin
+                        un_pres = 1'b0;
+                        // record, for EVERY (row,row-slot) that selected key uk, the
+                        //   union slot un_cnt this key is about to occupy (blocking un_cnt
+                        //   == #distinct present keys with value < uk == this key's slot).
+                        for (ur = 0; ur < PE_M; ur = ur + 1)
+                            for (up = 0; up < TOPK; up = up + 1)
+                                if ((up[IDXW:0] < sel_cnt_r[ur]) &&
+                                    (sel_list_r[ur][up] == uk[IDXW-1:0])) begin
+                                    un_pres = 1'b1;
+                                    rowslot2union[ur][up] <= un_cnt[SWINW-1:0];
+                                end
+                        if (un_pres) begin
+                            union_list[un_cnt[IDXW-1:0]] <= uk[IDXW-1:0];
+                            un_cnt = un_cnt + 1'b1;
+                        end
+                    end
+                end else begin
+                    // MULTI-SEQ (PER_ROW_SEQ=1): rows are DIFFERENT sequences, so a
+                    //   key INDEX shared by two rows is two DIFFERENT physical keys
+                    //   (different windows) and must NOT merge.  Assign each (row,
+                    //   selected key) its OWN union slot, tagged with the row's seq;
+                    //   kc_seq=union_seq[slot] then routes each fetch to the right
+                    //   window.  SWIN,S_MAX >= PE_M*TOPK guarantee slot room.  The
+                    //   downstream scores/vstore/softmax/context are already union-
+                    //   slot-indexed, so they work unchanged.
+                    un_cnt = {(IDXW+1){1'b0}};
                     for (ur = 0; ur < PE_M; ur = ur + 1)
                         for (up = 0; up < TOPK; up = up + 1)
-                            if ((up[IDXW:0] < sel_cnt_r[ur]) &&
-                                (sel_list_r[ur][up] == uk[IDXW-1:0])) begin
-                                un_pres = 1'b1;
-                                rowslot2union[ur][up] <= un_cnt[SWINW-1:0];
+                            if (up[IDXW:0] < sel_cnt_r[ur]) begin
+                                union_list[un_cnt[IDXW-1:0]] <= sel_list_r[ur][up];
+                                union_seq [un_cnt[IDXW-1:0]] <= seq_qr[SEQW*ur +: SEQW];
+                                rowslot2union[ur][up]        <= un_cnt[SWINW-1:0];
+                                un_cnt = un_cnt + 1'b1;
                             end
-                    if (un_pres) begin
-                        union_list[un_cnt[IDXW-1:0]] <= uk[IDXW-1:0];
-                        un_cnt = un_cnt + 1'b1;
-                    end
                 end
                 u_cnt <= un_cnt;
                 ksel  <= {(IDXW+1){1'b0}};
@@ -1207,6 +1271,10 @@ module mla_attn_fp8 #(
                 case (kst)
                     K_RDREQ: begin
                         kc_idx  <= union_list[ksel[IDXW-1:0]];   // ksel indexes the UNION
+                        // PER_ROW_SEQ=1: route this fetch to its key's sequence window
+                        //   (folds to 0 -> byte-identical when PER_ROW_SEQ=0).
+                        kc_seq  <= (PER_ROW_SEQ == 0) ? {SEQW{1'b0}}
+                                                      : union_seq[ksel[IDXW-1:0]];
                         kc_req  <= 1'b1;
                         kst     <= K_RDWAIT;
                     end

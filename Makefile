@@ -195,6 +195,12 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_fp8_sparse_perrow_sim test/mla_attn_fp8_sparse_perrow_tb.v src/mla_attn_fp8.v src/glm_matmul_fp8.v src/glm_matmul_pipe.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
 	@printf '[%s] ' "mla_attn_fp8(sparse-perrow)"; $(VVP) $(BUILD_DIR)/mla_attn_fp8_sparse_perrow_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: mla_attn_fp8_sparse_perrow"; exit 1; }
+	@# mla_attn_fp8 MULTI-SEQ (PER_ROW_SEQ=1, A2): B DIFFERENT sequences batched -- each row attends
+	@# its OWN KV window (routed by kc_seq) yet SHARES the query-side weight fetch. Bit-exact vs
+	@# per-seq PE_M=1 goldens + sequence-routing + weight amortization (ms beats < 2x single).
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_fp8_multiseq_sim test/mla_attn_fp8_multiseq_tb.v src/mla_attn_fp8.v src/glm_matmul_fp8.v src/glm_matmul_pipe.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
+	@printf '[%s] ' "mla_attn_fp8(multi-seq)"; $(VVP) $(BUILD_DIR)/mla_attn_fp8_multiseq_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mla_attn_fp8_multiseq"; exit 1; }
 	@# mla_attn_fp8 SWIN-vs-S_MAX decouple (task B7): attention scratch sized by SWIN (top-K window),
 	@# key indices still span S_MAX. Proves SWIN=8 out === SWIN=64(=S_MAX) out bit-exact at S_MAX=64.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_fp8_swin_decouple_sim test/mla_attn_fp8_swin_decouple_tb.v src/mla_attn_fp8.v src/glm_matmul_fp8.v src/glm_matmul_pipe.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
