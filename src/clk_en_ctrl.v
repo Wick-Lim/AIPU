@@ -90,6 +90,11 @@ module clk_en_ctrl #(
     // ---- global no-advance windows (whole die) ----
     input  wire                       boot_active,  // model still loading -> idle
     input  wire                       stall,        // blocked on a Flash fetch -> idle
+    input  wire                       throttle,     // DVFS/eco duty-cycle: force idle this
+                                                    // cycle even if work is ready (run the
+                                                    // die at f/N -- peak-power/thermal cap;
+                                                    // byte-identical: identical to a stall).
+                                                    // Tie 0 for no throttle (default behavior).
 
     // ---- per-cluster activity hints ----
     input  wire [N_CLUSTER-1:0]       has_pending_work,
@@ -103,8 +108,11 @@ module clk_en_ctrl #(
     output wire [N_CLUSTER*CNT_W-1:0] gated_cycles
 );
 
-    // global blocked window: the whole die cannot advance
-    wire blocked = boot_active | stall;
+    // global blocked window: the whole die cannot advance.  `throttle` is the DVFS/eco
+    // duty-cycle term -- treated EXACTLY like `stall` (the die pauses this cycle and
+    // resumes bit-exact next active cycle), so it inherits the stall path's proven
+    // byte-identicality.  With throttle tied 0 the term vanishes (default behavior).
+    wire blocked = boot_active | stall | throttle;
 
     // per-cluster hysteresis state + gated-cycle counters
     reg              en_reg   [0:N_CLUSTER-1];

@@ -54,6 +54,8 @@ module clk_en_ctrl_tb;
         .rst                     (rst),
         .boot_active             (boot_active),
         .stall                   (stall),
+        .throttle                (1'b0),           // no DVFS throttle in this TB
+
         .has_pending_work        (has_pending_work),
         .input_valid             (input_valid),
         .output_ready_downstream (output_ready_downstream),
