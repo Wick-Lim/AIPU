@@ -197,7 +197,7 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 
 | Decision | Options | Recommendation |
 |---|---|---|
-| **Power point** | ~100 W fast (self-powered) · ~40 W quiet (throttled, slower) | ship **self-powered ~90 W** (interactive tok/s); offer a quiet/eco mode |
+| **Power point** | ~100 W fast (self-powered) · ~40 W quiet (throttled, slower) | ship **self-powered ~90 W** (interactive tok/s); offer a quiet/eco mode — **the RTL knob exists** (`clk_throttle` runs the die f/div, byte-identical, [`LOW_POWER.md`](LOW_POWER.md) §4) |
 | **Power delivery** | own PSU/barrel · USB-PD EPR 240 W · bundled PD brick | **own DC input** (EPR host+cable support is still rare); USB-C = data |
 | **FPGA class** | mid FPGA (~$0.5–2 k) · data-center card (~$3–8 k) | **decided by D0.2 measurement** — the pivotal cost driver |
 | **Model updates** | Flash re-flash tool · sealed | **field-updatable** (GLM ships point releases) |
