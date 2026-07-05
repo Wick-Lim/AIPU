@@ -92,12 +92,14 @@ INTER_MOE=2048/INTER_DENSE=12288, TOPK_ATTN=2048) elaborated the **whole hierarc
   ports — expected), ~~4122 SELRANGE~~ + 7 WIDTHCONCAT (the S_MAX≪TOPK_ATTN choice + wide
   reset fills), 7 WIDTHEXPAND + 6 WIDTHTRUNC (config-independent style lints).
 
-> **UPDATE (SELRANGE fixed, byte-identical):** the 4122 SELRANGE were subsequently cleared
-> to **10** (99.76 %) — the swiglu/moe_router exponent-max-tree pad leaves now clamp their
-> (discarded) out-of-range read index, and `mla_attn_fp8` uses `SWIN=min(S_MAX,TOPK)` (the
-> tight bound; also shrinks the full-config scratch). Byte-identical: `glm_model_fp8_tb`
-> `{4,31,20}`, swiglu 1024, moe_router 185, mla 7 — all unchanged. The residual 10 are the
-> intricate mla union-slot indices (benign; verilator still exit 0). See the `fix(lint)` commit.
+> **UPDATE (SELRANGE fully cleared, byte-identical):** the 4122 SELRANGE are now **0**.
+> (a) the swiglu/moe_router exponent-max-tree pad leaves clamp their (discarded) out-of-range
+> read index; (b) `mla_attn_fp8` uses `SWIN=min(S_MAX,TOPK)` (the tight bound; also shrinks the
+> full-config scratch); (c) the mla union-slot indices `rowslot2union[rr][X[TKW-1:0]]` slice X
+> to `SWINW` (the row-slot is `<= SWIN-1`, so it fits) instead of the over-wide `TKW`. All
+> byte-identical: `glm_model_fp8_tb` `{4,31,20}` (gworst_rel 0.00689655), swiglu 1024, moe_router
+> 185, mla 7 — unchanged. Only benign style lints remain (PINMISSING dangling wrapper ports; a
+> few WIDTH* on the huge full-config vectors). See the two `fix(lint)` commits.
 
 This is the authoritative full-config elaboration result: **the parameterization threads
 cleanly at real 753B dims — no width overflow, no unresolved/negative-width parameter, no
