@@ -279,6 +279,11 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/kv_cache_pager_ecc_sim test/kv_cache_pager_ecc_tb.v src/kv_cache_pager.v src/ecc_secded.v
 	@printf '[%s] ' "kv_cache_pager(ECC)"; $(VVP) $(BUILD_DIR)/kv_cache_pager_ecc_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: kv_cache_pager_ecc"; exit 1; }
+	@# kv_cache_pager(NSEQ>1) (P1.3 per-row KV): NSEQ independent ring windows -- no
+	@# cross-seq slot collision, independent per-seq eviction, flash_seq cold keying.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/kv_cache_pager_multiseq_sim test/kv_cache_pager_multiseq_tb.v src/kv_cache_pager.v
+	@printf '[%s] ' "kv_cache_pager(NSEQ>1)"; $(VVP) $(BUILD_DIR)/kv_cache_pager_multiseq_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: kv_cache_pager_multiseq"; exit 1; }
 	@# ddr5_xbar: N-channel banked DDR5 read fabric (address striping -> ~Nx aggregate bandwidth).
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/ddr5_xbar_sim test/ddr5_xbar_tb.v src/ddr5_xbar.v
 	@printf '[%s] ' "ddr5_xbar"; $(VVP) $(BUILD_DIR)/ddr5_xbar_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \

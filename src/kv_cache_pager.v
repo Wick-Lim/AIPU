@@ -20,6 +20,17 @@
 //   OPAQUE bit vectors here -- the pager only ADDRESSES / MOVES them, never does
 //   any floating-point math on their contents.
 //
+//   MULTI-SEQUENCE (NSEQ>1): the pager holds NSEQ INDEPENDENT ring windows, one
+//   per concurrent sequence / batch lane, so B sequences at DIFFERENT context
+//   lengths can share one weight fetch (continuous batching -- the KV-storage
+//   side of per-row batched decode).  append_seq / gather_seq pick the sequence;
+//   element (seq,slot) lives at ring[seq*RESIDENT+slot]; each sequence has its
+//   OWN append counter + resident window + eviction; cold fetches carry flash_seq
+//   so the backing store keys (seq,pos).  NSEQ=1 (default) is byte-IDENTICAL to
+//   the original single-sequence pager (seq selects forced to 0, never read).
+//   The description below is written for one sequence; with NSEQ>1 it applies
+//   independently to each.
+//
 //----------------------------------------------------------------------------
 // APPEND  (write the newest token's latent at the ring head)
 //   append_valid pulses append_row in.  The row is written to ring slot
@@ -66,10 +77,21 @@ module kv_cache_pager #(
     // one [c_kv | k_rope] latent row width.  Default = mla_attn_fp8's row:
     // (KV_LORA=32 + ROPE=16) * 16 bits = 768.
     parameter integer ROW_BITS  = 768,
-    parameter integer RESIDENT  = 32,    // ring capacity in rows (POWER OF TWO)
+    parameter integer RESIDENT  = 32,    // ring capacity in rows PER SEQUENCE (POWER OF TWO)
     parameter integer S_MAX     = 1024,  // logical context capacity (positions)
     parameter integer POSW      = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
     parameter integer FLASH_LAT = 8,     // cold-row fetch latency (doc; TB models it)
+    // NSEQ=1 (default): SINGLE-SEQUENCE ring -- storage + behaviour byte-IDENTICAL
+    //   to the pre-multi-seq pager.  The seq-select ports (append_seq/gather_seq)
+    //   are NOT read (forced to constant 0 internally), so an existing caller that
+    //   leaves them unconnected is SAFE (no X-index) -- same guard idiom as
+    //   PER_ROW_POS=0 in mla_attn_fp8.  NSEQ>1: NSEQ INDEPENDENT ring windows (one
+    //   per batch lane / concurrent sequence), each with its OWN append counter and
+    //   resident window, addressed at seq*RESIDENT+slot.  This is the KV-storage
+    //   side of per-row (multi-seq) batched decode -- continuous batching where B
+    //   sequences at DIFFERENT context lengths share one weight fetch.  Cold fetches
+    //   carry flash_seq so the backing store addresses (seq,pos).
+    parameter integer NSEQ      = 1,
     // ECC=0 (default): storage + behaviour byte-IDENTICAL to the un-ECC'd pager.
     // ECC=1: the resident ring stores lane-partitioned SECDED codewords instead
     //        of raw rows -- encode on append, decode+correct on resident gather,
@@ -77,7 +99,9 @@ module kv_cache_pager #(
     //        DBU was detected).  See the ECC section + docs/P2_MEMORY_MAP.md.
     parameter integer ECC       = 0,
     // ---- derived (do NOT override) ----
-    parameter integer RPTRW     = (RESIDENT <= 1) ? 1 : $clog2(RESIDENT)
+    parameter integer RPTRW     = (RESIDENT <= 1) ? 1 : $clog2(RESIDENT),
+    parameter integer SEQW      = (NSEQ <= 1) ? 1 : $clog2(NSEQ),
+    parameter integer RADDRW    = (NSEQ*RESIDENT <= 1) ? 1 : $clog2(NSEQ*RESIDENT)
 )(
     input  wire                 clk,
     input  wire                 rst,          // synchronous, ACTIVE-HIGH
@@ -85,10 +109,12 @@ module kv_cache_pager #(
     // ---- APPEND : write newest token latent at the ring head ----
     input  wire                 append_valid,
     input  wire [ROW_BITS-1:0]  append_row,
+    input  wire [SEQW-1:0]      append_seq,    // NSEQ>1: which sequence's ring (else ignored, =0)
 
     // ---- GATHER : attention read path (satisfies mla kc_* protocol) ----
     input  wire                 gather_valid,
     input  wire [POSW-1:0]      gather_idx,    // DSA-selected logical row index
+    input  wire [SEQW-1:0]      gather_seq,    // NSEQ>1: which sequence's ring (else ignored, =0)
     output reg                  row_valid,     // 1-cycle pulse: row_out is valid
     output reg  [ROW_BITS-1:0]  row_out,
     output reg                  busy,          // high while a cold Flash fetch drains
@@ -96,6 +122,7 @@ module kv_cache_pager #(
     // ---- FLASH overflow fetch (TB/DMA models backing store + latency) ----
     output reg                  flash_req,     // held high until flash_done
     output reg  [POSW-1:0]      flash_idx,     // cold logical row index to fetch
+    output reg  [SEQW-1:0]      flash_seq,     // NSEQ>1: cold row's sequence (backing store keys (seq,idx)); =0 when NSEQ=1
     input  wire                 flash_done,    // 1-cycle: flash_row is ready
     input  wire [ROW_BITS-1:0]  flash_row,     // fetched cold row
 
@@ -137,13 +164,40 @@ module kv_cache_pager #(
     localparam integer RING_W = (ECC != 0) ? (NLANES * CODE_W) : ROW_BITS;
 
     //------------------------------------------------------------------------
-    // RING storage + append counter.  (ECC=1 stores codewords, see above.)
+    // RING storage + append counters.  NSEQ independent windows: element
+    // (seq,slot) lives at ring[seq*RESIDENT+slot]; count[seq] is that sequence's
+    // append head.  NSEQ=1 collapses to a single [0:RESIDENT-1] ring + count[0]
+    // (byte-identical).  (ECC=1 stores codewords per element, see above.)
     //------------------------------------------------------------------------
-    reg [RING_W-1:0]   ring [0:RESIDENT-1];
-    reg [POSW-1:0]     count;        // number of rows appended so far
-    integer            i;
+    reg [RING_W-1:0]    ring  [0:NSEQ*RESIDENT-1];
+    // per-sequence append heads, PACKED (seq at count[seq*POSW +: POSW]).  A packed
+    // vector (NOT an unpacked [0:NSEQ-1] memory) so yosys' SMT2 backend maps it to
+    // plain FFs -- and for NSEQ=1 it IS a single [POSW-1:0] reg, gate-identical to
+    // the pre-multi-seq scalar counter.
+    reg [NSEQ*POSW-1:0] count;
+    integer             i;
 
-    assign append_count = count;
+    // Seq selects: FORCED to 0 when NSEQ=1 so the (possibly unconnected) seq ports
+    // are NEVER read -> no X-index, byte-identical (same guard as PER_ROW_POS=0).
+    wire [SEQW-1:0]   a_seq   = (NSEQ <= 1) ? {SEQW{1'b0}} : append_seq;
+    wire [SEQW-1:0]   g_seq   = (NSEQ <= 1) ? {SEQW{1'b0}} : gather_seq;
+    wire [POSW-1:0]   a_count = count[a_seq*POSW +: POSW];  // append head of the append seq
+    wire [POSW-1:0]   g_count = count[g_seq*POSW +: POSW];  // append head of the gather seq
+
+    // Ring element addresses.  NSEQ=1: no seq offset (identical to the single-seq
+    // pager).  NSEQ>1: seq*RESIDENT + slot.
+    wire [RADDRW-1:0] a_addr, g_addr;
+    generate
+        if (NSEQ <= 1) begin : g_addr1
+            assign a_addr = a_count[RPTRW-1:0];
+            assign g_addr = gather_idx[RPTRW-1:0];
+        end else begin : g_addrN
+            assign a_addr = a_seq*RESIDENT + a_count[RPTRW-1:0];
+            assign g_addr = g_seq*RESIDENT + gather_idx[RPTRW-1:0];
+        end
+    endgenerate
+
+    assign append_count = a_count;   // NSEQ=1 -> count[0] (byte-identical)
 
     //------------------------------------------------------------------------
     // ENCODE (append) / DECODE+CORRECT (resident gather) datapath.
@@ -159,7 +213,7 @@ module kv_cache_pager #(
     wire [ROW_BITS-1:0] dec_row;
     wire                dec_serr, dec_derr;
     // combinational read of the addressed resident slot (pre-edge value).
-    wire [RING_W-1:0]   rd_word = ring[gather_idx[RPTRW-1:0]];
+    wire [RING_W-1:0]   rd_word = ring[g_addr];
 
     genvar j;
     generate
@@ -208,13 +262,13 @@ module kv_cache_pager #(
         end
     endgenerate
 
-    // resident window low bound (combinational from the counter).
-    wire over = (count > RESIDENT[POSW-1:0]);
+    // resident window low bound for the GATHER sequence (comb from its counter).
+    wire over = (g_count > RESIDENT[POSW-1:0]);
     assign overflowed  = over;
-    assign resident_lo = over ? (count - RESIDENT[POSW-1:0]) : {POSW{1'b0}};
+    assign resident_lo = over ? (g_count - RESIDENT[POSW-1:0]) : {POSW{1'b0}};
 
-    // residency decode for the incoming gather index.
-    wire g_resident = (gather_idx < count) && (gather_idx >= resident_lo);
+    // residency decode for the incoming gather index (within its sequence).
+    wire g_resident = (gather_idx < g_count) && (gather_idx >= resident_lo);
 
     //------------------------------------------------------------------------
     // GATHER FSM : IDLE serves resident rows in 1 cycle and launches cold
@@ -225,16 +279,17 @@ module kv_cache_pager #(
 
     always @(posedge clk) begin
         if (rst) begin
-            count     <= {POSW{1'b0}};
             row_valid <= 1'b0;
             row_out   <= {ROW_BITS{1'b0}};
             busy      <= 1'b0;
             flash_req <= 1'b0;
             flash_idx <= {POSW{1'b0}};
+            flash_seq <= {SEQW{1'b0}};
             g_state   <= G_IDLE;
             ecc_serr  <= 1'b0;
             ecc_derr  <= 1'b0;
-            for (i = 0; i < RESIDENT; i = i + 1)
+            count <= {(NSEQ*POSW){1'b0}};             // all per-seq heads = 0
+            for (i = 0; i < NSEQ*RESIDENT; i = i + 1) // NSEQ=1 -> RESIDENT slots
                 ring[i] <= {RING_W{1'b0}};
         end else begin
             // row_valid is a 1-cycle pulse -> default low every cycle.
@@ -249,8 +304,8 @@ module kv_cache_pager #(
             // SECDED codewords of append_row when ECC=1.
             //----------------------------------------------------------------
             if (append_valid) begin
-                ring[count[RPTRW-1:0]] <= enc_word;
-                count                  <= count + 1'b1;
+                ring[a_addr]              <= enc_word;
+                count[a_seq*POSW +: POSW] <= a_count + 1'b1;
             end
 
             //----------------------------------------------------------------
@@ -270,8 +325,11 @@ module kv_cache_pager #(
                             ecc_derr  <= ecc_derr | dec_derr;
                         end else begin
                             // cold path: issue + hold a Flash fetch, go busy.
+                            // flash_seq tags the cold row's sequence so the
+                            // backing store keys (seq,idx); =0 when NSEQ=1.
                             flash_req <= 1'b1;
                             flash_idx <= gather_idx;
+                            flash_seq <= g_seq;
                             busy      <= 1'b1;
                             g_state   <= G_FLASH;
                         end
@@ -291,10 +349,12 @@ module kv_cache_pager #(
         end
     end
 
-    // keep the documentation localparam observably alive (no hardware effect).
+    // keep the documentation localparam + (NSEQ=1 dead-code) seq ports observably
+    // alive (no hardware effect).  When NSEQ=1 the ternary forces a_seq/g_seq to 0
+    // and append_seq/gather_seq are eliminated -> touch them here so lint is quiet.
     /* verilator lint_off UNUSEDPARAM */
     /* verilator lint_off UNUSEDSIGNAL */
-    wire _unused_doc = (FLASH_LAT_DOC == 0);
+    wire _unused_doc = (FLASH_LAT_DOC == 0) ^ (^{append_seq, gather_seq});
     /* verilator lint_on UNUSEDSIGNAL */
     /* verilator lint_on UNUSEDPARAM */
 
