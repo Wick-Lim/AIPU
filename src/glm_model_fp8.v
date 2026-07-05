@@ -83,6 +83,8 @@ module glm_model_fp8 #(
     parameter integer LM_TN      = 4,
     // ---- PE_M : query tokens decoded in lockstep (batch B) ----
     parameter integer PE_M       = 1,
+    parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions via pos_vec (P1.3a)
+    parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents via s_len_vec (P1.3d)
     // ====================================================================
     // derived (do NOT override) -- mirror decoder_block_fp8's port-width derivations
     // ====================================================================
@@ -135,7 +137,9 @@ module glm_model_fp8 #(
     output reg                           busy,
     output reg                           done,       // 1-cycle pulse: logits valid
     input  wire [PE_M*TOKW-1:0]          token_id,   // PE_M input tokens to embed
-    input  wire [POSW-1:0]               pos,        // query position (RoPE) -- SHARED
+    input  wire [POSW-1:0]               pos,        // query position (RoPE) -- SHARED (row 0)
+    input  wire [POSW*PE_M-1:0]          pos_vec,    // per-row positions (PER_ROW_POS=1; row0=pos)
+    input  wire [(IDXW+1)*PE_M-1:0]      s_len_vec,  // per-row extents   (PER_ROW_SLEN=1; row0=s_len)
     input  wire [IDXW:0]                 s_len,      // S causal keys (<= S_MAX) -- SHARED
 
     // ---- outputs (PE_M rows, row-major) ----
@@ -244,10 +248,12 @@ module glm_model_fp8 #(
         .V_DIM(V_DIM), .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX),
         .TOPK_ATTN(TOPK_ATTN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
         .N_EXPERT(N_EXPERT), .TOPK(TOPK), .INTER_MOE(INTER_MOE),
-        .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M)
+        .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M),
+        .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN)
     ) u_block (
         .clk(clk), .rst(rst), .start(db_start), .busy(db_busy), .done(db_done),
         .mode(db_mode), .pos(pos), .s_len(s_len),
+        .pos_vec(pos_vec), .s_len_vec(s_len_vec),
         .x_vec(xcur_vec), .y_out(db_y),
         .gn_req(gn_req), .gn_which(gn_which), .gn_idx(gn_idx), .gn_val(gn_val),
         .aw_req(aw_req), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(aw_k),

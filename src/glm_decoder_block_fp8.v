@@ -95,6 +95,8 @@ module glm_decoder_block_fp8 #(
     // ---- model / slice config (small-but-faithful) ----
     parameter integer MODEL_DIM  = 128,
     // ---- mla_attn_fp8 slice params (passed straight through) ----
+    parameter integer PER_ROW_POS = 0,   // 1 = per-row query positions via pos_vec (P1.3a)
+    parameter integer PER_ROW_SLEN= 0,   // 1 = per-row causal extents via s_len_vec (P1.3d)
     parameter integer H_HEADS    = 4,
     parameter integer NOPE       = 16,
     parameter integer ROPE       = 16,
@@ -170,8 +172,10 @@ module glm_decoder_block_fp8 #(
     output reg                          busy,
     output reg                          done,       // 1-cycle pulse: y valid
     input  wire                         mode,       // 0=DENSE FFN, 1=MoE FFN
-    input  wire [POSW-1:0]              pos,        // token position (RoPE) -- SHARED
-    input  wire [IDXW:0]               s_len,      // S causal keys (<= S_MAX) -- SHARED
+    input  wire [POSW-1:0]              pos,        // token position (RoPE) -- SHARED (row 0)
+    input  wire [IDXW:0]               s_len,      // S causal keys (<= S_MAX) -- SHARED (row 0)
+    input  wire [POSW*PE_M-1:0]        pos_vec,    // per-row positions  (PER_ROW_POS=1; row0=pos)
+    input  wire [(IDXW+1)*PE_M-1:0]    s_len_vec,  // per-row extents    (PER_ROW_SLEN=1; row0=s_len)
 
     // ---- residual stream in / out (bf16, PE_M rows row-major) ----
     //   row r element k = x_vec[16*(MODEL_DIM*r + k) +: 16]
@@ -298,10 +302,11 @@ module glm_decoder_block_fp8 #(
         .MODEL_DIM(MODEL_DIM), .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE),
         .V_DIM(V_DIM), .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX),
         .TOPK(TOPK_ATTN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .BLK(BLK),
-        .PE_M(PE_M)
+        .PE_M(PE_M), .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN)
     ) u_attn (
         .clk(clk), .rst(rst), .start(at_start), .busy(at_busy), .done(at_done),
         .pos(pos_q), .s_len(slen_q), .x_vec(nrm_vec),
+        .pos_vec(pos_vec), .s_len_vec(s_len_vec),
         .w_req(aw_req), .w_sel(aw_sel), .w_grp(aw_grp), .w_k(aw_k),
         .w_col(aw_col), .w_scale(aw_scale),
         .kc_req(kc_req), .kc_idx(kc_idx), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
