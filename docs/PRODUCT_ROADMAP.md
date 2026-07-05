@@ -21,14 +21,14 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 
 | Dimension | Prototype (have) | Product (need) |
 |---|---|---|
-| Correctness scope | operator-level bit-exact vs the FP8 contract on **synthetic** weights; argmax 4/31/20 on the slice | the **real 753 GB checkpoint** produces the **real model's tokens** end-to-end |
-| Scale | small faithful slice (MODEL_DIM 128, 6 layers, 8 experts) | full config (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
-| Batching/KV | PE_M batch-widening done on all 4 FP8 wrappers (swiglu/router/mla/mtp), shares pos/s_len/KV (dense-decode regime); grouped MoE **union-skips** to only the selected experts (byte-identical); ÷K is TB-driven; batched_moe covers B=4 | per-position causal KV at production widths; real draft chaining; full B coverage |
+| Correctness scope | operator bit-exact + a **truncated full-model token chain on real weights** (dense→MoE seam, real 256-expert route, DSA threaded, argmax-identical on a real prompt — DSA-IndexShare + fused-expert blockers retired) | the **full 753 GB checkpoint** produces the real model's tokens **at full depth** end-to-end |
+| Scale | small faithful slice (128/6/8); the **full 753B config elaborates clean** (verilator, 0 errors) | full config *simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
+| Batching/KV | PE_M batch on all 4 wrappers; **per-row position/extent now threaded model→decoder→mla** (byte-identical); grouped MoE **union-skips**; ÷K TB-driven; batched_moe B=4 | per-row **KV cache** (multi-seq) at production widths; real draft chaining; full B coverage |
 | Memory | DDR5/Flash/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
-| Verification | bounded BMC + directed TBs at slice | coverage closure, constrained-random regression, gate-level sim, k-induction, production-width formal |
+| Verification | bounded BMC (+ clk_throttle) + directed TBs at slice; **verilator line/toggle/branch coverage** (`make coverage`, 87.8% line merged) | coverage *closure*, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
 | Physical | slice-scale yosys estimates + real sky130 realizability (placement, timing met) | full synth + **FPGA** P&R + timing closure via the vendor flow → **bitstream** (ASIC/tapeout out of scope) |
-| Software | weight-pack tools (ckpt_pack/flash_layout) | host driver, tokenizer, runtime, quant-layout pipeline |
+| Software | weight-pack tools (ckpt_pack/flash_layout); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md)) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
 ---

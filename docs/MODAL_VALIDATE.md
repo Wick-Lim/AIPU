@@ -103,9 +103,11 @@ the same per-token `a_shift`, covering the **dense→MoE transition**.
   `position_embeddings` + float32 blockers were fixed first.
 
 Full write-up + numbers: [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md)
-("Partial-F1" section). Fidelity standing: operator-level → **assembled multi-layer
-FFN on real weights, faithful (borderline-A)**; the full-model token-chain-vs-HF
-(true A) still needs the HF standalone-layer plumbing solved or the full 753B run.
+("Partial-F1" section). Fidelity standing: operator-level → assembled multi-layer FFN →
+**truncated full-model token chain on real weights (incl. the dense→MoE seam, real
+256-expert route), argmax-identical, DSA threaded (A-ish, firmer)**. The DSA-IndexShare
++ fused-expert plumbing blockers are **retired**; full A now needs deeper depth / the
+full 753B run (multi-GPU).
 
 ---
 

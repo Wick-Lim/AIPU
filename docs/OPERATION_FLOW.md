@@ -197,9 +197,10 @@ batching, striping) exists to shrink that second term.
 ## 9. Honest scope
 This is the flow of the **committed slice** (every operator + ratio faithful) plus the
 memory/streaming system that runs the real 753B. What is *modeled* (not silicon): the PHYs, and
-all `[EST]` tok/s/J. Fidelity is operator-bit-exact vs the real checkpoint + assembled-FFN faithful
-(borderline-A); the full-model token-chain-vs-HF and a real FPGA run remain (see
-[`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md), [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)).
+all `[EST]` tok/s/J. Fidelity is operator-bit-exact vs the real checkpoint + a **truncated full-model
+token chain on real weights (dense→MoE seam, real 256-expert route) argmax-identical, DSA threaded
+(A-ish)** — the DSA-IndexShare + fused-expert blockers retired; deeper depth / a real FPGA run remain
+(see [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md), [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)).
 
 ## 10. Compact config (FPGA miniaturization)
 
