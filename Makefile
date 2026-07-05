@@ -508,6 +508,7 @@ formal:
 	$(call run_bmc,ddr5_xbar,,,12)
 	$(call run_bmc,flash_xbar,,,12)
 	$(call run_bmc,boot_loader,,,16)
+	$(call run_bmc,clk_throttle,,,16)
 	$(call run_bmc,spec_decode_seq,,,20)
 	$(call run_bmc,kv_cache_pager,,,16)
 	$(call run_bmc,expert_cache_pf,src/expert_cache_ctrl.v,chparam -set PF_ENABLE 0 expert_cache_pf_fv;,20)
