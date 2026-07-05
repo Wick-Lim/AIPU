@@ -23,7 +23,7 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 |---|---|---|
 | Correctness scope | operator bit-exact + a **truncated full-model token chain on real weights** (dense→MoE seam, real 256-expert route, DSA threaded, argmax-identical on a real prompt — DSA-IndexShare + fused-expert blockers retired) | the **full 753 GB checkpoint** produces the real model's tokens **at full depth** end-to-end |
 | Scale | small faithful slice (128/6/8); the **full 753B config elaborates clean** (verilator, 0 errors) | full config *simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
-| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0; **a batched multi-seq top `glm_fp8_soc_ms` (PE_M=B model + real NSEQ-window pager + host FSM: prefill B seqs → 1 forward → commit B tokens; per-row bit-exact)**; **`DSA_REAL_IDX=1` (query-dependent IndexShare) works under multi-seq via a per-sequence `kidx_buf` pre-fetch**; **a REAL per-layer KV store (`kv_mem`) owned by the top** (host writes per (seq,layer,pos), model reads combinationally) | real draft chaining; full B coverage; scale-up + real-checkpoint |
+| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0; **a batched multi-seq top `glm_fp8_soc_ms` (PE_M=B model + real NSEQ-window pager + host FSM: prefill B seqs → 1 forward → commit B tokens; per-row bit-exact)**; **`DSA_REAL_IDX=1` (query-dependent IndexShare) works under multi-seq via a per-sequence `kidx_buf` pre-fetch**; **a REAL per-layer KV store (`kv_mem`) owned by the top** (host writes per (seq,layer,pos), model reads combinationally); **real draft chaining (`spec_chain_top`) + batched_moe full B-coverage (`make bcov`, B∈{1,2,3,5,8})** | multi-step continuous-batching DECODE LOOP; a resident dense DRAFT model (K_eff↑, needs weights); real-checkpoint (P1.1, GPU) |
 | Memory | DDR5/Flash/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (+ clk_throttle) + directed TBs at slice; **verilator line/toggle/branch coverage** (`make coverage`, 87.8% line merged) | coverage *closure*, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
@@ -83,11 +83,19 @@ one thing the slice cannot.
   **REAL per-layer KV store now lives in the top** — `glm_fp8_soc_ms` OWNS the KV data in `kv_mem`
   (L*NSEQ windows x KV_RESIDENT positions), written by the host prefill/decap per (seq, layer, pos)
   and read combinationally by the model (window = db_layer*NSEQ+kc_seq), replacing the TB stub
-  (verified: all 3 SoC cases pass with kv_mem serving, dense + sparse). **Remains:**
-  real draft chaining; full B-coverage for batched_moe; **scale-up VERIFIED at B=4** (`glm_model_fp8_multiseq4_tb`:
+  (verified: all 3 SoC cases pass with kv_mem serving, dense + sparse).  **batched_moe full
+  B-coverage: DONE** (`make bcov` — B∈{1,2,3,5,8} × routing patterns {same,distinct,random,overlap},
+  each re-proving batched_moe(PE_M=B) == B independent PE_M=1 expert runs BIT-EXACT with every union
+  expert fetched once).  **Real draft chaining: DONE** (`spec_chain_top` — the MTP head runs
+  recurrently on its chain hidden-state `h_mtp` to mint K drafts, then a PE_M=K+1 batched-verify in
+  one weight-load commits the accepted prefix; spec==greedy).  **scale-up VERIFIED at B=4**
+  (`glm_model_fp8_multiseq4_tb`:
   4 different sequences batched in one forward, all 4 rows per-row bit-exact vs per-seq PE_M=1, dense
-  AND sparse, ~52% fewer attn-weight beats than 4 separate decodes); real-checkpoint validation
-  (the standing P1.1 gate — needs a GPU host) remains.
+  AND sparse, ~52% fewer attn-weight beats than 4 separate decodes).  **Remains (beyond RTL):** a
+  RESIDENT DENSE DRAFT model for higher accept rate (K_eff 3–5 vs self-draft's ~1.7–2.2 — needs a
+  trained small draft's weights); real-checkpoint validation (the standing P1.1 gate — needs a GPU
+  host).  The multi-step continuous-batching DECODE LOOP (iterate the batched step, N tokens/seq) is
+  a natural RTL follow-on to the single-step `glm_fp8_soc_ms`.
 
 ### P2 — Productize the RTL (robustness)
 - P2.1 ECC on DDR5 + Flash; error detection / correction / retry / recovery paths.
