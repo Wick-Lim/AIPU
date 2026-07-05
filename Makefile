@@ -7,6 +7,8 @@
 #   make sim        -> alias for `test`
 #   make wave       -> run the system TB and leave ./tpu_waveform.vcd (real VCD)
 #   make lint       -> verilator --lint-only -Wall on the whole design (clean)
+#   make coverage   -> verilator --coverage-line/-toggle structural coverage of
+#                      the clean-verilating TB subset (per-module + merged report)
 #   make synth      -> yosys elaborate/synth gate (no error, no inferred latch)
 #   make all        -> test + hazard + unittests + lint + synth
 #   make clean      -> remove build artifacts and the generated VCDs
@@ -51,7 +53,7 @@ UNITS := instruction_decoder register_file memory tile_memory vector_alu \
 
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint host-test synth synth-glm synth-glm-compact sim-glm-compact cdc ppa clean
+.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint host-test synth synth-glm synth-glm-compact sim-glm-compact cdc ppa coverage clean
 
 all: test hazard unittests lint synth synth-glm formal
 
@@ -722,6 +724,20 @@ ppa:
 	  cat $(PPA_DIR)/$$m.log; \
 	done
 	@echo "ppa: synth_ecp5 area (+ltp for the 4 tensor units) captured (logs in $(PPA_DIR)/)"
+
+# ---- Structural code coverage (Verilator --coverage-line/-toggle) ---------
+# Verilate + run the SUBSET of behavioral TBs that build+run cleanly under
+# Verilator 5.x (--binary), each with --coverage-line --coverage-toggle, then
+# report per-module line/toggle/branch coverage of the module's OWN source and
+# a merged design-source summary.  Artifacts land in build/cov/ (gitignored);
+# the merged database is build/cov/merged.dat.  This is STRUCTURAL coverage of
+# the committed slice config -- the bit-fidelity proof remains the byte-
+# identical iverilog suite (`make unittests`).  Scope + the TBs that don't
+# verilate (and why) are documented in docs/COVERAGE.md.
+coverage:
+	@command -v $(VERILATOR) >/dev/null 2>&1 || { echo "coverage: needs verilator (5.x)"; exit 1; }
+	@mkdir -p $(BUILD_DIR)/cov
+	@VERILATOR="$(VERILATOR)" bash tools/cov_run.sh
 
 clean:
 	rm -rf $(BUILD_DIR) tpu_waveform.vcd hazard_waveform.vcd
