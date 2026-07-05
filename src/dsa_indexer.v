@@ -147,6 +147,12 @@ module dsa_indexer #(
     //------------------------------------------------------------------------
     localparam integer DIW = (IDX_DIM <= 1) ? 1 : $clog2(IDX_DIM); // dim counter
     localparam integer LW  = (LANES   <= 1) ? 1 : $clog2(LANES);   // lane index
+    // EFFECTIVE lane count: never more lanes than candidate keys (S_MAX), so the
+    //   LEFF[IDXW:0] slice used for the group bound / round-robin wrap cannot be
+    //   TRUNCATED to a wrong value when IDXW+1 < clog2(LANES) (e.g. S_MAX=4,IDXW=2:
+    //   LANES=8 -> LANES[2:0]=0 froze the sparse group loop -> hang).  LEFF<=S_MAX
+    //   fits in IDXW+1 bits, and LEFF<=LANES never overruns the [0:LANES-1] arrays.
+    localparam integer LEFF = (LANES > S_MAX) ? S_MAX : LANES;
     // tag-FIFO depth: holds the lane-id of every MAC term in flight (<= `FP_MAC_LAT)
     // with slack, sized to a power of two so the head/tail pointers wrap freely.
     localparam integer TQD = 16;
@@ -233,7 +239,7 @@ module dsa_indexer #(
 
     always @(*) begin
         grem      = s_reg - gbase;
-        gbnd      = (grem >= LANES[IDXW:0]) ? LANES[IDXW:0] : grem;
+        gbnd      = (grem >= LEFF[IDXW:0]) ? LEFF[IDXW:0] : grem;
         // round-robin scan for the next ready lane to issue.
         isel_found = 1'b0;
         isel_lane  = {(IDXW+1){1'b0}};
@@ -241,7 +247,7 @@ module dsa_indexer #(
         isel_cand  = {(IDXW+1){1'b0}};
         for (cg = 0; cg < LANES; cg = cg + 1) begin
             isel_scan = rr + cg[IDXW:0];
-            if (isel_scan >= LANES[IDXW:0]) isel_scan = isel_scan - LANES[IDXW:0];
+            if (isel_scan >= LEFF[IDXW:0]) isel_scan = isel_scan - LEFF[IDXW:0];
             isel_cand = isel_scan;
             if (!isel_found && (isel_cand < gsize) &&
                 (dim_issue_l[isel_cand[LW-1:0]] < IDX_DIM[DIW:0]) &&
@@ -431,8 +437,8 @@ module dsa_indexer #(
                     mac_b        <= bf16_to_fp32(kbuf_l[isel_lane[LW-1:0]][dim_issue_l[isel_lane[LW-1:0]][DIW-1:0]]);
                     mac_c        <= acc_l[isel_lane[LW-1:0]];
                     dim_issue_l[isel_lane[LW-1:0]] <= dim_issue_l[isel_lane[LW-1:0]] + 1'b1;
-                    // advance round-robin pointer (wrap at LANES).
-                    rr           <= (isel_lane == LANES[IDXW:0]-1'b1)
+                    // advance round-robin pointer (wrap at the effective lane count).
+                    rr           <= (isel_lane == LEFF[IDXW:0]-1'b1)
                                     ? {(IDXW+1){1'b0}} : (isel_lane + 1'b1);
                     // push the issued lane id into the result-routing FIFO.
                     tagq[tq_tail] <= isel_lane[LW-1:0];

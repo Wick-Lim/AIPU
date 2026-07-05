@@ -521,11 +521,10 @@ module glm_model_fp8_multiseq_tb;
         //   DENSE regime (S <= TOPK_ATTN): each row selects keys 0..S-1 of its seq.
         pos = 0;  s_len = 1;     build_stimulus(500,  0); do_case(3, 11);
         pos = 37; s_len = 2;     build_stimulus(7000, 0); do_case(11, 5);
-        // NOTE: the SPARSE full-model regime (s_len > TOPK_ATTN) is NOT exercised here:
-        //   at this tiny slice it does not converge even for the PE_M=1 reference (a
-        //   PRE-EXISTING model-slice concern, orthogonal to PER_ROW_SEQ -- the mla-level
-        //   multi-seq TB covers the union/kc_seq path directly). Deferred to the SoC
-        //   integration where the real sparse config runs.
+        // SPARSE regime (s_len > TOPK_ATTN): now converges after the dsa_indexer
+        //   LANES[IDXW:0]-truncation fix (S_MAX=4,IDXW=2 froze the sparse group loop).
+        //   Each row's DSA selects TOPK keys of its OWN sequence -> per-seq routing.
+        pos = 42; s_len = S_MAX; build_stimulus(90000, 1); do_case(5, 9);
 
         if (errors != 0) begin
             $display("FAILED: %0d mismatch(es) across %0d tests", errors, test_count);
