@@ -838,7 +838,8 @@ def _set_param(torch, root, dotted, tensor):
             setattr(obj, leaf, t)
 
 
-def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, seed):
+def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, seed,
+                      prompt=None):
     """TRUNCATED FULL-MODEL forward (the DSA-IndexShare fix).
 
        Standalone decoder layers fail because GLM-5.2's DSA has a *full-indexer*
@@ -911,7 +912,22 @@ def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, s
     model = model.float().eval()      # bf16 tail on CPU otherwise trips mixed-dtype
 
     torch.manual_seed(int(seed))
-    input_ids = torch.randint(0, VOCAB, (1, 8))               # short prompt; gold==ours share it
+    prompt_str = None
+    if prompt:                                                # REAL tokenized prompt
+        try:
+            from transformers import AutoTokenizer
+            tkz = AutoTokenizer.from_pretrained(CKPT_DIR, trust_remote_code=True)
+            ids = tkz(prompt, return_tensors="pt").input_ids
+            input_ids = ids[:, :64]                            # cap the seq for the truncated fwd
+            prompt_str = prompt
+            print(f"[model] REAL prompt tokenized -> {input_ids.shape[1]} ids: "
+                  f"{input_ids[0][:12].tolist()}...")
+        except Exception as e:
+            print(f"[model] tokenizer unavailable ({type(e).__name__}: {e}); "
+                  f"using random ids")
+            input_ids = torch.randint(0, VOCAB, (1, 8))
+    else:
+        input_ids = torch.randint(0, VOCAB, (1, 8))           # gold==ours share it
 
     def run():
         with torch.no_grad():
@@ -926,6 +942,8 @@ def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, s
 
     st = error_stats(lg, lo)
     cum = dict(token_chain=True, layers=int(n_layers), patched_fp8=patched_total,
+               prompt=("(real) " + prompt_str[:48]) if prompt_str else "(random ids)",
+               seqlen=int(input_ids.shape[1]),
                argmax_ours=argmax(lo), argmax_gold=argmax(lg),
                argmax_match=int(argmax(lo) == argmax(lg)),
                logit_max_rel=st["max_rel"], logit_max_abs=st["max_abs"],
@@ -947,7 +965,7 @@ def _print_model_result(result):
 # ============================================================================
 # CORE compare driver (mode auto|ffn|layer|model) -- shared by the GPU functions.
 # ============================================================================
-def _compare_impl(n_layers, mode, seed=0):
+def _compare_impl(n_layers, mode, seed=0, prompt=None):
     _ensure_on_path()
     # Pick up shards committed by a prior download_layers run: a WARM container keeps
     # its old volume view, so without reload it can't see freshly-cached expert shards
@@ -1013,7 +1031,8 @@ def _compare_impl(n_layers, mode, seed=0):
         try:
             import transformers
             per_layer, cum = _compare_model_hf(
-                torch, transformers, int(n_layers), weight_map, opener, tail, seed)
+                torch, transformers, int(n_layers), weight_map, opener, tail, seed,
+                prompt=prompt)
             result.update(mode_used="model", per_layer=per_layer, cumulative=cum)
             _print_model_result(result)
             return result
@@ -1165,14 +1184,14 @@ def smoke_gate(layer_idx: int = 0, mode: str = "auto"):
 
 @app.function(image=image, gpu=GPU_COMPARE_T4, volumes={WEIGHTS_DIR: volume},
               secrets=_SECRETS, timeout=TO_COMPARE)
-def compare_t4(n_layers: int = DEFAULT_N_LAYERS, mode: str = "ffn"):
-    return _compare_impl(int(n_layers), mode)
+def compare_t4(n_layers: int = DEFAULT_N_LAYERS, mode: str = "ffn", prompt: str = ""):
+    return _compare_impl(int(n_layers), mode, prompt=prompt or None)
 
 
 @app.function(image=image, gpu=GPU_COMPARE_A100, volumes={WEIGHTS_DIR: volume},
               secrets=_SECRETS, timeout=TO_COMPARE)
-def compare_a100(n_layers: int = DEFAULT_N_LAYERS, mode: str = "auto"):
-    return _compare_impl(int(n_layers), mode)
+def compare_a100(n_layers: int = DEFAULT_N_LAYERS, mode: str = "auto", prompt: str = ""):
+    return _compare_impl(int(n_layers), mode, prompt=prompt or None)
 
 
 # ============================================================================
@@ -1180,7 +1199,7 @@ def compare_a100(n_layers: int = DEFAULT_N_LAYERS, mode: str = "auto"):
 # ============================================================================
 @app.local_entrypoint()
 def main(layers: int = DEFAULT_N_LAYERS, mode: str = "ffn", gpu: str = "t4",
-         smoke: int = 0, download_only: int = 0):
+         smoke: int = 0, download_only: int = 0, prompt: str = ""):
     """`modal run tools/modal_partial_f1.py [--layers N] [--mode ffn|layer|auto]
                                             [--gpu t4|a100] [--smoke 1]
                                             [--download-only 1]`
@@ -1219,9 +1238,9 @@ def main(layers: int = DEFAULT_N_LAYERS, mode: str = "ffn", gpu: str = "t4",
         return
 
     if gpu == "a100":
-        r = compare_a100.remote(int(layers), mode)
+        r = compare_a100.remote(int(layers), mode, prompt)
     else:
-        r = compare_t4.remote(int(layers), mode)
+        r = compare_t4.remote(int(layers), mode, prompt)
     print(f"[compare] mode_used={r.get('mode_used')}  cumulative={r.get('cumulative')}")
 
 

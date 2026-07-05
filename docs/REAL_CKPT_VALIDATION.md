@@ -218,7 +218,13 @@ under `_LAYER_SCHEME`.
 
 So through the **dense→MoE seam** — the real 256-expert router selection + our exact-BFP experts +
 the shared expert — our contract still lands on the **same next token** as the fp32-accumulate
-reference, top-8 preserved. Enablers that landed: `volume.reload()` (warm-container shard visibility),
+reference, top-8 preserved.
+
+**Real tokenized prompt (not random ids).** Re-run with `--prompt "The capital of France is"` (GLM
+BPE tokenized in-container, 5 ids) through the same N=4 MoE-inclusive chain: **argmax match 1/1**
+(gold == ours == token **20259**), `logit_max_abs` 0.124 — i.e. the accumulator-invariance holds on
+a **realistic activation distribution**, not just random tokens. (`--prompt` was added to
+`modal_partial_f1.py mode=model`.) Enablers that landed: `volume.reload()` (warm-container shard visibility),
 bf16 build + free-weight-after-patch (avoid the ~38 GB fp32 expert random-init), and the coverage
 guard (no random-expert false positives).
 
