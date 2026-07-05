@@ -1370,9 +1370,9 @@ module mla_attn_fp8 #(
                                        (VSTORE_RAM ?
                                           scores_mem[(rr*H_HEADS
                                                       + sf_head[$clog2(H_HEADS)-1:0])*SWIN
-                                                     + rowslot2union[rr][sf_feed_i[TKW-1:0]]]
+                                                     + rowslot2union[rr][sf_feed_i[SWINW-1:0]]]
                                         : scores[rr][sf_head[$clog2(H_HEADS)-1:0]]
-                                                [rowslot2union[rr][sf_feed_i[TKW-1:0]]])
+                                                [rowslot2union[rr][sf_feed_i[SWINW-1:0]]])
                                      : NEG_BIG;
                             sf_feed_i   <= sf_feed_i + 1'b1;
                             if (sf_feed_i == SWIN[IDXW:0]-1'b1)
@@ -1441,11 +1441,11 @@ module mla_attn_fp8 #(
                                                //   lane (head*V_DIM+dim) -- same V value the flop
                                                //   array held (vstore[head][slot][dim]).
                                                bf16_to_fp32(VSTORE_RAM ?
-                                                 vstore_mem[rowslot2union[rr][cx_s[TKW-1:0]]]
+                                                 vstore_mem[rowslot2union[rr][cx_s[SWINW-1:0]]]
                                                            [(cx_head[$clog2(H_HEADS)-1:0]*V_DIM
                                                              + cx_d[$clog2(V_DIM)-1:0])*16 +: 16]
                                                : vstore[cx_head[$clog2(H_HEADS)-1:0]]
-                                                       [rowslot2union[rr][cx_s[TKW-1:0]]]
+                                                       [rowslot2union[rr][cx_s[SWINW-1:0]]]
                                                        [cx_d[$clog2(V_DIM)-1:0]])));
                             if (cx_s == u_cnt - 1'b1) cxst <= CX_STORE;
                             else cx_s <= cx_s + 1'b1;
@@ -1467,7 +1467,7 @@ module mla_attn_fp8 #(
                             //   fires when cx_s has reached u_cnt with a beat still valid).
                             if (cx_s < u_cnt) begin
                                 for (rr=0; rr<PE_M; rr=rr+1) begin
-                                    vrd_word[rr]  <= vstore_mem[rowslot2union[rr][cx_s[TKW-1:0]]];
+                                    vrd_word[rr]  <= vstore_mem[rowslot2union[rr][cx_s[SWINW-1:0]]];
                                     cx_prob_d[rr] <= probs[rr][cx_head[$clog2(H_HEADS)-1:0]][cx_s[SWINW-1:0]];
                                 end
                                 cx_rd_vld <= 1'b1;
