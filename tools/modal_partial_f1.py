@@ -165,6 +165,7 @@ if _HAS_MODAL:
             "safetensors>=0.4.5",
             "huggingface_hub>=0.26",
             "numpy>=1.26",
+            "zstandard>=0.22",         # COVER-trained global-dictionary compression test
         )
         .add_local_dir(_TOOLS_LOCAL, remote_path="/root/tools")
     )
@@ -1176,6 +1177,125 @@ def _smoke_impl(layer_idx, mode):
 # ============================================================================
 # @app.function wrappers (GPU tiers) -- thin shells over the impls above.
 # ============================================================================
+def _compress_study_impl(layer_idx, n_experts, proj, rows):
+    """Measure whether CROSS-EXPERT pattern similarity gives lossless compression
+       headroom beyond the memoryless-Huffman 1.34x (= less Flash bandwidth).
+       On the REAL GLM-5.2 MoE experts, compares: per-symbol entropy (Huffman);
+       per-expert zlib (local dict); concat-all zlib (does zlib find CROSS-expert
+       repeats?); XOR-vs-base zlib (are experts SIMILAR -> XOR near-zero -> tiny?);
+       cross-expert cosine (are the patterns numerically similar at all?)."""
+    _ensure_on_path()
+    try:
+        volume.reload()
+    except Exception:
+        pass
+    import numpy as np, zlib, itertools
+    if not os.path.exists(_index_path()):
+        _partial_download([int(layer_idx)], want_extras=True)
+    weight_map = _load_weight_map()
+    prefix = f"model.layers.{int(layer_idx)}."
+    if any(k.startswith(prefix) and not os.path.exists(os.path.join(CKPT_DIR, s))
+           for k, s in weight_map.items()):
+        _partial_download([int(layer_idx)], want_extras=True)
+        weight_map = _load_weight_map()
+    opener = _open_shard_cache()
+    tens = _load_layer_tensors(int(layer_idx), weight_map, opener)
+    import torch
+
+    def _slice(t):
+        return t[:rows] if (rows and t.shape[0] > rows) else t
+
+    raw, fdec = [], []
+    for e in range(int(n_experts)):
+        k = f"mlp.experts.{e}.{proj}.weight"
+        if k in tens:
+            t = _slice(tens[k]).contiguous()
+            raw.append(t.view(torch.uint8).numpy().tobytes())
+            fdec.append(t.float().numpy().astype(np.float32).ravel())
+    if len(raw) < 2:
+        return dict(error=f"need >=2 experts with {proj}; got {len(raw)}")
+
+    allb = b"".join(raw)
+    arr = np.frombuffer(allb, dtype=np.uint8)
+    p = np.bincount(arr, minlength=256).astype(np.float64)
+    p = p[p > 0] / p.sum()
+    Hbits = float(-(p * np.log2(p)).sum())
+
+    per = sum(len(zlib.compress(b, 9)) for b in raw)
+    concat = len(zlib.compress(allb, 9))
+    base = np.frombuffer(raw[0], dtype=np.uint8)
+    xor = [raw[0]] + [(np.frombuffer(b, np.uint8)[:len(base)] ^ base[:len(b)]).tobytes()
+                      for b in raw[1:]]
+    xor_all = b"".join(xor)
+
+    cos = []
+    for i, j in list(itertools.combinations(range(min(len(fdec), 8)), 2))[:12]:
+        a, b = fdec[i], fdec[j]
+        m = min(len(a), len(b)); a, b = a[:m], b[:m]
+        d = float(np.linalg.norm(a) * np.linalg.norm(b))
+        cos.append(float((a @ b) / d) if d > 0 else 0.0)
+
+    # (5) GLOBAL DICTIONARY for RANDOM-ACCESS (per-block) transfer.
+    #     Random access => must decode per block (can't stream the whole expert),
+    #     and small blocks lose cross-block context => lower ratio. Does a SHARED
+    #     GLOBAL dictionary (primes the window with common patterns) RECOVER the
+    #     ratio a small block loses?  block = 128x128 fp8 = 16384 B (real quant blk).
+    BLK = 16384
+    blks = [allb[i:i + BLK] for i in range(0, len(allb) - BLK + 1, BLK)]
+    step = max(1, len(blks) // 128)
+    train = blks[::step]                                   # spread of blocks
+    zdict = b"".join(train)[-32768:]                       # zlib zdict <= 32KB, tail = most used
+    ev = blks[1::step][:200] or blks[:200]                 # held-out eval blocks
+    tot_blk = len(ev) * BLK
+
+    def _blk_nodict(b):
+        return len(zlib.compress(b, 9))
+
+    def _blk_dict(b):
+        co = zlib.compressobj(9, zlib.DEFLATED, zlib.MAX_WBITS,
+                              zlib.DEF_MEM_LEVEL, zlib.Z_DEFAULT_STRATEGY, zdict)
+        return len(co.compress(b) + co.flush())
+
+    blk_nodict = sum(_blk_nodict(b) for b in ev)
+    blk_dict = sum(_blk_dict(b) for b in ev)
+
+    # strongest form: zstd COVER-trained dictionary, if available in the image
+    zstd_dict_ratio = zstd_nodict_ratio = None
+    zstd_note = None
+    try:
+        import zstandard as _zs
+        zd = _zs.train_dictionary(110 * 1024, blks[:2000])
+        cd = _zs.ZstdCompressor(level=19, dict_data=zd)
+        cn = _zs.ZstdCompressor(level=19)
+        zdd = sum(len(cd.compress(b)) for b in ev)
+        znn = sum(len(cn.compress(b)) for b in ev)
+        zstd_dict_ratio = round(tot_blk / zdd, 3)
+        zstd_nodict_ratio = round(tot_blk / znn, 3)
+    except Exception as ex:                                # zstandard not in image
+        zstd_note = f"zstd unavailable: {str(ex)[:60]}"
+
+    return dict(layer=int(layer_idx), proj=proj, n_experts=len(raw),
+                bytes_per_expert=len(raw[0]),
+                entropy_bits=round(Hbits, 3), huffman_ratio=round(8.0 / Hbits, 3),
+                zlib_per_expert_ratio=round(len(allb) / per, 3),
+                zlib_concat_all_ratio=round(len(allb) / concat, 3),
+                zlib_xor_vs_base_ratio=round(len(xor_all) / len(zlib.compress(xor_all, 9)), 3),
+                cross_expert_cosine_mean=round(float(np.mean(cos)), 4) if cos else None,
+                block_bytes=BLK, n_eval_blocks=len(ev),
+                block_nodict_ratio=round(tot_blk / blk_nodict, 3),          # random-access baseline
+                block_globaldict_ratio=round(tot_blk / blk_dict, 3),        # + zlib global dict
+                block_zstd_nodict_ratio=zstd_nodict_ratio,                  # + zstd, no dict
+                block_zstd_globaldict_ratio=zstd_dict_ratio,                # + zstd COVER-trained dict
+                zstd_note=zstd_note)
+
+
+@app.function(image=image, volumes={WEIGHTS_DIR: volume}, secrets=_SECRETS,
+              timeout=TO_SMOKE)                          # CPU function -- NO gpu=
+def compress_study(layer_idx: int = 3, n_experts: int = 64,
+                   proj: str = "gate_proj", rows: int = 512):
+    return _compress_study_impl(int(layer_idx), int(n_experts), proj, int(rows))
+
+
 @app.function(image=image, gpu=GPU_SMOKE, volumes={WEIGHTS_DIR: volume},
               secrets=_SECRETS, timeout=TO_SMOKE)
 def smoke_gate(layer_idx: int = 0, mode: str = "auto"):
@@ -1199,7 +1319,8 @@ def compare_a100(n_layers: int = DEFAULT_N_LAYERS, mode: str = "auto", prompt: s
 # ============================================================================
 @app.local_entrypoint()
 def main(layers: int = DEFAULT_N_LAYERS, mode: str = "ffn", gpu: str = "t4",
-         smoke: int = 0, download_only: int = 0, prompt: str = ""):
+         smoke: int = 0, download_only: int = 0, prompt: str = "",
+         compress_study_layer: int = 0, n_experts: int = 64):
     """`modal run tools/modal_partial_f1.py [--layers N] [--mode ffn|layer|auto]
                                             [--gpu t4|a100] [--smoke 1]
                                             [--download-only 1]`
@@ -1226,6 +1347,11 @@ def main(layers: int = DEFAULT_N_LAYERS, mode: str = "ffn", gpu: str = "t4",
     print("#   (download on CPU fn ~ $0.03-0.20; smoke ~ $0.03-0.10)")
     print("#   HARD CAPS: download 2h, smoke 20m, compare 90m (worst-case ~$4.4)")
     print("############################################################")
+
+    if compress_study_layer:
+        r = compress_study.remote(int(compress_study_layer), int(n_experts), "gate_proj", 512)
+        print(f"[compress-study] {r}")
+        return
 
     if download_only:
         r = download_layers.remote(int(layers))
