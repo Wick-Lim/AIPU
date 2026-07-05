@@ -66,16 +66,26 @@ python3 host/test_aipu.py        # 6 tests: tokenizer round-trip, boot gate,
                                  # generation, max-tokens, server end-to-end, no-truncation
 ```
 
-## Wiring a real backend
+## Backends
 
-Implement `AIPUDevice` (`aipu_device.py`) for the target:
+Selectable with `--backend`; each is an `AIPUDevice` subclass — the server, generation
+loop, streaming, tokenizer, and OpenAI surface are unchanged.
 
-- **`SimulatorBackend`** — shell out to the iverilog/`vvp` build of `glm_fp8_system_cdc`,
-  driving `start`/`prompt_tok`/`start_pos`/`s_len` and reading `next_tok`/`tok_valid`.
-  Produces the *slice* model's tokens (small vocab) — useful for protocol/HW co-sim.
-- **`USBBackend`** — the real USB-C driver: enumerate the device, send the token/control
-  words over the bulk endpoint, read back `next_tok` (the CDC host interface is already
-  in the RTL). Add the real GLM tokenizer + chat template.
+- **`MockDevice`** (`--backend mock`, default) — replays a canned reply through the
+  protocol; zero deps, instant. Proves the plumbing for byte OR GLM vocab.
+- **`SimulatorBackend`** (`--backend sim`, `aipu_sim_backend.py`) — **implemented**:
+  runs the committed `glm_model_fp8` slice via its iverilog/`vvp` build and returns the
+  **REAL argmax tokens the RTL forward pass produces** (measured: `{4, 31, 20}`), wired
+  into the device protocol — the *server → real RTL → real token* co-sim path. Honest
+  caveats: **SLOW** (~12 min/run — measured 752 s, cached per process, not interactive);
+  **slice** model (VOCAB=256, untrained → real datapath outputs, not language);
+  **fixed** testbench vectors (arbitrary-prompt drive needs the model's full weight/KV
+  pull-port ROM harness — a larger TB effort). Needs `build/glm_model_fp8_sim`
+  (`make unittests`, ~8 min once).
+- **`USBBackend`** (to build at D1) — the real USB-C driver: enumerate the device, send
+  the token/control words over the bulk endpoint, read back `next_tok` (the CDC host
+  interface is already in the RTL). Pairs with the GLM tokenizer + a chat template.
 
-The server, generation loop, streaming, and OpenAI surface are unchanged — only the
-`AIPUDevice` subclass changes.
+```sh
+python3 host/aipu_server.py --backend sim        # real RTL slice (SLOW, slice tokens)
+```

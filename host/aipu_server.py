@@ -182,16 +182,26 @@ def main(argv=None):
                    help="modelled device boot (resident-set load) time")
     p.add_argument("--tokenizer", default=None,
                    help="path to GLM tokenizer.json (else byte-level fallback)")
+    p.add_argument("--backend", choices=["mock", "sim"], default="mock",
+                   help="mock (canned) or sim (real RTL glm_model_fp8 via vvp -- SLOW "
+                        "~12 min/run, slice tokens; needs build/glm_model_fp8_sim)")
     args = p.parse_args(argv)
 
-    tok = make_tokenizer(args.tokenizer)
-    device = MockDevice(boot_seconds=args.boot_seconds,
-                        eos_token=tok.eos_id, vocab_size=tok.vocab_size)
+    if args.backend == "sim":
+        from aipu_sim_backend import SimulatorBackend
+        device = SimulatorBackend()                  # byte vocab (slice VOCAB=256)
+        tok = make_tokenizer(args.tokenizer)          # decode is best-effort (slice tokens)
+        backend_name = "SimulatorBackend(glm_model_fp8/vvp)"
+    else:
+        tok = make_tokenizer(args.tokenizer)
+        device = MockDevice(boot_seconds=args.boot_seconds,
+                            eos_token=tok.eos_id, vocab_size=tok.vocab_size)
+        backend_name = "MockDevice"
     device.power_on()
     server = AIPUServer(device, tok)
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(server))
     print(f"AIPU server on http://{args.host}:{args.port}/v1  "
-          f"(model={device.model_id}, backend=MockDevice, tokenizer={tok.name})")
+          f"(model={device.model_id}, backend={backend_name}, tokenizer={tok.name})")
     print("  GET  /v1/models   GET /health   POST /v1/chat/completions [stream]")
     try:
         httpd.serve_forever()

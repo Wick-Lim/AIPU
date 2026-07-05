@@ -89,6 +89,29 @@ def test_glm_tokenizer_if_available():
     print(f"  (GLM vocab_size={tok.vocab_size}, eos_id={tok.eos_id})")
 
 
+def test_simulator_backend_parse():
+    """SimulatorBackend parse + protocol via a fake `vvp` (echo the argmax lines the
+       real slice sim prints). The real vvp run is separately validated to emit
+       exactly these tokens {4,31,20} in ~752 s -- too slow for CI, so we stub the
+       subprocess and check the parse + device protocol."""
+    import os
+    import tempfile
+    from aipu_sim_backend import SimulatorBackend
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("PASS[t] worst_rel=0 argmax dut=4 ref=4\n"
+                "PASS argmax dut=31 ref=31\nPASS argmax dut=20 ref=20\n"
+                "ALL 3 TESTS PASSED\n")
+        path = f.name
+    try:
+        dev = SimulatorBackend(vvp="cat", vvp_binary=path, cwd="/tmp")
+        dev.power_on()
+        assert list(dev.generate([1, 2, 3], max_new_tokens=16)) == [4, 31, 20]
+        dev.reset_session()
+        assert list(dev.generate([9], max_new_tokens=16)) == [4, 31, 20]   # cached
+    finally:
+        os.unlink(path)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
