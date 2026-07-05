@@ -1,6 +1,6 @@
 # Product Roadmap — GLM-5.2-FP8 accelerator (product, not research)
 
-The `prototype` branch (frozen at `fee8501`) holds the **research prototype**: the full FP8
+The `prototype` branch (frozen at `47fb7f8`) holds the **research prototype**: the full FP8
 datapath + memory system + ultra-perf batching stack, **bit-exact and mechanism-proven at a
 small-but-faithful slice**, with honest gaps documented. It answers *"does the architecture work,
 and how fast can it go?"* — **yes**, and the levers are measured.
