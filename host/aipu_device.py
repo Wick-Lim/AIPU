@@ -23,7 +23,73 @@ response (the plumbing, not the model). The real backend is either the RTL simul
 from __future__ import annotations
 
 import abc
+import dataclasses
 import time
+
+
+@dataclasses.dataclass
+class SamplingParams:
+    """OpenAI-style sampling parameters, threaded from the HTTP request to the device.
+
+    HONEST host-vs-device split (see host/README.md):
+      * HOST-SIDE (this scaffold enforces): `max_tokens` (decode cap) and `stop`
+        (truncate when a stop string appears in the decoded text) -- both real and
+        applied in aipu_server.py. `seed` is threaded through to the device.
+      * DEVICE-SIDE (`sampler.v` samples ON-DEVICE from logits): `temperature`,
+        `top_p`, `top_k`, `seed`. The MockDevice returns the ARGMAX token (greedy) and
+        IGNORES temperature/top_p/top_k -- true sampling needs a logits-capable
+        backend, which programs these via `configure_sampling()`. Faking sampling on a
+        canned/argmax stream would be dishonest, so we don't.
+      * `presence_penalty`/`frequency_penalty` are accepted and ignored (no host-side
+        logit bias in the scaffold).
+    """
+
+    max_tokens: int = 256
+    temperature: float = 1.0
+    top_p: float = 1.0
+    top_k: int = 0                                   # 0 = disabled
+    stop: list = dataclasses.field(default_factory=list)
+    seed: "int | None" = None
+    presence_penalty: float = 0.0                    # accepted, ignored (device-side)
+    frequency_penalty: float = 0.0                   # accepted, ignored (device-side)
+
+    @classmethod
+    def from_request(cls, req: dict) -> "SamplingParams":
+        """Parse an OpenAI `/v1/chat/completions` request dict into SamplingParams,
+           tolerating missing/malformed fields (falls back to defaults)."""
+        def _num(key, default, cast):
+            v = req.get(key, default)
+            if v is None:
+                return default
+            try:
+                return cast(v)
+            except (TypeError, ValueError):
+                return default
+
+        stop = req.get("stop")
+        if isinstance(stop, str):
+            stops = [stop] if stop else []
+        elif isinstance(stop, (list, tuple)):
+            stops = [s for s in stop if isinstance(s, str) and s]
+        else:
+            stops = []
+
+        seed = req.get("seed")
+        try:
+            seed = int(seed) if seed is not None else None
+        except (TypeError, ValueError):
+            seed = None
+
+        return cls(
+            max_tokens=max(1, _num("max_tokens", 256, int)),
+            temperature=_num("temperature", 1.0, float),
+            top_p=_num("top_p", 1.0, float),
+            top_k=_num("top_k", 0, int),
+            stop=stops[:4],                          # OpenAI allows up to 4 stops
+            seed=seed,
+            presence_penalty=_num("presence_penalty", 0.0, float),
+            frequency_penalty=_num("frequency_penalty", 0.0, float),
+        )
 
 
 class DeviceState:
@@ -90,6 +156,21 @@ class AIPUDevice(abc.ABC):
     #: the token id that ends generation (EOS). Real value comes from the tokenizer.
     eos_token: int = -1
 
+    #: sampling programmed for the current generate() (None => greedy/argmax).
+    _sampling: "SamplingParams | None" = None
+
+    def configure_sampling(self, sampling: "SamplingParams") -> None:
+        """Program device-side sampling for the next generate() call.
+
+        The RTL `sampler.v` samples ON-DEVICE from the model's logits
+        (temperature/top_p/top_k with `seed`). The MockDevice (and the slice
+        SimulatorBackend) return the ARGMAX token -- i.e. GREEDY -- so they IGNORE
+        temperature/top_p/top_k here: there are no host-side logits to sample from a
+        canned/argmax stream, and faking it would be dishonest. A logits-capable
+        backend OVERRIDES this to write the sampler's config registers; the default
+        just records the params so a real backend / inspector can read them."""
+        self._sampling = sampling
+
     def prefill(self, prompt_ids, start_pos: int) -> int:
         """Feed the prompt tokens and return the FIRST next-token. Default = real
            device semantics: one `step` per prompt token, the last output is the
@@ -101,12 +182,17 @@ class AIPUDevice(abc.ABC):
             pos += 1
         return last_out
 
-    def generate(self, prompt_ids, max_new_tokens: int, start_pos: int = 0):
+    def generate(self, prompt_ids, max_new_tokens: int, start_pos: int = 0,
+                 sampling: "SamplingParams | None" = None):
         """Autoregressive loop: prefill `prompt_ids` -> first token, then feed each
            generated token back. Yields token ids as they decode (server streams).
-           Stops at eos_token or max_new_tokens."""
+           Stops at eos_token or max_new_tokens. `sampling` (optional) is programmed
+           into the device via configure_sampling() -- honored device-side by a
+           logits-capable backend; the mock is greedy and ignores it."""
         self.wait_ready()
         self.reset_session()
+        if sampling is not None:
+            self.configure_sampling(sampling)
         cur = self.prefill(prompt_ids, start_pos)
         pos = start_pos + len(prompt_ids)
         produced = 0

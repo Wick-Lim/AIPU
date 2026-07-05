@@ -16,6 +16,8 @@ lands.
 | OpenAI API surface (`aipu_server.py`) | **real** — `/v1/models`, `/v1/chat/completions` (streaming SSE + non-streaming), `/health`; stdlib only, 0 deps |
 | Generation loop | **real** — prefill → autoregressive decode → token streaming |
 | Tokenizer | **both** — byte-level (stdlib, exact round-trip) **and the REAL GLM-5.2 BPE** (`tokenizer.json` via the `tokenizers` lib); `make_tokenizer()` picks GLM when available, else byte. Verified: round-trips English / Korean / code, streaming-safe across multi-byte chars (vocab 154856, eos `<\|endoftext\|>`=154820) |
+| Chat template (`aipu_chat_template.py`) | **real** — a faithful port of GLM-5.2's official `chat_template.jinja` (text path); applied when the GLM tokenizer is active (see below). Byte scaffold / `--raw` keep the naive flatten |
+| Sampling params | **partly host-side** — `max_tokens` + `stop` sequences + `finish_reason` are enforced host-side (real); `temperature`/`top_p`/`top_k`/`seed` are plumbed to the device (honored device-side; the mock is greedy) — see the table below |
 | Backend (`MockDevice`) | **scaffold** — replays a clearly-labelled canned reply (tokenizer-agnostic: proves the plumbing for BOTH vocabularies, **not** the model). Swap for a simulator-backed or real-USB-C backend without touching the server |
 
 The point: the **protocol + API + streaming + tokenizer are done and swappable**;
@@ -36,6 +38,61 @@ Without `tokenizers` or `tokenizer.json`, the server falls back to the byte toke
 the single selection point; the GLM tokenizer is paired with a real GLM-vocab backend
 (the byte MockDevice is fine for either, since it replays whatever ids the server
 encodes).
+
+## Chat template
+
+`apply_chat_template(messages)` in **`aipu_chat_template.py`** formats OpenAI-style
+`messages` into the single prompt string GLM-5.2 expects, using GLM's special tokens
+(each a **single** id in the GLM BPE vocab): `[gMASK]`, `<sop>`, `<|system|>`,
+`<|user|>`, `<|assistant|>`, `<think>`. A `user`+`system` chat renders as:
+
+```
+[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>{system}<|user|>{user}<|assistant|><think>
+```
+
+**Fidelity (honest):** this is a faithful Python port of the *common text path* of the
+official template
+[`zai-org/GLM-5.2-FP8/chat_template.jinja`](https://huggingface.co/zai-org/GLM-5.2-FP8/resolve/main/chat_template.jinja)
+(downloaded + read verbatim — **high confidence** for plain system/user/assistant
+turns). GLM-5.2 is a *thinking* model, so the template auto-injects a
+`<|system|>Reasoning Effort: {High|Max}` turn and ends the prompt with `<think>` (both
+toggle via `enable_thinking` / `reasoning_effort`). Note GLM-5.2 drops the `\n` after
+each role tag that older GLM-4 templates used. **Not ported** (kept as a standalone
+function so it's easy to extend): tool/function-calling (`<tool_call>`/`<|observation|>`)
+and multi-modal image/video/audio parts (they fall back to visible text + the
+template's media `<reminder>`).
+
+The template applies **only when the GLM tokenizer is active**. The byte scaffold and
+`--raw` use the naive `role: content` flatten (the mock just round-trips, so the exact
+format doesn't matter there).
+
+```sh
+python3 host/aipu_server.py                 # GLM tokenizer -> GLM chat template
+python3 host/aipu_server.py --raw           # force the naive flatten (debug)
+```
+
+## Sampling parameters
+
+`/v1/chat/completions` accepts the standard OpenAI sampling fields
+(`SamplingParams.from_request` in `aipu_device.py`). Honestly, some are enforced
+host-side today and some require a logits-capable device backend:
+
+| Param | Where | Status |
+|---|---|---|
+| `max_tokens` | **host** | **real** — caps the decode loop; `finish_reason: "length"` when it triggers |
+| `stop` (str or list) | **host** | **real** — generation stops when a stop string appears in the decoded text; output truncated (exclusive), streaming-safe across token boundaries; `finish_reason: "stop"` |
+| `seed` | **host→device** | threaded to the device (`configure_sampling`) and echoed as `system_fingerprint`; the RTL sampler seeds on-device |
+| `temperature` | **device** | plumbed to the device; **`sampler.v` samples on-device from logits.** The MockDevice returns **argmax (greedy)** and **ignores** it — no host-side logits to sample a canned stream, and faking it would be dishonest |
+| `top_p` | **device** | same as `temperature` (device-side; mock greedy) |
+| `top_k` | **device** | same as `temperature` (device-side; mock greedy) |
+| `presence_penalty` | — | **accepted and ignored** (no host-side logit bias in the scaffold) |
+| `frequency_penalty` | — | **accepted and ignored** |
+
+So `max_tokens`, `stop`, and `finish_reason` are *real and useful today*;
+`temperature`/`top_p`/`top_k` become live the moment a logits-capable backend (real
+device / full-model runtime) lands and overrides `configure_sampling()` — no server
+changes needed. `finish_reason` is set correctly: `"stop"` for a stop sequence or EOS,
+`"length"` for the `max_tokens` cap.
 
 ## Run
 
@@ -62,8 +119,13 @@ print(c.chat.completions.create(model="aipu-glm-5.2-fp8",
 ## Test
 
 ```sh
-python3 host/test_aipu.py        # 6 tests: tokenizer round-trip, boot gate,
-                                 # generation, max-tokens, server end-to-end, no-truncation
+python3 host/test_aipu.py        # 18 tests: tokenizer round-trip, boot gate, generation,
+                                 # max-tokens/no-truncation, server end-to-end, GLM chat
+                                 # template (structure, history, multimodal, special-token
+                                 # encoding), sampling-param parsing + plumbing, stop-sequence
+                                 # truncation, and finish_reason (stop vs length)
+# with the real GLM tokenizer (if host/tokenizer.json is present it's auto-detected):
+AIPU_TOKENIZER_JSON=host/tokenizer.json python3 host/test_aipu.py
 ```
 
 ## Backends
