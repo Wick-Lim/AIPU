@@ -199,8 +199,14 @@ module swiglu_expert_fp8 #(
         wire [8*(2*EM_W-1)-1:0] em_node;
         // leaves occupy heap indices EM_W-1 .. 2*EM_W-2 (this row's exponents)
         for (emg = 0; emg < EM_W; emg = emg + 1) begin : g_emleaf
+            // emg >= HIDDEN are PAD leaves (-> 8'd0). Clamp the read index so the
+            // (discarded) false-branch select stays IN-RANGE and does not SELRANGE at
+            // full config, where EM_W = 2^ceil(log2(HIDDEN)) > HIDDEN (e.g. 8192>6144).
+            // Byte-identical: when emg<HIDDEN the index is unchanged; otherwise it
+            // reads element 0 but the ternary discards it for 8'd0.
+            localparam integer EMLEAF = (emg < HIDDEN) ? (HIDDEN*emr + emg) : 0;
             assign em_node[8*(EM_W-1+emg) +: 8] =
-                       (emg < HIDDEN) ? x_vec[16*(HIDDEN*emr + emg) + 7 +: 8] : 8'd0;
+                       (emg < HIDDEN) ? x_vec[16*EMLEAF + 7 +: 8] : 8'd0;
         end
         // internal nodes EM_W-2 .. 0 : pairwise max of the two children
         for (emg = 0; emg < EM_W-1; emg = emg + 1) begin : g_emnode

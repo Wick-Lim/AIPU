@@ -111,10 +111,14 @@ module mla_attn_fp8 #(
     //   NOT by S_MAX (the full 1M position range).  Since at most u_cnt (<= SWIN)
     //   DISTINCT keys are ever selected, SWIN entries suffice.  The KEY INDICES
     //   (kc_idx/IDXW, sel_list_r, union_list, positions) still span the full S_MAX.
-    //   Default SWIN==TOPK: at the slice (S_MAX small, dense fallback selects all
-    //   keys 0..S-1 so u_cnt==S<=TOPK==SWIN) the key->slot compaction is the
-    //   IDENTITY -> byte-identical to the pre-B7 (S_MAX-indexed) scratch.
-    parameter integer SWIN      = TOPK,
+    //   Default SWIN==min(S_MAX,TOPK): u_cnt <= min(S,TOPK) <= min(S_MAX,TOPK), so
+    //   min(S_MAX,TOPK) slots are the TIGHT sufficient bound. When TOPK<=S_MAX (every
+    //   slice/regression config) this is exactly TOPK -> byte-identical to the old
+    //   SWIN==TOPK default. When TOPK>S_MAX (the real 753B: S_MAX=8, TOPK_ATTN=2048)
+    //   it clamps SWIN to S_MAX -- you can never select more DISTINCT keys than exist
+    //   (<=S<=S_MAX) -- which shrinks the SWIN-sized scratch AND matches the S_MAX-
+    //   sized index widths (clears the SWINW>ksel SELRANGE lints; docs/FULL_CONFIG_ELAB.md).
+    parameter integer SWIN      = (S_MAX < TOPK) ? S_MAX : TOPK,
     parameter integer THETA     = 8000000,
     parameter integer PE_N      = 4,    // matmul tile width (output lanes/pass)
     parameter integer POSW      = 20,

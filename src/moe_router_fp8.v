@@ -194,8 +194,12 @@ module moe_router_fp8 #(
     for (emr = 0; emr < PE_M; emr = emr + 1) begin : XSHT
         wire [8*(2*EM_W-1)-1:0] em_node;
         for (emg = 0; emg < EM_W; emg = emg + 1) begin : g_emleaf
+            // emg >= HIDDEN are PAD leaves (-> 8'd0). Clamp the read index so the
+            // (discarded) false-branch select stays IN-RANGE at full config where
+            // EM_W = 2^ceil(log2(HIDDEN)) > HIDDEN. Byte-identical (see swiglu_expert_fp8).
+            localparam integer EMLEAF = (emg < HIDDEN) ? (HIDDEN*emr + emg) : 0;
             assign em_node[8*(EM_W-1+emg) +: 8] =
-                       (emg < HIDDEN) ? x_vec[16*(HIDDEN*emr + emg) + 7 +: 8] : 8'd0;
+                       (emg < HIDDEN) ? x_vec[16*EMLEAF + 7 +: 8] : 8'd0;
         end
         for (emg = 0; emg < EM_W-1; emg = emg + 1) begin : g_emnode
             wire [7:0] em_ca = em_node[8*(2*emg+1) +: 8];
