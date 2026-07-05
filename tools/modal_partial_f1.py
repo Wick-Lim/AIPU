@@ -948,6 +948,46 @@ def _compare_model_hf(torch, transformers, n_layers, weight_map, opener, tail, s
                argmax_match=int(argmax(lo) == argmax(lg)),
                logit_max_rel=st["max_rel"], logit_max_abs=st["max_abs"],
                logit_rms_abs=st["rms_abs"], topk8_overlap=topk_overlap(lg, lo, 8))
+
+    # ---- MULTI-SEQ batching validation on REAL weights (A2 real-checkpoint) ----
+    #   Run TWO different real prompts (a) BATCHED [2,L] and (b) SEPARATELY [1,L]
+    #   through the SAME real-weight truncated model, and compare per row.  This
+    #   validates that BATCHING B sequences (what glm_fp8_soc_ms does in hardware)
+    #   is per-row consistent on the REAL model's actual computation -- real MoE
+    #   routing (different experts per prompt), real DSA index, real fp8 weights --
+    #   not just the synthetic RTL slice.  Equal length => no padding => clean.
+    try:
+        from transformers import AutoTokenizer
+        tkz = AutoTokenizer.from_pretrained(CKPT_DIR, trust_remote_code=True)
+        pa = prompt_str or "The capital of France is"
+        pb = "Water boils at a temperature of about"
+        ta = tkz(pa, return_tensors="pt").input_ids
+        tb = tkz(pb, return_tensors="pt").input_ids
+        Lm = min(int(ta.shape[1]), int(tb.shape[1]), 48)
+        ta, tb = ta[:, :Lm], tb[:, :Lm]
+        _LAYER_SCHEME = "ours"
+        with torch.no_grad():
+            ob = model(input_ids=torch.cat([ta, tb], 0), use_cache=False)
+            blg = ob.logits if hasattr(ob, "logits") else ob[0]
+            oa = model(input_ids=ta, use_cache=False)
+            alg = oa.logits if hasattr(oa, "logits") else oa[0]
+            oc = model(input_ids=tb, use_cache=False)
+            clg = oc.logits if hasattr(oc, "logits") else oc[0]
+        r0, r1 = blg[0, -1].float(), blg[1, -1].float()   # batched per-row next-token logits
+        s0, s1 = alg[0, -1].float(), clg[0, -1].float()   # separate single-seq forwards
+        a0, a0s = int(torch.argmax(r0)), int(torch.argmax(s0))
+        a1, a1s = int(torch.argmax(r1)), int(torch.argmax(s1))
+        cum["multiseq"] = dict(
+            seqlen=int(Lm),
+            row0_argmax_match=int(a0 == a0s), row1_argmax_match=int(a1 == a1s),
+            row0_argmax=a0, row0_sep=a0s, row1_argmax=a1, row1_sep=a1s,
+            row0_max_abs=float((r0 - s0).abs().max()),
+            row1_max_abs=float((r1 - s1).abs().max()))
+        print(f"[multiseq] REAL-weight batched-vs-separate: row0 argmax {a0} vs {a0s} "
+              f"(match={a0==a0s}), row1 {a1} vs {a1s} (match={a1==a1s})")
+    except Exception as e:
+        print(f"[multiseq] skipped: {type(e).__name__}: {e}")
+        cum["multiseq"] = None
     return [], cum
 
 
