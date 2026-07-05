@@ -1,8 +1,8 @@
 # AIPU — a GLM-5.2-FP8 inference accelerator in Verilog
 
-[![Slides — AIPU: High-Reliability FP8 Accelerator](https://img.shields.io/badge/%F0%9F%93%8A%20Slides-AIPU%3A%20High--Reliability%20FP8%20Accelerator-F4B400?logo=googleslides&logoColor=white&labelColor=555)](https://docs.google.com/presentation/d/1pwdoRTyzDTnBihxKKwqJfHBDBMaTMrkJIKHq5_VwIpY/present)
+[![Slides — AIPU Accelerator: Formally Verified FP8 Architecture](https://img.shields.io/badge/%F0%9F%93%8A%20Slides-AIPU%20Accelerator%3A%20Formally%20Verified%20FP8%20Architecture-F4B400?logo=googleslides&logoColor=white&labelColor=555)](https://docs.google.com/presentation/d/1EMqJOJCNTBaCVEf5EfYI_CymVg--K8ezVyCJcr7ovys/present)
 
-> **📊 Presentation (paper slides): [*AIPU: High-Reliability FP8 Accelerator*](https://docs.google.com/presentation/d/1pwdoRTyzDTnBihxKKwqJfHBDBMaTMrkJIKHq5_VwIpY/present)** — the design, verification, and results as a deck (Google Slides). *(Click the badge above, or the link.)*
+> **📊 Presentation (paper slides): [*AIPU Accelerator: Formally Verified FP8 Architecture*](https://docs.google.com/presentation/d/1EMqJOJCNTBaCVEf5EfYI_CymVg--K8ezVyCJcr7ovys/present)** — the design, verification, and results as a deck (Google Slides). *(Click the badge above, or the link.)*
 
 A synthesizable Verilog accelerator with one goal: **run one real model well —
 [`zai-org/GLM-5.2-FP8`](https://huggingface.co/zai-org/GLM-5.2-FP8)**, the published FP8
@@ -185,7 +185,7 @@ die-shrink is free: there is a ~4–5× compute-slowdown budget to spend on shar
 
 ## Documents
 
-- **📊 [Slides — *AIPU: High-Reliability FP8 Accelerator*](https://docs.google.com/presentation/d/1pwdoRTyzDTnBihxKKwqJfHBDBMaTMrkJIKHq5_VwIpY/present)** — the project as a presentation deck (design, verification, results).
+- **📊 [Slides — *AIPU Accelerator: Formally Verified FP8 Architecture*](https://docs.google.com/presentation/d/1EMqJOJCNTBaCVEf5EfYI_CymVg--K8ezVyCJcr7ovys/present)** — the project as a presentation deck (design, verification, results).
 - **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction (RTL/silicon track): the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the **FPGA-card** product path (ASIC out of scope).
 - **[`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md)** — productization plan for the **USB-C external device** (the appliance track): form factor, power (~80–110 W self-powered), thermal, host software, BOM/pricing (~$2.5–8 k [EST]), phased D0–D5 gates. The heavy traffic stays internal → USB-C carries only tokens.
 - **[`host/`](host/README.md)** — the **host software scaffold** (D2): a local **OpenAI-compatible server** (`python3 host/aipu_server.py`, stdlib only) mirroring the RTL host interface, the **real GLM-5.2 BPE tokenizer** (+ byte fallback), the **GLM chat template**, OpenAI **sampling params**, and 3 backends — `MockDevice`, **`SimulatorBackend`** (drives the real `glm_model_fp8` slice via `vvp`), and USB (at D1). `make host-test` (18 tests).
