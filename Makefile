@@ -51,7 +51,7 @@ UNITS := instruction_decoder register_file memory tile_memory vector_alu \
 
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint synth synth-glm synth-glm-compact sim-glm-compact cdc ppa clean
+.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint host-test synth synth-glm synth-glm-compact sim-glm-compact cdc ppa clean
 
 all: test hazard unittests lint synth synth-glm formal
 
@@ -574,6 +574,10 @@ wave: $(SIM_BIN)
 
 lint:
 	$(VERILATOR) --lint-only -Wall -Isrc --top-module TPU $(DESIGN)
+
+# Host software scaffold (D2): OpenAI-compatible server + device protocol (stdlib).
+host-test:
+	@printf '[host] '; python3 host/test_aipu.py | tail -1
 
 # Yosys synthesis gate: elaborate the whole hierarchy, run proc/opt, then
 # `check -assert` which FAILS (non-zero exit) on any structural problem
