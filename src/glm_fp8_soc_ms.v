@@ -61,6 +61,12 @@ module glm_fp8_soc_ms #(
     parameter integer KV_CTX     = 1024,   // logical KV context capacity (positions)
     parameter integer KV_RESIDENT= 16,     // KV ring capacity per sequence (POWER OF TWO)
     parameter integer FLASH_LAT  = 8,
+    // routed-expert cache (GDDR6 cache + Flash) -- shared by the B sequences: the
+    //   batched forward's MoE union-skip means expert episodes are DEDUPLICATED
+    //   across sequences, so the cache sees fewer distinct fetches than B separate
+    //   decodes.  Demand-only here (prefetch tied off) for a self-contained top.
+    parameter integer CACHE_SLOTS = 4,
+    parameter integer EFIFO_DEPTH = 16,
     // ---- derived (do NOT override) ----
     parameter integer NSEQ       = PE_M,
     parameter integer SWIN       = PE_M*TOPK_ATTN,               // multi-seq attention scratch
@@ -94,7 +100,9 @@ module glm_fp8_soc_ms #(
     parameter integer NVTILE     = VOCAB/LM_TN,
     parameter integer VTW        = (NVTILE<=1)?1:$clog2(NVTILE),
     parameter integer ROW_BITS   = (KV_LORA + ROPE) * 16,
-    parameter integer KVPOSW     = (KV_CTX <= 1) ? 1 : $clog2(KV_CTX)
+    parameter integer KVPOSW     = (KV_CTX <= 1) ? 1 : $clog2(KV_CTX),
+    parameter integer CSLOTW     = (CACHE_SLOTS <= 1) ? 1 : $clog2(CACHE_SLOTS),
+    parameter integer EFW        = (EFIFO_DEPTH <= 1) ? 1 : $clog2(EFIFO_DEPTH)
 )(
     input  wire                          clk,
     input  wire                          rst,          // sync, active-high
@@ -174,7 +182,14 @@ module glm_fp8_soc_ms #(
     output wire [KVPOSW-1:0]             flash_idx,
     output wire [SEQW-1:0]               flash_seq,
     input  wire                          flash_done,
-    input  wire [ROW_BITS-1:0]           flash_row
+    input  wire [ROW_BITS-1:0]           flash_row,
+
+    //========================== routed-expert cache Flash channel ============
+    output wire                          ec_flash_req,       // an expert-weight Flash fetch in flight
+    output wire [EIDXW-1:0]              ec_flash_expert_id, // which routed expert
+    input  wire                          ec_flash_done,      // the PHY served it
+    output wire [31:0]                   ec_hit_count,       // cache stats (observability)
+    output wire [31:0]                   ec_miss_count
 );
 
     //------------------------------------------------------------------------
@@ -364,8 +379,67 @@ module glm_fp8_soc_ms #(
         .ecc_serr(), .ecc_derr()
     );
 
+    //------------------------------------------------------------------------
+    // 4) ROUTED-EXPERT CACHE (demand-only): detect each distinct (layer, expert)
+    //    MoE episode from the model's fw_* stream, FIFO it, serve via
+    //    expert_cache_pf (GDDR6 cache + Flash).  With B sequences batched, the
+    //    model's MoE union-skip already DEDUPLICATES experts ACROSS sequences, so
+    //    the cache sees the batched (shared) episode stream -- fewer distinct Flash
+    //    fetches than B independent decodes (the continuous-batching bandwidth win
+    //    on the dominant expert-weight traffic).  Prefetch is tied off here.
+    //------------------------------------------------------------------------
+    wire moe_layer  = (db_layer >= N_DENSE[LAYW-1:0]);
+    wire cur_routed = fw_req && !fw_shared && moe_layer;
+
+    reg             ep_active;
+    reg [EIDXW-1:0] ep_eidx;
+    reg [LAYW-1:0]  ep_layer;
+    wire new_episode = cur_routed &&
+                       (!ep_active || (fw_eidx != ep_eidx) || (db_layer != ep_layer));
+
+    reg [EIDXW-1:0] efifo [0:EFIFO_DEPTH-1];
+    reg [EFW:0]     ef_wr, ef_rd;
+    wire            ef_empty = (ef_wr == ef_rd);
+    wire [EFW:0]    ef_cnt   = ef_wr - ef_rd;
+    wire            ef_full  = (ef_cnt == EFIFO_DEPTH[EFW:0]);
+    reg             awaiting;
+    wire            ec_req_valid = (!ef_empty) && (!awaiting);
+    wire [EIDXW-1:0] ec_req_id   = efifo[ef_rd[EFW-1:0]];
+    wire            ec_resp_valid, ec_hit, ec_busy;
+    wire [CSLOTW-1:0] ec_resp_slot;
+
+    integer efi;
+    always @(posedge clk) begin
+        if (rst) begin
+            ep_active <= 1'b0; ep_eidx <= {EIDXW{1'b0}}; ep_layer <= {LAYW{1'b0}};
+            ef_wr <= {(EFW+1){1'b0}}; ef_rd <= {(EFW+1){1'b0}}; awaiting <= 1'b0;
+            for (efi = 0; efi < EFIFO_DEPTH; efi = efi + 1) efifo[efi] <= {EIDXW{1'b0}};
+        end else begin
+            ep_active <= cur_routed;
+            if (cur_routed) begin ep_eidx <= fw_eidx; ep_layer <= db_layer; end
+            if (new_episode && !ef_full) begin
+                efifo[ef_wr[EFW-1:0]] <= fw_eidx;
+                ef_wr <= ef_wr + 1'b1;
+            end
+            if (ec_req_valid) awaiting <= 1'b1;
+            if (awaiting && ec_resp_valid) begin awaiting <= 1'b0; ef_rd <= ef_rd + 1'b1; end
+        end
+    end
+
+    expert_cache_pf #(
+        .SLOTS(CACHE_SLOTS), .N_EXPERT(N_EXPERT), .FLASH_LAT(FLASH_LAT), .CACHE_HIT_LAT(0)
+    ) u_ecache (
+        .clk(clk), .rst(rst),
+        .req_valid(ec_req_valid), .req_expert_id(ec_req_id),
+        .resp_valid(ec_resp_valid), .hit(ec_hit), .resp_slot(ec_resp_slot), .busy(ec_busy),
+        .pf_valid(1'b0), .pf_expert_id({EIDXW{1'b0}}), .pf_ready(),
+        .flash_req(ec_flash_req), .flash_expert_id(ec_flash_expert_id), .flash_done(ec_flash_done),
+        .hit_count(ec_hit_count), .miss_count(ec_miss_count),
+        .demand_stall_cycles(), .pf_issued(), .pf_hit()
+    );
+
     /* verilator lint_off UNUSEDSIGNAL */
-    wire _unused = &{1'b0, mdl_busy, pg_busy, pg_row_valid};
+    wire _unused = &{1'b0, mdl_busy, pg_busy, pg_row_valid, ec_hit, ec_busy, ec_resp_slot};
     /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule

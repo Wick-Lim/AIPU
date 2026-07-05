@@ -352,6 +352,9 @@ module glm_fp8_soc_ms_tb;
     wire                      lw_req_w; wire [VTW-1:0] lw_vtile_w; wire [DIMW-1:0] lw_k_w; reg [LM_TN*16-1:0] lw_col_w;
     wire [SEQW-1:0]           kv_seq_sel_w; wire [KVPOSW_TB-1:0] kv_row_sel_w; wire [ROW_BITS_TB-1:0] kv_row_out_w;
     wire                      flash_req_w; wire [KVPOSW_TB-1:0] flash_idx_w; wire [SEQW-1:0] flash_seq_w;
+    wire                      ecf_req_w; wire [EIDXW-1:0] ecf_eid_w; reg ecf_done_w;
+    wire [31:0]               ec_hits_w, ec_misses_w;
+    integer ecf_cnt; reg ecf_active;
 
     glm_fp8_soc_ms #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
@@ -381,8 +384,22 @@ module glm_fp8_soc_ms_tb;
         .kv_seq_sel(kv_seq_sel_w), .kv_row_sel(kv_row_sel_w),
         .kv_row_in({ROW_BITS_TB{1'b0}}), .kv_row_out(kv_row_out_w),
         .flash_req(flash_req_w), .flash_idx(flash_idx_w), .flash_seq(flash_seq_w),
-        .flash_done(1'b0), .flash_row({ROW_BITS_TB{1'b0}})
+        .flash_done(1'b0), .flash_row({ROW_BITS_TB{1'b0}}),
+        .ec_flash_req(ecf_req_w), .ec_flash_expert_id(ecf_eid_w), .ec_flash_done(ecf_done_w),
+        .ec_hit_count(ec_hits_w), .ec_miss_count(ec_misses_w)
     );
+    // routed-expert-cache Flash stub: pulse done FLASH_LAT cycles after a held req.
+    always @(posedge clk) begin
+        if (rst) begin ecf_done_w<=1'b0; ecf_active<=1'b0; ecf_cnt<=0; end
+        else begin
+            ecf_done_w <= 1'b0;
+            if (ecf_req_w && !ecf_active && !ecf_done_w) begin ecf_active<=1'b1; ecf_cnt<=5; end
+            else if (ecf_active) begin
+                if (ecf_cnt<=1) begin ecf_done_w<=1'b1; ecf_active<=1'b0; end
+                else ecf_cnt<=ecf_cnt-1;
+            end
+        end
+    end
     /* verilator lint_off UNUSEDSIGNAL */
     wire _u_w = &{1'b0, busy_w, tokv_w, em_req_w, em_tok_w, aw_req_w, fw_req_w, rw_req_w, gn_req_w, fn_req_w, lw_req_w, idx_fresh_w, idx_win_w, kv_seq_sel_w, kv_row_sel_w, kv_row_out_w, flash_req_w, flash_idx_w, flash_seq_w};
     /* verilator lint_on UNUSEDSIGNAL */
@@ -541,8 +558,8 @@ module glm_fp8_soc_ms_tb;
         //   query at pos = s_len too (pos := s_len below).  DENSE regime (S<=TOPK_ATTN).
         s_len = 1; pos = s_len; build_stimulus(500,  0); do_case(3, 11);
         s_len = 2; pos = s_len; build_stimulus(7000, 0); do_case(11, 5);
-        // SPARSE (s_len>TOPK_ATTN) deferred -- pre-existing tiny-slice non-convergence,
-        //   orthogonal to multi-seq (see glm_model_fp8_multiseq_tb).
+        // SPARSE regime (s_len > TOPK_ATTN): converges after the dsa_indexer fix.
+        s_len = S_MAX; pos = s_len; build_stimulus(90000, 1); do_case(5, 9);
 
         if (errors != 0) begin
             $display("FAILED: %0d mismatch(es) across %0d tests", errors, test_count);

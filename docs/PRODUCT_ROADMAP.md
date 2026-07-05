@@ -67,15 +67,20 @@ one thing the slice cannot.
   model→decoder→mla. Proven: mla multi-seq TB (32, incl. weight-share), and the **full
   glm_model_fp8 batches 2 DIFFERENT sequences** (per-row argmax/logits bit-exact vs per-seq PE_M=1
   goldens; query-side weight stream shared, ~41% fewer attn-weight beats than two separate runs) —
-  DENSE regime (S≤TOPK_ATTN); PER_ROW_SEQ=0 byte-identical throughout. And a **batched
-  multi-sequence TOP now exists** — `glm_fp8_soc_ms` runs `glm_model_fp8` at PE_M=B with a REAL
-  `NSEQ`-window `kv_cache_pager`: a host FSM prefills B sequences into their own windows
-  (`append_seq`), runs ONE batched forward (row r → sequence r via `seq_vec`; `kc_seq` →
-  `gather_seq`), and commits B next tokens — each row's token bit-exact vs a per-seq PE_M=1 model,
-  query-side weights shared (`glm_fp8_soc_ms_tb`). **Remains:** productionize the top (fold in the
-  `expert_cache_pf`/Flash-arbiter from `glm_fp8_soc`; a real per-layer KV data path vs today's
-  per-(seq,layer) stub); per-seq DSA prefetch for the SPARSE regime (`DSA_REAL_IDX=1` / S>TOPK);
-  real draft chaining; full B-coverage for batched_moe; scale-up + real-checkpoint validation.
+  now BOTH the DENSE and the **SPARSE** regime (S>TOPK_ATTN — the real long-context/DSA regime;
+  unblocked by the `dsa_indexer` `LANES[IDXW:0]`-truncation fix that had frozen the sparse group
+  loop for S_MAX≤4); PER_ROW_SEQ=0 byte-identical throughout. And a **batched multi-sequence TOP
+  exists and is productionizing** — `glm_fp8_soc_ms` runs `glm_model_fp8` at PE_M=B with a REAL
+  `NSEQ`-window `kv_cache_pager` **and the `expert_cache_pf` routed-expert cache** (batched MoE
+  union-skip dedups experts across sequences → the cache sees fewer distinct Flash fetches than B
+  separate decodes): a host FSM prefills B sequences into their own windows (`append_seq`), runs
+  ONE batched forward (row r → sequence r via `seq_vec`; `kc_seq` → `gather_seq`), and commits B
+  next tokens — each row bit-exact vs a per-seq PE_M=1 model, query-side weights shared, dense +
+  sparse (`glm_fp8_soc_ms_tb`, 3 cases). **Remains:** a REAL per-layer KV data path (the pager
+  serving the model's per-layer KV vs today's per-(seq,layer) stub + window model); per-seq DSA
+  *prefetch* for `DSA_REAL_IDX=1` (real query-dependent IndexShare) under multi-seq; real draft
+  chaining; full B-coverage for batched_moe; scale-up (B>2 is general by construction — the union
+  build loops over PE_M — but untested at B=4+) + real-checkpoint validation (GPU host).
 
 ### P2 — Productize the RTL (robustness)
 - P2.1 ECC on DDR5 + Flash; error detection / correction / retry / recovery paths.
