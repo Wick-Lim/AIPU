@@ -68,6 +68,9 @@ module glm_model_fp8 #(
     parameter integer KV_LORA    = 32,
     parameter integer S_MAX      = 8,
     parameter integer TOPK_ATTN  = 8,           // DSA budget (dense for slice)
+    // attention union-slot scratch depth (mla SWIN). Default = mla's own default
+    //   (byte-identical). For PER_ROW_SEQ=1 the caller sets SWIN >= PE_M*TOPK_ATTN.
+    parameter integer SWIN       = (S_MAX < TOPK_ATTN) ? S_MAX : TOPK_ATTN,
     parameter integer THETA      = 8000000,
     parameter integer PE_N       = 4,
     parameter integer POSW       = 20,
@@ -250,7 +253,7 @@ module glm_model_fp8 #(
     glm_decoder_block_fp8 #(
         .MODEL_DIM(MODEL_DIM), .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE),
         .V_DIM(V_DIM), .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX),
-        .TOPK_ATTN(TOPK_ATTN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
+        .TOPK_ATTN(TOPK_ATTN), .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
         .N_EXPERT(N_EXPERT), .TOPK(TOPK), .INTER_MOE(INTER_MOE),
         .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),

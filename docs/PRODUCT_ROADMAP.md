@@ -23,7 +23,7 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 |---|---|---|
 | Correctness scope | operator bit-exact + a **truncated full-model token chain on real weights** (dense→MoE seam, real 256-expert route, DSA threaded, argmax-identical on a real prompt — DSA-IndexShare + fused-expert blockers retired) | the **full 753 GB checkpoint** produces the real model's tokens **at full depth** end-to-end |
 | Scale | small faithful slice (128/6/8); the **full 753B config elaborates clean** (verilator, 0 errors) | full config *simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
-| Batching/KV | PE_M batch on all 4 wrappers; **per-row position/extent now threaded model→decoder→mla** (byte-identical); **KV pager now has `NSEQ` INDEPENDENT ring windows** (per-seq counter/window/eviction + `flash_seq` cold keying; NSEQ=1 byte-identical; directed multi-seq TB + BMC/k-induction); grouped MoE **union-skips**; ÷K TB-driven; batched_moe B=4 | wire the multi-seq pager into mla/decoder per batch lane at production widths; real draft chaining; full B coverage |
+| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0 | a **batched PE_M=B SoC/system top + multi-seq host FSM** (tops are PE_M=1); per-seq DSA prefetch for the SPARSE regime; real draft chaining; full B coverage |
 | Memory | DDR5/Flash/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (+ clk_throttle) + directed TBs at slice; **verilator line/toggle/branch coverage** (`make coverage`, 87.8% line merged) | coverage *closure*, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
@@ -58,11 +58,19 @@ one thing the slice cannot.
   full-config RTL elaboration (synth-only where sim is intractable).
 - P1.3 Close the prototype correctness gaps for product: **per-position causal KV** (replace the
   PE_M shared-pos decode-batch regime with a real per-row position/KV). **Done so far:** per-row
-  position/extent threaded model→decoder→mla, and the **KV pager storage side** now carries
-  `NSEQ` independent ring windows (per-sequence counter/resident-window/eviction + `flash_seq`
-  cold keying; NSEQ=1 byte-identical, verified by directed multi-seq TB + the BMC/k-induction
-  harnesses). **Remains:** drive `append_seq`/`gather_seq` per batch lane from mla/decoder at
-  production widths, real draft chaining for batched-verify, full B-coverage for batched_moe.
+  position/extent threaded model→decoder→mla; the **KV pager storage side** carries `NSEQ`
+  independent ring windows (per-seq counter/window/eviction + `flash_seq` cold keying; NSEQ=1
+  byte-identical, verified by directed multi-seq TB + BMC/k-induction); and **multi-sequence
+  batched attention (`PER_ROW_SEQ`) is now real end-to-end through the FULL MODEL** — mla replaces
+  the shared-seq union-skip with a per-row-slot union tagged by `union_seq`, emits `kc_seq` to
+  route each fetch to its sequence's window, and `PER_ROW_SEQ`/`seq_vec`/`kc_seq`/`SWIN` thread
+  model→decoder→mla. Proven: mla multi-seq TB (32, incl. weight-share), and the **full
+  glm_model_fp8 batches 2 DIFFERENT sequences** (per-row argmax/logits bit-exact vs per-seq PE_M=1
+  goldens; query-side weight stream shared, ~41% fewer attn-weight beats than two separate runs) —
+  DENSE regime (S≤TOPK_ATTN); PER_ROW_SEQ=0 byte-identical throughout. **Remains:** a batched
+  (PE_M=B) SoC/system TOP + multi-seq host FSM to drive `seq_vec`/pager `append_seq`/`gather_seq`
+  end-to-end (all tops are currently PE_M=1); per-seq DSA prefetch for the SPARSE regime
+  (`DSA_REAL_IDX=1` / S>TOPK); real draft chaining; full B-coverage for batched_moe.
 
 ### P2 — Productize the RTL (robustness)
 - P2.1 ECC on DDR5 + Flash; error detection / correction / retry / recovery paths.
