@@ -85,11 +85,13 @@ module glm_model_fp8 #(
     parameter integer PE_M       = 1,
     parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions via pos_vec (P1.3a)
     parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents via s_len_vec (P1.3d)
+    parameter integer PER_ROW_SEQ = 0,  // 1 = per-row sequence ids via seq_vec (A2; kc_seq out)
     // ====================================================================
     // derived (do NOT override) -- mirror decoder_block_fp8's port-width derivations
     // ====================================================================
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
+    parameter integer SEQW       = (PE_M  <= 1) ? 1 : $clog2(PE_M),   // per-row seq-id width (PER_ROW_SEQ)
     parameter integer HQK        = H_HEADS * QK_DIM,
     parameter integer HNOPE      = H_HEADS * NOPE,
     parameter integer HV         = H_HEADS * V_DIM,
@@ -140,6 +142,7 @@ module glm_model_fp8 #(
     input  wire [POSW-1:0]               pos,        // query position (RoPE) -- SHARED (row 0)
     input  wire [POSW*PE_M-1:0]          pos_vec,    // per-row positions (PER_ROW_POS=1; row0=pos)
     input  wire [(IDXW+1)*PE_M-1:0]      s_len_vec,  // per-row extents   (PER_ROW_SLEN=1; row0=s_len)
+    input  wire [SEQW*PE_M-1:0]          seq_vec,    // per-row sequence ids (PER_ROW_SEQ=1; row0=seq0)
     input  wire [IDXW:0]                 s_len,      // S causal keys (<= S_MAX) -- SHARED
 
     // ---- outputs (PE_M rows, row-major) ----
@@ -175,6 +178,7 @@ module glm_model_fp8 #(
     // ---- decoder_block_fp8 attention KV-cache read (per-layer; BF16) ----
     output wire                          kc_req,
     output wire [IDXW-1:0]               kc_idx,
+    output wire [SEQW-1:0]               kc_seq,     // PER_ROW_SEQ=1: fetched key's sequence window
     input  wire [KV_LORA*16-1:0]         kc_ckv,
     input  wire [ROPE*16-1:0]            kc_krope,
     input  wire                          kc_valid,
@@ -249,16 +253,17 @@ module glm_model_fp8 #(
         .TOPK_ATTN(TOPK_ATTN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
         .N_EXPERT(N_EXPERT), .TOPK(TOPK), .INTER_MOE(INTER_MOE),
         .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M),
-        .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN)
+        .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
+        .PER_ROW_SEQ(PER_ROW_SEQ)
     ) u_block (
         .clk(clk), .rst(rst), .start(db_start), .busy(db_busy), .done(db_done),
         .mode(db_mode), .pos(pos), .s_len(s_len),
-        .pos_vec(pos_vec), .s_len_vec(s_len_vec),
+        .pos_vec(pos_vec), .s_len_vec(s_len_vec), .seq_vec(seq_vec),
         .x_vec(xcur_vec), .y_out(db_y),
         .gn_req(gn_req), .gn_which(gn_which), .gn_idx(gn_idx), .gn_val(gn_val),
         .aw_req(aw_req), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(aw_k),
         .aw_col(aw_col), .aw_scale(aw_scale),
-        .kc_req(kc_req), .kc_idx(kc_idx), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
+        .kc_req(kc_req), .kc_idx(kc_idx), .kc_seq(kc_seq), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
         .kc_valid(kc_valid),
         .rw_req(rw_req), .rw_k(rw_k), .rw_col(rw_col), .rw_scale(rw_scale),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
