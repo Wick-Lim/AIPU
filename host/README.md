@@ -15,12 +15,27 @@ lands.
 | Device protocol (`aipu_device.py`) | **real** — mirrors `glm_fp8_system_cdc`'s host interface exactly (`start`/`prompt_tok`/`start_pos`/`s_len` → `busy`/`done`/`next_tok`/`tok_valid`) + the boot-loader-done readiness gate |
 | OpenAI API surface (`aipu_server.py`) | **real** — `/v1/models`, `/v1/chat/completions` (streaming SSE + non-streaming), `/health`; stdlib only, 0 deps |
 | Generation loop | **real** — prefill → autoregressive decode → token streaming |
-| Tokenizer | **scaffold** — byte-level (exact round-trip); the real GLM-5.2 `tokenizer.json` plugs into the same `encode`/`decode` interface |
-| Backend (`MockDevice`) | **scaffold** — returns a clearly-labelled canned reply (proves the plumbing, **not** the model). Swap for a simulator-backed or real-USB-C backend without touching the server |
+| Tokenizer | **both** — byte-level (stdlib, exact round-trip) **and the REAL GLM-5.2 BPE** (`tokenizer.json` via the `tokenizers` lib); `make_tokenizer()` picks GLM when available, else byte. Verified: round-trips English / Korean / code, streaming-safe across multi-byte chars (vocab 154856, eos `<\|endoftext\|>`=154820) |
+| Backend (`MockDevice`) | **scaffold** — replays a clearly-labelled canned reply (tokenizer-agnostic: proves the plumbing for BOTH vocabularies, **not** the model). Swap for a simulator-backed or real-USB-C backend without touching the server |
 
-The point: the **protocol + API + streaming are done and swappable**; only the
-*backend* (real device / full-model runtime) and the *real tokenizer* remain, and
-those are the D1/hardware dependency — not blocking this layer.
+The point: the **protocol + API + streaming + tokenizer are done and swappable**;
+only the *backend* (real device / full-model runtime) remains — the D1/hardware
+dependency, not blocking this layer.
+
+## Tokenizer
+
+```sh
+pip install tokenizers            # once
+host/fetch_tokenizer.sh           # ~20 MB from the public repo -> host/tokenizer.json (gitignored)
+python3 host/aipu_server.py       # now uses the GLM BPE tokenizer (auto-detected)
+# or point at a path:  python3 host/aipu_server.py --tokenizer /path/to/tokenizer.json
+```
+
+Without `tokenizers` or `tokenizer.json`, the server falls back to the byte tokenizer
+(the plumbing still works end-to-end). `make_tokenizer()` in `aipu_tokenizer.py` is
+the single selection point; the GLM tokenizer is paired with a real GLM-vocab backend
+(the byte MockDevice is fine for either, since it replays whatever ids the server
+encodes).
 
 ## Run
 

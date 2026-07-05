@@ -118,57 +118,52 @@ class AIPUDevice(abc.ABC):
 
 
 class MockDevice(AIPUDevice):
-    """A backend that implements the full protocol but returns a clearly-labelled
-       canned response byte-stream. Proves the end-to-end plumbing (HTTP -> tokenize
-       -> device protocol -> detokenize -> HTTP streaming) WITHOUT pretending to be
-       the model. Uses a byte-level vocab (0..255) so text round-trips exactly."""
+    """A backend that implements the full protocol but REPLAYS a fixed list of token
+       ids (set by the server for this turn). Tokenizer-agnostic -- the server encodes
+       a clearly-labelled canned reply with whatever tokenizer is active (byte OR the
+       real GLM BPE) and the mock replays those ids -- so it proves the end-to-end
+       plumbing (HTTP -> tokenize -> device protocol -> detokenize -> HTTP streaming)
+       for BOTH vocabularies WITHOUT pretending to be the model. A real device would
+       run glm_fp8_system_cdc and emit real next-token ids here."""
 
-    vocab_size = 256
-    eos_token = 256                                 # out-of-band EOS (not a byte)
-
-    def __init__(self, boot_seconds: float = 0.4, reply: str | None = None) -> None:
+    def __init__(self, boot_seconds: float = 0.4, eos_token: int = 256,
+                 vocab_size: int = 256) -> None:
         super().__init__()
         self._boot = boot_seconds
-        self._reply_bytes: list[int] = []
+        self.eos_token = eos_token                  # server sets this to tok.eos_id
+        self.vocab_size = vocab_size
+        self._reply_ids: list[int] = []
         self._cursor = 0
-        self._default_reply = reply
 
     def _boot_seconds(self) -> float:
         return self._boot
 
     def reset_session(self) -> None:
         # New sequence: reset the decode cursor (analogous to clearing the device's
-        # DDR5 KV). The per-turn reply set by the server via set_reply() survives --
-        # set_reply is called for THIS turn just before generate().
+        # DDR5 KV). The per-turn reply ids set by the server survive (set just before
+        # generate()).
         self._cursor = 0
 
-    def set_reply(self, text: str) -> None:
-        """Server sets the canned reply for this turn (derived from the prompt)."""
-        self._reply_bytes = list(text.encode("utf-8")) + [self.eos_token]
+    def set_reply_ids(self, ids) -> None:
+        """Server sets this turn's canned reply as token ids (in the active tokenizer's
+           space), terminated by eos."""
+        self._reply_ids = list(ids) + [self.eos_token]
         self._cursor = 0
-
-    def _ensure_reply(self) -> None:
-        if not self._reply_bytes:
-            self.set_reply(self._default_reply
-                           or "[AIPU mock device] protocol OK -- real tokens need the "
-                              "hardware/full-model backend.")
 
     def prefill(self, prompt_ids, start_pos: int) -> int:
-        # Mock: the prompt builds no real KV and does NOT consume the canned reply;
-        # the first decode token is reply[0]. (A real device would stream prompt
-        # tokens through glm_fp8_system_cdc to build its DDR5 KV.)
-        self._ensure_reply()
+        # Mock: the prompt builds no real KV and does NOT consume the reply; the first
+        # decode token is reply[0]. (A real device streams the prompt through
+        # glm_fp8_system_cdc to build its DDR5 KV.)
         self._cursor = 0
-        out = self._reply_bytes[0] if self._reply_bytes else self.eos_token
+        out = self._reply_ids[0] if self._reply_ids else self.eos_token
         self._cursor = 1
         return out
 
     def step(self, prompt_tok: int, start_pos: int, s_len: int) -> int:
-        # Mock decode: emit the next byte of the canned reply.
+        # Mock decode: emit the next reply id.
         self.state = DeviceState.BUSY
-        self._ensure_reply()
-        out = (self._reply_bytes[self._cursor]
-               if self._cursor < len(self._reply_bytes) else self.eos_token)
+        out = (self._reply_ids[self._cursor]
+               if self._cursor < len(self._reply_ids) else self.eos_token)
         self._cursor += 1
         self.state = DeviceState.READY
         return out

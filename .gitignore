@@ -21,3 +21,6 @@ __pycache__/
 *.pyc
 .deferred/
 build_f0/
+
+# GLM tokenizer data (fetch via host/fetch_tokenizer.sh)
+host/tokenizer.json

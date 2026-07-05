@@ -28,49 +28,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from aipu_device import AIPUDevice, MockDevice          # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# Byte-level tokenizer (scaffold): text <-> byte ids (0..255), exact round-trip.
-# The real GLM-5.2 tokenizer (tokenizer.json) plugs in here at D2 -- same encode/
-# decode interface, larger vocab.
-# ---------------------------------------------------------------------------
-class ByteTokenizer:
-    vocab_size = 256
-
-    def encode(self, text: str) -> list[int]:
-        return list(text.encode("utf-8"))
-
-    class _Stream:
-        """Incremental UTF-8 decoder: feed byte ids, get decodable text deltas."""
-        def __init__(self):
-            self._buf = bytearray()
-
-        def push(self, byte_id: int) -> str:
-            if byte_id < 0 or byte_id > 255:
-                return ""
-            self._buf.append(byte_id)
-            try:
-                out = self._buf.decode("utf-8")
-                self._buf.clear()
-                return out
-            except UnicodeDecodeError:
-                return ""                       # wait for the rest of the char
-
-        def flush(self) -> str:
-            out = self._buf.decode("utf-8", errors="replace")
-            self._buf.clear()
-            return out
-
-    def stream(self) -> "ByteTokenizer._Stream":
-        return self._Stream()
+from aipu_tokenizer import make_tokenizer               # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 class AIPUServer:
-    def __init__(self, device: AIPUDevice, tokenizer: ByteTokenizer):
+    def __init__(self, device: AIPUDevice, tokenizer):
         self.device = device
         self.tok = tokenizer
 
@@ -83,17 +48,21 @@ class AIPUServer:
         return "\n".join(parts)
 
     def _prime_mock(self, prompt: str) -> None:
+        """For the MockDevice: encode a clearly-labelled canned reply with the ACTIVE
+           tokenizer (byte or real GLM BPE) and hand the ids to the device to replay.
+           A real backend produces its own ids -> this is a no-op."""
         if isinstance(self.device, MockDevice):
-            self.device.set_reply(
-                f"[AIPU mock device] protocol round-trip OK -- received "
-                f"{len(prompt)} chars over the host interface. Real tokens need the "
-                f"hardware / full-model backend (docs/USBC_PRODUCT_PLAN.md D1).")
+            reply = (f"[AIPU mock device / {self.tok.name} tokenizer] protocol "
+                     f"round-trip OK -- received {len(prompt)} chars over the host "
+                     f"interface. Real tokens need the hardware / full-model backend "
+                     f"(docs/USBC_PRODUCT_PLAN.md D1).")
+            self.device.set_reply_ids(self.tok.encode(reply))
 
     def generate_text(self, messages, max_tokens):
         """Non-streaming: full assistant text."""
         prompt = self._prompt_text(messages)
-        self._prime_mock(prompt)
         prompt_ids = self.tok.encode(prompt)
+        self._prime_mock(prompt)
         st = self.tok.stream()
         chunks = []
         for tok in self.device.generate(prompt_ids, max_tokens):
@@ -104,8 +73,8 @@ class AIPUServer:
     def generate_stream(self, messages, max_tokens):
         """Streaming: yield text deltas as tokens decode."""
         prompt = self._prompt_text(messages)
-        self._prime_mock(prompt)
         prompt_ids = self.tok.encode(prompt)
+        self._prime_mock(prompt)
         st = self.tok.stream()
         for tok in self.device.generate(prompt_ids, max_tokens):
             piece = st.push(tok)
@@ -211,14 +180,18 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--boot-seconds", type=float, default=0.4,
                    help="modelled device boot (resident-set load) time")
+    p.add_argument("--tokenizer", default=None,
+                   help="path to GLM tokenizer.json (else byte-level fallback)")
     args = p.parse_args(argv)
 
-    device = MockDevice(boot_seconds=args.boot_seconds)
+    tok = make_tokenizer(args.tokenizer)
+    device = MockDevice(boot_seconds=args.boot_seconds,
+                        eos_token=tok.eos_id, vocab_size=tok.vocab_size)
     device.power_on()
-    server = AIPUServer(device, ByteTokenizer())
+    server = AIPUServer(device, tok)
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(server))
     print(f"AIPU server on http://{args.host}:{args.port}/v1  "
-          f"(model={device.model_id}, backend=MockDevice)")
+          f"(model={device.model_id}, backend=MockDevice, tokenizer={tok.name})")
     print("  GET  /v1/models   GET /health   POST /v1/chat/completions [stream]")
     try:
         httpd.serve_forever()
