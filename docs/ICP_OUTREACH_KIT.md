@@ -41,6 +41,11 @@ speed-to-LOI pick the beachhead.** Defense / OT / field-edge is a first-class, h
 air-gap is *mandatory* — but procurement runs slower, so work it as an expansion track, not the 2-week
 speed test.
 
+> **The quant wedge is written out in full** — its own personas, cold emails, discovery script, and
+> quant-specific objection handling ("we already have GPUs", "is it fast enough", "does it give alpha") —
+> in [`ICP_OUTREACH_KIT_QUANT.md`](ICP_OUTREACH_KIT_QUANT.md). Use this doc for legal, that one for quant,
+> and run both in parallel.
+
 ## 1. Target — the account and the three people
 
 **Account fit (all three, or don't bother):**

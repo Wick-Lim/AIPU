@@ -177,7 +177,8 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
 
 1. **A measured FPGA fit → a real per-seat BOM** (the [`fpga/`](../fpga/README.md) D0.2 track). Without it,
    "low-$k's per seat" is a hope, not a price.
-2. **One signed design partner from the primary segment** — a single law firm innovation team that says
-   *"yes, we'd pay per seat for a provably-local frontier box."* One real LOI > any spec sheet. The
-   copy-paste BD motion to land it — targeting, cold outreach, discovery script, the design-partner
-   offer, and an LOI template — is in [`ICP_OUTREACH_KIT.md`](ICP_OUTREACH_KIT.md).
+2. **One signed design partner from a lead wedge** — a law firm innovation team, or a quant fund's
+   research-eng lead, that says *"yes, we'd pay per seat for a provably-local frontier box."* One real
+   LOI > any spec sheet. The copy-paste BD motions to land it — targeting, cold outreach, discovery
+   script, design-partner offer, LOI — are in [`ICP_OUTREACH_KIT.md`](ICP_OUTREACH_KIT.md) (legal) and
+   [`ICP_OUTREACH_KIT_QUANT.md`](ICP_OUTREACH_KIT_QUANT.md) (quant); run both in parallel.
