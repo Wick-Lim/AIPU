@@ -22,10 +22,11 @@ set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 IMG="${IMG:-aipu-gowin}"
-# Pin the container MAC so the node-locked Gowin license stays valid across runs.
-# CHANGE THIS to whatever MAC you licensed (any locally-administered MAC is fine,
-# e.g. 02:...), then request the Education license for exactly this MAC.
-LOCK_MAC="${LOCK_MAC:-02:42:ac:11:00:99}"
+# Pin the container MAC to the one the Gowin license was issued for.  The license
+# here was node-locked to this Mac's en0 (Ethernet) MAC, so force the container to
+# present THAT MAC -- otherwise the license check fails (containers get a random MAC).
+#   en0 (Ethernet) of this machine:
+LOCK_MAC="${LOCK_MAC:-50:1F:C6:5B:D9:86}"
 
 COMPACT="${COMPACT:-0}"
 FLOW="${FLOW:-all}"     # all = synth+P&R (routed Fmax + .fs) | syn = synth-only fit
