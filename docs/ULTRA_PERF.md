@@ -7,6 +7,16 @@ accumulator, fmax fixes, predictor-prefetch [measured no-op]). Numbers marked **
 not measured. Compute is bit-exact to real GLM-5.2-FP8 (docs/BIT_ACCURACY.md); levers that change outputs are
 flagged **NOT bit-exact**.
 
+> **Product identity — a LOCAL, single-user personal box (read this first).** This accelerator is a
+> **personal appliance: one box, one user, running the full 753 B model locally** (private, offline,
+> no API fees — see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The performance number that
+> matters is therefore **single-user interactive throughput (~25–40 tok/s [EST]** with the faithful
+> levers stacked — the "Single-user" roofline row in §4). Any **aggregate-serving / datacenter-batch**
+> figures below (B≈256, ~50 tok/s *aggregate*, **per-user ~0.14 tok/s**) describe a **DIFFERENT,
+> non-target deployment** kept here only as analysis of what the same silicon *could* do batched —
+> that per-user latency does **not** describe the box you plug in. When in doubt, the single-user
+> numbers are the product.
+
 **The one equation.** The workload is Flash-bandwidth-bound:
 `tok/s ≈ Flash_BW / [(1−h)·footprint] · K`. Only three classes of idea move this wall:
 **(i) move fewer expert bytes** (sparsity / dedup / stronger decomp), **(ii) compute at the data** (near-Flash),
@@ -49,14 +59,17 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   to the NAND internal-sense limit (**10×+ tok/s [EST]**). Caveats: custom CSD/PIM silicon (**out-of-scope**
   for this repo), and it does **not** cut J/token (the sense energy is the cost). The compute core is reusable
   verified RTL.
-- **Aggregate batching (#1/#2/#3-knee)** — the datacenter regime. Reframes batching from the doc's "~1.5×"
-  (a B=32, LRU-hit-rate artifact) to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch
-  half is now integrated + verified in `glm_decoder_block_fp8`** (PE_M>1 fetches only the selected-expert
-  union), and a real **multi-sequence batched top** (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) now decodes B distinct
-  users in one forward with paged per-seq KV — proven per-row bit-exact at B=2/4. New knee at **B≈256**
-  (all 256 experts active: `E[distinct]=256·(1−0.96875^B)`), new ceiling = the compute roofline
-  **~50 tok/s aggregate @100 GB/s Flash**, reached near B≈355. Per-user latency floors at ~0.14 tok/s → an
-  **offline/throughput product, not chat**.
+- **Aggregate batching (#1/#2/#3-knee)** — ⚠️ **NOT the product; a secondary "what-if" for a datacenter
+  deployment of the same silicon.** Reframes batching from the doc's "~1.5×" (a B=32, LRU-hit-rate artifact)
+  to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch half is now integrated + verified
+  in `glm_decoder_block_fp8`** (PE_M>1 fetches only the selected-expert union), and a real **multi-sequence
+  batched top** (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) decodes B distinct users in one forward with paged per-seq
+  KV — proven per-row bit-exact at B=2/4. New knee at **B≈256** (all 256 experts active:
+  `E[distinct]=256·(1−0.96875^B)`), new ceiling = the compute roofline **~50 tok/s aggregate @100 GB/s
+  Flash**, reached near B≈355. **But per-user latency floors at ~0.14 tok/s at that batch — so THIS regime
+  is offline/throughput serving, NOT the local personal box.** The personal box runs at B=1 (single-user row
+  above); this bullet just documents that the RTL *also supports* batched serving if a datacenter product is
+  ever wanted.
 - **Stronger weight decomp (#3)** — only thing that uses the 75%-idle die to cut the *actual* wall. **Now
   built** (`weight_decomp2`, order-1 context-modeled Huffman, measured ~1.4–1.5× lossless): 1.34→~1.5× is a
   direct multiplier on **both** single-user tok/s **and** J/token (Flash bytes ≈ 80% of
@@ -159,18 +172,23 @@ The only thing that needs to be *invented*; the math die is ready.
 
 ## 4. Honest roofline — the three regimes
 
-| Regime | Product | Bound by | tok/s (today → with levers) **[EST]** | Levers that apply |
-|--------|---------|----------|----------------------------------------|-------------------|
-| **Single-user** | USB-C box, interactive chat | Flash BW (16 GB routed/tok @100 GB/s) | ~3–12 → **~25–40** | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
-| **Aggregate-serving** | datacenter batch, offline | Flash union then compute roofline | ~6 (B=1) → **~36–50** (×1.7 MTP → 60–85) | batched MoE #1, PE_M #2, paged KV #15, B≈256 knee, scheduler |
-| **Compute-bound** | hypothetical full-resident HBM | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-Flash #13 or HBM); array-scale for prefill |
+The **product is the first row** (local, single-user box). The other two are *analyses of the same silicon*
+under deployments this product does not target — kept for honesty, not as the roadmap.
 
-**Reading it.** Single-user stacking the faithful RTL levers (flash_xbar N× + decomp 1.34→~1.5× +
-activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~25–40 tok/s @100 GB/s**, approaching the
-~50 tok/s compute ceiling — at which point the answer is a bigger/cheaper compute die (compute is **not** the
-BOM cost). Aggregate batching reaches the **same** ~50 tok/s ceiling but as throughput (per-user latency
-floors at ~0.14 tok/s — offline only). The **only** way to raise the ceiling *itself* above ~50 is near-Flash
-compute (#13, custom silicon). Cache cleverness (predictor) and extra dies are provably capped.
+| Regime | Deployment | Bound by | tok/s (today → with levers) **[EST]** | Levers that apply |
+|--------|---------|----------|----------------------------------------|-------------------|
+| **Single-user ← THE PRODUCT** | **local personal box, interactive** | Flash BW (16 GB routed/tok @100 GB/s) | ~3–12 → **~25–40** | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
+| Aggregate-serving *(not the product)* | datacenter batch, offline | Flash union then compute roofline | ~6 (B=1) → **~36–50** (×1.7 MTP → 60–85) *aggregate; per-user ~0.14* | batched MoE #1, PE_M #2, paged KV #15, B≈256 knee, scheduler |
+| Compute-bound *(hypothetical)* | full-resident HBM | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-Flash #13 or HBM); array-scale for prefill |
+
+**Reading it.** The product — a **single-user local box** — stacking the faithful RTL levers (flash_xbar N× +
+decomp 1.34→~1.5× + activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~25–40 tok/s @100 GB/s**,
+comfortably interactive, approaching the ~50 tok/s compute ceiling — at which point the answer is a
+bigger/cheaper compute die (compute is **not** the BOM cost). *(The aggregate-serving row is a separate,
+non-target deployment: batching many users reaches the **same** ~50 tok/s ceiling but as pooled throughput, so
+each of the ~355 users floors at ~0.14 tok/s — that per-user figure belongs to a datacenter box, never to the
+personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-Flash compute (#13,
+custom silicon). Cache cleverness (predictor) and extra dies are provably capped.
 
 ---
 

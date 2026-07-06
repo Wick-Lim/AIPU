@@ -9,6 +9,15 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 `zai-org/GLM-5.2-FP8` reliably**. The mindset shifts from *demonstrate + measure a mechanism* to
 *run the real model correctly, at full scale, robustly, and ship it.*
 
+> **What the product IS: a LOCAL, single-user personal box.** One box, one user, running the full
+> 753 B model **locally** — private, offline, no per-token API fees. The performance metric that
+> matters is **single-user interactive throughput (~25–40 tok/s [EST]** with the faithful levers
+> stacked). The design is deliberately **Flash-bandwidth-bound to be cheap** (Flash holds the whole
+> model; DDR5 caches the hot working set). Any **aggregate / datacenter-batch** numbers in these docs
+> (B≈256, ~50 tok/s *aggregate*, per-user ~0.14 tok/s) are a **secondary analysis of a different,
+> non-target deployment** of the same silicon — the RTL supports it, but it is **not this product**,
+> and its per-user latency never describes the box you plug in.
+
 > **Two tracks.** This doc is the **RTL / silicon track** (make the chip correct, full-scale,
 > robust, synthesizable). The **device / appliance track** — the USB-C external box (form factor,
 > power, thermal, host software, enclosure, manufacturing, pricing) — is in

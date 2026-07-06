@@ -179,9 +179,11 @@ async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
   exposed Flash-refill; `cyc_per_tok` grows with `FLASH_LAT` (`stall = 3·FLASH_LAT+9` at the
   slice; `cyc_per_tok` 7947→8607 @FLASH_LAT=256), the roofline *mechanism* measured on real RTL
   cycles ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)).
-- **Projected (roofline, `[EST]`):** single-user ~6–16 tok/s, ~3 J/token; batched aggregate
-  ~40–85 tok/s. All `[EST]` — see [`ULTRA_PERF.md`](ULTRA_PERF.md); real silicon lands below the
-  roofline (achievable-vs-peak BW, second-order walls).
+- **Projected (roofline, `[EST]`):** **single-user ~6–16 tok/s** (→ ~25–40 with all levers), ~3 J/token
+  — **this is the product** (local, single-user box). The *batched aggregate* ~40–85 tok/s figure is a
+  **non-target datacenter regime** (per-user floors at ~0.14 tok/s there), kept only as analysis. All
+  `[EST]` — see [`ULTRA_PERF.md`](ULTRA_PERF.md); real silicon lands below the roofline (achievable-vs-peak
+  BW, second-order walls).
 
 ## 7. Per-token bottleneck (the honest critical path)
 

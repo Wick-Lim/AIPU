@@ -13,6 +13,13 @@ single-module memory system (multi-channel DDR5 + Flash expert cache + weight/bo
 multi-clock CDC) that streams the real 753B model — with the memory controllers
 bounded-model-checked.
 
+> **The product is a LOCAL, single-user box.** One box, one user, running the full 753B model
+> **locally** — private, offline, no per-token API fees. The number that matters is **single-user
+> interactive throughput (~3 → ~25–40 tok/s [EST]** after stacking the faithful levers); the design
+> is deliberately Flash-bandwidth-bound to keep it cheap. Where these docs mention *aggregate /
+> datacenter batching* (per-user ~0.14 tok/s at B≈256), that is a **secondary analysis of a
+> different deployment**, not this appliance — see [`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md).
+
 > **Naming.** **AIPU** (AI Processing Unit, repo [`Wick-Lim/AIPU`](https://github.com/Wick-Lim/AIPU))
 > is the whole accelerator. The project was formerly *TPU*; the classic *5-stage scalar TPU
 > core* underneath keeps its own name (*"TPU v2.0"*, `tpu_*` modules) as the control substrate.
