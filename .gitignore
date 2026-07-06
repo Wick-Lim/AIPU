@@ -24,3 +24,9 @@ build_f0/
 
 # GLM tokenizer data (fetch via host/fetch_tokenizer.sh)
 host/tokenizer.json
+
+# Gowin vendor flow (Docker) -- never commit the vendor binary or license
+fpga/gowin/docker/gowin_linux.tar.gz
+fpga/gowin/docker/gwlicense.lic
+impl/
+fpga/nextpnr/out/

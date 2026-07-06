@@ -6,25 +6,53 @@ cross-check the vendor numbers. It targets the same part — Gowin **GW5AT-138**
 (Sipeed Tang Mega 138K Pro) — via the [YosysHQ/apicula](https://github.com/YosysHQ/apicula)
 bitstream documentation and the **himbaechel** nextpnr architecture.
 
-> **HONEST CAVEAT — read first.** This path may not complete, for two independent
-> reasons:
+> **MEASURED STATUS (run on this Mac via oss-cad-suite).**
+> - ✅ **Toolchain works end-to-end** — `synth_gowin → nextpnr-himbaechel → gowin_pack`
+>   produced a real **`.fs` bitstream** for a *combinational* test design on GW5AST-138C.
+> - ✅ **Device + pins confirmed** — part `GW5AST-LV138PG484AC1/I0` (Tang Mega 138K Pro,
+>   PBGA484A); the 454 package pins came from the Gowin pinout `GW5AST-138C/PBGA484A.json`.
+> - ✅ **Placement/fit works for clocked designs** — nextpnr reports device utilisation +
+>   **Fmax** during placement *before* routing (a blinky: LUT4 39/138240, 482 MHz).
+> - ❌ **GW5A CLOCK ROUTING is incomplete in nextpnr-himbaechel** — every *clocked* design
+>   fails to route (even a single flip-flop: "Failed to route net 'clk...' to CLK sink").
+>   Our accelerator is entirely clocked, so **this open flow cannot emit a burnable clocked
+>   `.fs`** for GW5A yet. The fix is the **vendor Gowin flow** ([`../gowin/docker/`](../gowin/docker/)),
+>   whose P&R fully supports GW5A clock spines. Use THIS flow for the resource-fit estimate
+>   (synth `stat` + nextpnr placement util/Fmax); use the vendor flow for the routed `.fs`.
 >
-> 1. **The FP8/`abc` wall.** The reason a vendor flow exists at all is that
->    **yosys 0.66 cannot map the FP8 datapaths through `abc -lut4`** — it times
->    out on `glm_matmul_fp8`'s accumulator banks (see
->    [`../../docs/PHYSICAL_SKY130.md`](../../docs/PHYSICAL_SKY130.md), "FPGA
->    resource fit (ECP5)"). `synth_gowin` uses the *same* `abc` LUT mapper, so it
->    can hit the *same* wall. A newer yosys, or `synth_gowin -noabc9` / abc
->    scripting / partitioned synthesis, may help — but this is unproven here.
-> 2. **GW5A support maturity.** GW5A (Arora-V) support in apicula /
->    nextpnr-himbaechel is **newer and less complete** than GW1N/GW2A. Timing
->    models for GW5A are limited, so any Fmax from this flow is a **rough
->    estimate**, not a sign-off number. The **Gowin vendor flow is authoritative**
->    for GW5AT-138 fit; this is a fallback / sanity cross-check.
+> - **The FP8/`abc` wall is retired.** `synth_gowin` maps the FP8 datapath by
+>   inferring hardware **DSPs** (not LUT-mapping every multiply), and the O(NB²)
+>   dequant that blocked whole-system synth is **fixed** (O(1), bit-exact). So
+>   step 1 (synth) now completes and gives a real LUT/DSP/BSRAM estimate. A
+>   **recent** yosys is still wanted — it infers **BSRAM** for the O(NB) `accx`
+>   block-accumulator (the repo-baseline 0.66 flattens it to registers); oss-cad-suite
+>   ships one, plus the GW5A BRAM map (`brams_map_gw5a.v`).
+> - **GW5AT-138 IS in apycula** as **`GW5AST-138C`** (chipdb present:
+>   `chipdb-GW5AST-138C.bin`), so nextpnr routing is possible — but GW5A timing
+>   models are **newer/approximate**, so any Fmax here is a rough estimate, not a
+>   sign-off. The **Gowin vendor flow stays authoritative**; this is the
+>   here-and-now cross-check.
 >
-> Nothing in this directory has been run (Gowin is not installed in the authoring
-> environment, and the open flow inherits the same FP8 mapping risk). Treat the
-> commands below as a **ready-to-adapt sketch**.
+> Just run [`run.sh`](run.sh) (see below); the sketch that follows documents what
+> it does.
+
+## Quick start (`run.sh`)
+
+```sh
+# 1. Install oss-cad-suite (macOS x86_64 / Linux) -- recent yosys + nextpnr-himbaechel + apycula:
+URL=$(gh api repos/YosysHQ/oss-cad-suite-build/releases/latest \
+      --jq '.assets[]|select(.name|test("darwin-x64")).browser_download_url')   # darwin-x64 for Intel mac
+curl -L "$URL" -o oss.tgz && tar xzf oss.tgz -C $HOME                            # -> ~/oss-cad-suite
+
+# 2. Run the fit (from the repo root):
+fpga/nextpnr/run.sh                 # compact config, synth-only -> LUT/DSP/BSRAM
+fpga/nextpnr/run.sh default         # default (committed) config
+fpga/nextpnr/run.sh compact pnr     # + attempt nextpnr routing (GW5AST-138C, approximate Fmax)
+```
+
+Outputs land in `fpga/nextpnr/out/` (`stat_*.txt` = the resource fit; `*.json` = netlist).
+**Device string for step 2:** the Tang Mega 138K Pro's GW5AT-138 is **`GW5AST-138C`** in
+apycula/himbaechel.
 
 ## Prerequisites
 

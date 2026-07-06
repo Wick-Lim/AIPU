@@ -58,8 +58,10 @@
 #     * Or in gw_sh:  `get_device_info` after a `set_device`, or consult the
 #       Gowin "GW5AT series Product Brief" / device pin table.
 #     * Or read it off an existing Tang Mega 138K Pro Gowin project's .gprj.
-set PART        "GW5AT-LV138FCG676AC"   ;# <-- CONFIRM THIS (package/speed/grade)
-set DEVICE_NAME "GW5AT-138"             ;# device series / family name
+#   CONFIRMED against the Gowin pinout (apycula GW5AST-138C/PBGA484A.json):
+#   the Tang Mega 138K Pro is package PBGA484A, speed/grade C1/I0.
+set PART        "GW5AST-LV138PG484AC1/I0"  ;# Tang Mega 138K Pro (PBGA484A, C1/I0)
+set DEVICE_NAME "GW5AST-138C"              ;# device series / family name
 
 # --- CONFIG SELECT (env COMPACT) ------------------------------------------ #
 #   0 = default / committed slice config (PE_N=4, DDR_NCH=4, KV_RESIDENT=16,
