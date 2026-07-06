@@ -154,10 +154,10 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
 |---|---|---|
 | **Quant / prop-trading / hedge funds** | Fastest-moving buyers, **FPGA-native culture**, deep pockets, extreme data secrecy (won't leak signals/positions), love any edge | **Co-lead — test in parallel with legal from day one.** Fewer seats/account, but the fastest path to a first LOI. |
 | **IP-sensitive R&D** (pharma, semiconductor, defense-adjacent, proprietary-code shops) | Genuinely un-cloudable secrets (molecules, chip designs, source); real budgets | Second wave — longer eval cycles; more heterogeneous use cases to support. |
-| **Offline / disconnected environments** (defense/SCIF, isolated OT / critical-infra, field/edge — ships, subs, aircraft, rigs, mines, remote sites, denied/censored connectivity) | **First-class, high-value:** air-gap is *mandatory*, not a preference — no cloud (secured or not) can ever serve them; they pay for capability they cannot get any other way | Procurement speed **varies** — commercial OT / industrial / edge can move fast; classified gov is slow. Where it's US-federal classified, the Chinese-origin gate below still applies. |
-| **Government / defense / intelligence** | Highest willingness to pay; air-gap is *mandatory*; sovereignty tailwind | **Slow procurement (12–24 mo)** + a **GLM = Chinese-origin model** problem for US federal (needs an RTL retarget to a Western model first). High-value, wrong *first* customer. |
+| **Offline / disconnected environments** (defense/SCIF, isolated OT / critical-infra, field/edge — ships, subs, aircraft, rigs, mines, remote sites, denied/censored connectivity) | **First-class, high-value:** air-gap is *mandatory*, not a preference — no cloud (secured or not) can ever serve them; they pay for capability they cannot get any other way | Procurement speed **varies** — commercial OT / industrial / edge can move fast; classified gov is slow. US-federal classified additionally requires a domestic / vetted model → a model retarget (below), not a blocker. |
+| **Government / defense / intelligence** | Highest willingness to pay; air-gap is *mandatory*; independence tailwind | **Slow procurement (12–24 mo)**; US-federal additionally requires a domestic / vetted model → a **model retarget** first (the box is model-agnostic). High-value, wrong *first* customer. |
 | **Healthcare / clinical** (PHI/HIPAA) | Huge market, absolute privacy mandate | Very risk-averse, long procurement, heavy validation burden. |
-| **Sovereign-AI / national-security orgs** | The edge is **local + offline + model-agnostic** — run a frontier model *you trust*, on your own hardware, dependent on no foreign cloud/vendor. The model's *origin* is **not** the pitch (a Chinese model is itself a foreign dependency for most sovereignty buyers; the FPGA retargets to their own / a trusted model). | Lead with retargetability + independence, **not** GLM-the-Chinese-model; fragmented, relationship-driven, geopolitically complex. |
+| **Sovereign-AI / national-security orgs** | The edge is **local + offline + model-agnostic** — run a frontier model *you trust*, on your own hardware, dependent on no foreign cloud/vendor. The box runs the model *they* choose (FPGA-retargetable). | Lead with **independence + retargetability**; fragmented, relationship-driven, geopolitically complex. |
 
 ## Disqualifiers (who is **NOT** the ICP — stay focused)
 
@@ -170,8 +170,8 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
 - **Multi-user / high-QPS serving** — that's the **non-target datacenter regime** (per-user ~0.14 tok/s
   batched; see [`ULTRA_PERF.md`](ULTRA_PERF.md) §4). The box is **one seat**. Selling it as a shared
   server breaks the whole value prop.
-- **US federal / defense that cannot run a Chinese-origin model** — parked until the RTL is retargeted to
-  a Western frontier open-weight model (a real, but later, RTL effort).
+- **US federal / defense that require a specific domestic / vetted model** — parked until the RTL is
+  retargeted to that model (real, but later, RTL effort; the box is model-agnostic).
 
 ## The two things that make this ICP investable (both in flight)
 
