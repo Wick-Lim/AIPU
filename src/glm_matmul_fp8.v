@@ -399,136 +399,58 @@ module glm_matmul_fp8 #(
     endgenerate
 
     // ----------------------------------------------------------------------
-    // Time-shared dequant rescale: walk the NOUT output elements (one per
-    // cycle).  For element (ri,rj):
-    //   c = bf16( 2^-a_shift[ri] * SUM_bj ( fixed_to_fp32(accx[bj][ri][rj]) * w_scale[rj][bj] ) )
-    // The fixed-point block accumulators are converted to fp32 ONCE here (RNE);
-    // the per-block weight scales are the only 24x24 fp32 multiplies in the unit;
-    // the 2^-a_shift undo is an exact exponent add (LUT).
-    // ----------------------------------------------------------------------
-    reg [MW-1:0] ri;
-    reg [NW-1:0] rj;
-    reg [OW:0]   rcnt;
-
-    // PIPELINED dequant streaming ONE element/cycle.  The per-element math is the
-    // left-fold  deq = ((0 + acc[0]*w[0]) + acc[1]*w[1]) + ...  reusing the
-    // bit-exact fp32_mul_pipe / fp32_add_pipe.  The shallow 2^-a_shift exponent-add
-    // and bf16 round stay combinational at the tail.
+    // SEQUENTIAL block-scaled dequant  --  area O(1) in NB (was O(NB^2)).
     //
-    // FMAX SPLIT (fold-stage repipeline): a NEW input-register stage sits BEFORE
-    // the block-scale multiply -- the fixed_to_fp32 bank convert and the bf16->fp32
-    // scale are registered (acc_sel_r/wf_sel_r in the DQ generate) before feeding
-    // fp32_mul_pipe.  This cuts the register-to-register critical path that bundled
-    // fixed_to_fp32 (48-bit leading-one + barrel-shift + RNE) AND the 24x24 mantissa
-    // multiply of fp32_mul_pipe's combinational stage 0 into ONE cone -- the
-    // measured fmax limiter of the whole GEMM tile.  DEQ_LAT therefore gains +1;
-    // it is a pure repipeline (same operands, one cycle later), so the numeric
-    // result is BIT-IDENTICAL -- the DEQ_LAT-deep side-band (valid/slot/a_shift)
-    // pipe below tracks the extra stage and still lands each result at its c_out slot.
-    localparam integer DEQ_LAT = 1 + `FP_MUL_LAT + NB*`FP_ADD_LAT;
+    //   For each output (ri,rj), fold the NB K-blocks in block order through ONE
+    //   fp32_mul_pipe + ONE fp32_add_pipe, reused across all NB blocks and all
+    //   NOUT outputs:
+    //     acc_run <- fp32_add( acc_run, fp32_mul( fixed_to_fp32(accx[bj][ri][rj]),
+    //                                             bf16_to_fp32(w_scale[rj][bj]) ) )
+    //   starting acc_run = +0, then  c = bf16( 2^-a_shift[ri] * acc_run ).
+    //
+    //   SAME left-fold  ((0+p0)+p1)+...  with the SAME two roundings per block
+    //   (fp32_mul THEN fp32_add -- deliberately NOT a fused MAC), so BIT-EXACT to
+    //   the former parallel unrolled fold.  It replaces the NB muls + NB adds +
+    //   O(NB^2) alignment delays that made the product config (NB=128 @ KMAX=16384)
+    //   UNBUILDABLE (millions of FFs / hundreds of FP pipes per PE).  One block MAC
+    //   retires every (FP_MUL_LAT+FP_ADD_LAT) cycles; the rescale is
+    //   NOUT*NB*(that) cycles -- negligible vs K streaming, and compute is hidden
+    //   behind Flash anyway.
+    // ----------------------------------------------------------------------
+    reg  [MW-1:0]  ri;                 // current output row
+    reg  [NW-1:0]  rj;                 // current output col
+    reg  [OW:0]    ocnt;               // linear output index 0..NOUT-1 (== ri*PE_N+rj)
+    reg  [BKW-1:0] fb;                 // current K-block 0..NB-1
+    reg  [31:0]    acc_run;            // running fp32 fold for the current output
+    reg            mul_go;             // 1-cycle kick for the current block's multiply
 
-    // output side-band pipe: carry (valid, output-slot, a_shift) alongside the
-    // dequant datapath so the result lands at the right c_out slot DEQ_LAT later.
-    reg          dq_v_pipe    [0:DEQ_LAT-1];
-    reg  [OW:0]  dq_slot_pipe [0:DEQ_LAT-1];
-    reg  [7:0]   dq_ash_pipe  [0:DEQ_LAT-1];
+    // current (block,output) operands: fixed_to_fp32(bank) and bf16->fp32(block scale).
+    wire signed [ACC_W-1:0] bank_sel = accx[fb][ri][rj];
+    wire [31:0]  acc_fp = fixed_to_fp32(bank_sel);
+    wire [31:0]  w_lin  = fb*PE_N + {{(32-NW){1'b0}}, rj};   // linear (K-block, col)
+    wire [31:0]  wsc_fp = bf16_to_fp32(w_scale_q[16*w_lin +: 16]);
 
-    // feed: present element (ri,rj) for one cycle while walking 0..NOUT-1.
-    wire         resc_feed_v = rescaling & (rcnt < NOUT[OW:0]);
-    // registered feed valid: the new dequant input stage (acc_sel_r/wf_sel_r) is
-    // one flop deep, so the block-scale multiply sees each operand pair one cycle
-    // after it is presented.  Clearing on rst keeps the mul valid_in glitch-free
-    // (the authoritative c_out-write valid is the dq_v_pipe side-band, which is
-    // captured at the SAME edge, so alignment is exact).
-    reg          resc_feed_r;
-    always @(posedge clk) begin
-        if (rst) resc_feed_r <= 1'b0;
-        else     resc_feed_r <= resc_feed_v;
-    end
+    // block MAC:  prod = fixed_to_fp32(bank) * scale ;  sum = acc_run + prod.
+    wire         mul_vout;  wire [31:0] mul_res;
+    fp32_mul_pipe u_dqmul (
+        .clk(clk), .rst(rst), .valid_in(mul_go),
+        .a(acc_fp), .b(wsc_fp), .valid_out(mul_vout), .result(mul_res)
+    );
+    wire         add_vout;  wire [31:0] add_res;
+    fp32_add_pipe u_dqadd (
+        .clk(clk), .rst(rst), .valid_in(mul_vout),
+        .a(acc_run), .b(mul_res), .valid_out(add_vout), .result(add_res)
+    );
 
-    // --- stage A: NB parallel products fixed_to_fp32(accx[bb][ri][rj]) * w_scale[rj][bj] ---
-    wire [31:0]  dq_prod  [0:NB-1];
-    wire         dq_prodv [0:NB-1];
-    // --- stage B: left-fold of {0, prod0, prod1, ...} (each add LAT=AL) ---
-    wire [31:0]  dq_s     [0:NB-1];   // dq_s[k] = (((0+p0)+p1)+...+pk)
-    /* verilator lint_off UNUSEDSIGNAL */ // fold valid_out: superseded by dq_v_pipe
-    wire         dq_sv    [0:NB-1];
-    /* verilator lint_on UNUSEDSIGNAL */
-    genvar gd;
-    generate
-    for (gd = 0; gd < NB; gd = gd + 1) begin : DQ
-        // bank selects (procedural: variable-base part-selects on w_scale_q, like
-        // the original combinational deq, kept out of continuous assigns).  The
-        // fixed-point bank is converted to fp32 ONCE here (the single rounding).
-        reg [31:0] acc_sel, wf_sel;
-        integer    dq_widx;
-        always @* begin
-            acc_sel = fixed_to_fp32(accx[gd][ri][rj]);
-            dq_widx = gd*PE_N + {{(32-NW){1'b0}}, rj};   // linear (K-block, col)
-            wf_sel  = bf16_to_fp32(w_scale_q[16*dq_widx +: 16]);
-        end
-        // NEW input-register stage (the fold-stage fmax split): register the
-        // fixed_to_fp32 bank convert and the bf16->fp32 scale BEFORE the 24x24
-        // block-scale multiply, so the deep fixed_to_fp32 cone no longer shares a
-        // register-to-register path with fp32_mul_pipe's mantissa multiply.  Data
-        // only -- captured at the same edge as the dq_v_pipe side-band; bit-exact.
-        reg [31:0] acc_sel_r, wf_sel_r;
-        always @(posedge clk) begin
-            acc_sel_r <= acc_sel;
-            wf_sel_r  <= wf_sel;
-        end
-        fp32_mul_pipe u_dqmul (
-            .clk(clk), .rst(rst), .valid_in(resc_feed_r),
-            .a(acc_sel_r), .b(wf_sel_r),
-            .valid_out(dq_prodv[gd]), .result(dq_prod[gd])
-        );
-        // align product k to the running sum it folds into: delay by k*FP_ADD_LAT.
-        wire [31:0] pmd;  wire pmdv;
-        if (gd == 0) begin : DLY0
-            assign pmd = dq_prod[0];  assign pmdv = dq_prodv[0];
-        end else begin : DLYK
-            localparam integer DD = gd*`FP_ADD_LAT;
-            reg [31:0] pd [0:DD-1];
-            reg        vd [0:DD-1];
-            integer di;
-            always @(posedge clk) begin
-                pd[0] <= dq_prod[gd];  vd[0] <= dq_prodv[gd];
-                for (di = 1; di < DD; di = di + 1) begin
-                    pd[di] <= pd[di-1];  vd[di] <= vd[di-1];
-                end
-            end
-            assign pmd = pd[DD-1];  assign pmdv = vd[DD-1];
-        end
-        // s_k = fp32_add(s_{k-1}, p_k)  (s_{-1} = +0) -- SAME order as the fold.
-        if (gd == 0) begin : FOLD0
-            fp32_add_pipe u_dqadd (
-                .clk(clk), .rst(rst), .valid_in(pmdv),
-                .a(32'h0000_0000), .b(pmd),
-                .valid_out(dq_sv[gd]), .result(dq_s[gd])
-            );
-        end else begin : FOLDK
-            // pmdv (product k delayed by k*AL) asserts on the SAME cycles as
-            // dq_sv[gd-1]; use it as the stage valid so it is never dangling.
-            fp32_add_pipe u_dqadd (
-                .clk(clk), .rst(rst), .valid_in(pmdv),
-                .a(dq_s[gd-1]), .b(pmd),
-                .valid_out(dq_sv[gd]), .result(dq_s[gd])
-            );
-        end
-    end
-    endgenerate
-
-    // tail (combinational, shallow): undo 2^-a_shift, round to bf16.
-    wire signed [7:0] ash_o  = $signed(dq_ash_pipe[DEQ_LAT-1]);
-    wire [31:0]       deq_un = fp32_scale_pow2(dq_s[NB-1], -{{2{ash_o[7]}}, ash_o});
+    // tail (combinational): undo 2^-a_shift on the completed fold, round to bf16.
+    wire signed [7:0] ash_o  = $signed(a_shift_q[8*ri +: 8]);
+    wire [31:0]       deq_un = fp32_scale_pow2(add_res, -{{2{ash_o[7]}}, ash_o});
     wire [15:0]       c_bf   = fp32_to_bf16(deq_un);
-    // 32-bit-widened output slot for the c_out part-select base.
-    wire [31:0]       dq_slot_o = {{(31-OW){1'b0}}, dq_slot_pipe[DEQ_LAT-1]};
+    wire [31:0]       slot32 = {{(31-OW){1'b0}}, ocnt};
 
     // ----------------------------------------------------------------------
     // Control FSM
     // ----------------------------------------------------------------------
-    integer rp;
     always @(posedge clk) begin
         if (rst) begin
             busy          <= 1'b0;
@@ -541,30 +463,13 @@ module glm_matmul_fp8 #(
             drain_cnt     <= 8'd0;
             ri            <= {MW{1'b0}};
             rj            <= {NW{1'b0}};
-            rcnt          <= {(OW+1){1'b0}};
-            for (rp = 0; rp < DEQ_LAT; rp = rp + 1) dq_v_pipe[rp] <= 1'b0;
+            ocnt          <= {(OW+1){1'b0}};
+            fb            <= {BKW{1'b0}};
+            acc_run       <= 32'b0;
+            mul_go        <= 1'b0;
         end else begin
             out_valid <= 1'b0;
-
-            // ---- dequant (valid,slot,a_shift) side-band pipe: shift every cycle ----
-            dq_v_pipe[0]    <= resc_feed_v;
-            dq_slot_pipe[0] <= rcnt;
-            dq_ash_pipe[0]  <= a_shift_q[8*ri +: 8];
-            for (rp = 1; rp < DEQ_LAT; rp = rp + 1) begin
-                dq_v_pipe[rp]    <= dq_v_pipe[rp-1];
-                dq_slot_pipe[rp] <= dq_slot_pipe[rp-1];
-                dq_ash_pipe[rp]  <= dq_ash_pipe[rp-1];
-            end
-
-            // ---- write each dequantized element as it leaves the dequant pipe;
-            //      the LAST slot (NOUT-1) completes the tile. ----
-            if (dq_v_pipe[DEQ_LAT-1]) begin
-                c_out[16*dq_slot_o +: 16] <= c_bf;
-                if (dq_slot_pipe[DEQ_LAT-1] == NOUT[OW:0] - 1'b1) begin
-                    busy      <= 1'b0;
-                    out_valid <= 1'b1;
-                end
-            end
+            mul_go    <= 1'b0;
 
             if (start) begin
                 busy          <= 1'b1;
@@ -575,8 +480,6 @@ module glm_matmul_fp8 #(
                 k_target      <= k_len;
                 a_shift_q     <= a_shift;
                 w_scale_q     <= w_scale;
-                for (rp = 0; rp < DEQ_LAT; rp = rp + 1)
-                    dq_v_pipe[rp]  <= 1'b0;   // drop any stale dequant-pipe entries
             end
 
             // ---- K streaming (route each beat to its K-block bank) ----
@@ -589,38 +492,50 @@ module glm_matmul_fp8 #(
                 end
             end
 
-            // ---- let the 1-stage term pipeline settle into the banks, then
-            //      begin the dequant rescale. ----
+            // ---- let the term pipeline settle into the banks, then start the
+            //      sequential dequant fold at (output 0, block 0). ----
             if (draining) begin
                 if (drain_cnt == 8'd0) begin
                     draining  <= 1'b0;
                     rescaling <= 1'b1;
                     ri        <= {MW{1'b0}};
                     rj        <= {NW{1'b0}};
-                    rcnt      <= {(OW+1){1'b0}};
+                    ocnt      <= {(OW+1){1'b0}};
+                    fb        <= {BKW{1'b0}};
+                    acc_run   <= 32'b0;
+                    mul_go    <= 1'b1;           // kick block 0 of output 0
                 end else begin
                     drain_cnt <= drain_cnt - 8'd1;
                 end
             end
 
-            // ---- dequant rescale FEED: present one element per cycle ----
-            // rcnt walks 0..NOUT-1 in (ri*PE_N+rj) order, so it IS the linear slot;
-            // the pipelined datapath writes c_out DEQ_LAT later (block above).  We
-            // keep rescaling asserted until the final slot has been written.
-            if (rescaling) begin
-                if (rcnt < NOUT[OW:0]) begin
-                    rcnt <= rcnt + 1'b1;
-                    if (rj == PE_N[NW-1:0] - 1'b1) begin
-                        rj <= {NW{1'b0}};
-                        ri <= ri + 1'b1;
+            // ---- sequential fold: each block's add retires one term.  On the
+            //      LAST block, the running sum IS the full fold -> write c_out and
+            //      advance to the next output (or finish the tile). ----
+            if (rescaling && add_vout) begin
+                if (fb == (NB[BKW-1:0] - 1'b1)) begin
+                    c_out[16*slot32 +: 16] <= c_bf;     // this output's result
+                    fb      <= {BKW{1'b0}};
+                    acc_run <= 32'b0;
+                    if (ocnt == NOUT[OW:0] - 1'b1) begin
+                        rescaling <= 1'b0;              // tile complete
+                        busy      <= 1'b0;
+                        out_valid <= 1'b1;
                     end else begin
-                        rj <= rj + 1'b1;
+                        ocnt <= ocnt + 1'b1;
+                        if (rj == PE_N[NW-1:0] - 1'b1) begin
+                            rj <= {NW{1'b0}};
+                            ri <= ri + 1'b1;
+                        end else begin
+                            rj <= rj + 1'b1;
+                        end
+                        mul_go <= 1'b1;                 // kick next output, block 0
                     end
+                end else begin
+                    acc_run <= add_res;                 // fold this block in
+                    fb      <= fb + 1'b1;
+                    mul_go  <= 1'b1;                    // kick next block
                 end
-                // tile completes when the last slot leaves the dequant pipe.
-                if (dq_v_pipe[DEQ_LAT-1] &&
-                    (dq_slot_pipe[DEQ_LAT-1] == NOUT[OW:0] - 1'b1))
-                    rescaling <= 1'b0;
             end
         end
     end

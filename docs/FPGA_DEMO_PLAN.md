@@ -34,52 +34,57 @@ default), **~77 s**:
 This is a methodology result: **the FP8 compute datapath maps to Gowin primitives; the "yosys wall"
 was an `abc -lut4` limitation, not an un-mappable design.** DSP inference is the key.
 
-## Whole-system fit — a second wall found (honest)
+## Whole-system fit — the elaboration wall was a real area bug, now FIXED in RTL
 
-`synth_gowin` on the **compact product top** (`glm_fp8_system_cdc`) **and** on the **core compute block**
-(`glm_decoder_block_fp8`) both **failed to complete in yosys 0.66 within their timeout** — and both hung
-in the **same** place: RTLIL **elaboration** (`derive` mode) of a `glm_matmul_fp8` instance whose
-capacity parameter is **KMAX = 16384**, *before mapping even started*.
+The first diagnosis (that KMAX=16384 "wouldn't elaborate") turned out to have a **root cause in the RTL,
+not just the tool**: `glm_matmul_fp8`'s block-scale **dequant fold was fully unrolled** — one
+`fp32_mul_pipe` + one `fp32_add_pipe` **per K-block**, plus `O(NB²)` alignment-delay registers, where
+`NB = ceil(KMAX/BLK)`. At the product LM-head cap (KMAX=16384 → **NB=128**) that is **128 mul + 128 add
+pipes and ~40k delay registers *per PE*** — millions of FFs / hundreds of FP pipes across the array.
+So the core GEMM, as written, was **genuinely unbuildable at the product config** (a P1.2 scale bug),
+and yosys just surfaced it as an elaboration hang.
 
-**The blocker is precisely one parameter, not the design.** `glm_matmul_fp8` maps fine at its default
-(small) KMAX — the leaf probe above proves it. Every *parent* (decoder block, model, system top)
-instantiates it with **KMAX = 16384** (the max accumulator depth for the big GEMMs / LM-head vocab-tile),
-and generating the RTLIL for a 16384-deep accumulator is what yosys 0.66 can't finish. This is a
-**distinct, earlier wall than abc-lut4** (it's elaboration, not LUT mapping) — and it's **actionable**:
+**Fixed this session (bit-exact).** The dequant was rewritten as a **sequential** block-scaled fold:
+one `fp32_mul_pipe` + one `fp32_add_pipe`, **reused** across all NB blocks and all NOUT outputs, folding
+in block order `((0+p0)+p1)+…` with the **same two roundings per block** (mul-then-add, deliberately not
+a fused MAC). Area drops from **O(NB²) → O(1)** in FP pipes (256 → 2 dequant pipes at NB=128); the only
+remaining NB-scaling is the integer block-accumulator memory `accx` (**O(NB)** words, BRAM-able — one
+`[128,128]`-block sum each, which the block-scaled contract genuinely needs).
 
-- **For the fit number:** use the vendor flow — Gowin EDA `GowinSynthesis` (`fpga/gowin/build_gowin.tcl`)
-  or newer yosys + `nextpnr-himbaechel` (both are what the [`fpga/`](../fpga/README.md) scaffold exists
-  for); their elaborators handle the wide accumulator where yosys 0.66 does not.
-- **For a demo build:** tile the accumulator over K (the datapath already processes K in `BLK=128`
-  blocks — KMAX is only the *scratch capacity*), i.e. lower KMAX to the real per-GEMM K, which maps in
-  yosys today (see the KMAX-swept probe below).
+**Verified BIT-EXACT** — same golden, no output change anywhere:
 
-### Measured: `glm_matmul_fp8` maps across KMAX (the compute core's dominant unit)
+| Check | Result |
+|---|---|
+| `glm_matmul_fp8_tb` @ KMAX=256 (NB=2) | **ALL 224 PASS** vs exact golden |
+| `glm_matmul_fp8_tb` @ KMAX=2048 (NB=16) | **ALL 224 PASS** (many-block fold) |
+| `make bitacc` (matmul == real GLM-5.2-FP8 contract) | **14/14 + argmax 28/28**, contract bit-exact |
+| full-slice `glm_model_fp8` next-token argmax | unchanged (integrated regression) |
 
-<!-- MM_FIT: default-KMAX leaf + KMAX=2048 probe -->
-| Config | LUT4-equiv | DSP mult | DFF | result (yosys 0.66 `synth_gowin`) |
-|---|---|---|---|---|
-| KMAX = 256 (module default) | ~17.8 K | 20 (`MULT18X18`×2 + `MULT9X9`×18) | ~5.4 K | ✅ **maps clean, ~77 s** |
-| KMAX = 2048 | — | (DSP inferred) | — | ⚠️ elaborates (past the 16384 wall), but the `synth_gowin` SAT resource-sharing pass did not finish in 180 s |
-| KMAX = 16384 (product LM-head cap) | — | — | — | ❌ does not even elaborate |
+**Effect on synth.** yosys 0.66 now **elaborates + `proc`s `glm_matmul_fp8` at KMAX=16384 to a finite
+netlist** (was impossible before — it hung deriving the O(NB²) fold); the dequant is down to **2 FP
+pipes**. The remaining slowness at full NB is yosys 0.66's **SAT-based `SHARE` pass** (a tool
+scalability limit, not the design) — which the vendor flow (Gowin `GowinSynthesis`) / `nextpnr` don't
+hit. So the **RTL-side blocker is retired**; the routed LUT/DSP/BSRAM/**Fmax** still come from the
+vendor flow, but the design is now buildable at product scale.
 
-**What this says:** the FP8 datapath **maps** (KMAX=256 is a clean, real data point — abc-lut4 wall
-broken via DSP inference); but **yosys 0.66's synth time scales steeply with the accumulator capacity**
-(2048 mapping is slow, 16384 won't elaborate). That is a **tooling-scaling** limit, not an
-un-mappability — exactly what a production mapper (**Gowin `GowinSynthesis`** / newer yosys +
-`nextpnr`) is built to handle, and/or what **K-tiling** (KMAX → the real per-GEMM K, since the datapath
-already streams K in `BLK=128` blocks) sidesteps.
+### Measured: `glm_matmul_fp8` synth across KMAX (dequant O(NB²)→O(1))
 
-**Caveats (honest):** generic-`synth_gowin` estimates, **not** a routed Gowin EDA / nextpnr result —
-final LUT/DSP/BSRAM/**Fmax** need the vendor flow. These establish *mappability + resource shape + the
-exact blocker*, not the shippable LUT count. The whole-system routed fit remains a **vendor-flow task**
-— but it is now a *known, bounded* one (resolve the KMAX=16384 accumulator), not an open mystery.
+| Config | dequant FP pipes | elaborate + `proc` (yosys 0.66) | `synth_gowin` map |
+|---|---|---|---|
+| KMAX = 256 (NB=2) | 2 (was 4) | ✅ | ✅ **~77 s**, ~17.8 K LUT-equiv + 20 DSP |
+| KMAX = 2048 (NB=16) | 2 (was 32) | ✅ | ✅ elaborates; SAT-`SHARE` pass slow (tool) |
+| KMAX = 16384 (NB=128) | **2 (was 256)** | ✅ **finite netlist** (was: elaboration hang) | SAT-`SHARE` pass = vendor-flow / newer-yosys |
+
+**Caveats (honest):** the LUT/DSP figures are generic-`synth_gowin` estimates, **not** a routed Gowin
+EDA / nextpnr result — final LUT/DSP/BSRAM/**Fmax** need the vendor flow. What's now established: the
+core GEMM is **bit-exact and buildable at the product config** (the O(NB²) dequant is gone); the routed
+whole-system number is a vendor-flow measurement, no longer blocked by an RTL area explosion.
 
 ## The demo ladder (each rung is cheap and de-risks the next)
 
 | Rung | What | Tooling | Proves | Status |
 |---|---|---|---|---|
-| **L0** | **Gowin-synth fit** — LUT/DSP/BSRAM of the compact top vs GW5AT-138 | `yosys synth_gowin` (have it) → **vendor flow for the top** | the design *fits a class of FPGA* → BOM band | leaf ✅ (KMAX=256 maps, abc wall broken); **top ⚠ needs vendor flow** (yosys 0.66 KMAX=16384 elaboration wall) |
+| **L0** | **Gowin-synth fit** — LUT/DSP/BSRAM of the compact top vs GW5AT-138 | `yosys synth_gowin` (have it) → **vendor flow for the routed top** | the design *fits a class of FPGA* → BOM band | leaf ✅ (abc wall broken via DSP inference); **RTL area blocker retired** (matmul dequant O(NB²)→O(1), bit-exact — the design now elaborates at product KMAX); routed top number = vendor flow |
 | **L1** | **P&R one leaf** (`glm_matmul_fp8`) on the board → real **Fmax** | Gowin EDA / nextpnr | real clock → real tok/s extrapolation (tok/s = Fmax ÷ `cyc_per_tok`) | scaffold ready (`fpga/gemm_harness.v`) |
 | **L2** | **P&R the compact top** → full routed fit + Fmax | Gowin EDA / nextpnr | the whole product top places & routes | scaffold ready (`fpga/gowin/`) |
 | **L3** | **Reduced-config forward on the board** — a few real GLM-5.2 layers, weights streamed from on-board Flash/SD → **measured tok/s** | board + `ckpt_pack.py` image | *real silicon token at a measured tok/s* — **THE demo** | needs board |

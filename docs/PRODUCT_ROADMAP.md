@@ -75,7 +75,13 @@ one thing the slice cannot.
 ### P1 — Full-scale + real-model correctness  *(gates everything)*
 - P1.1 Real-checkpoint validation (above). **Blocking.**
 - P1.2 Scale the RTL/params to the full config; verify via the bit-accurate software model + a
-  full-config RTL elaboration (synth-only where sim is intractable).
+  full-config RTL elaboration (synth-only where sim is intractable). **Buildability fix (done):** the
+  core GEMM `glm_matmul_fp8` dequant was a fully-unrolled block-scale fold — O(NB²) area
+  (NB=ceil(KMAX/BLK); at the product KMAX=16384 → NB=128, i.e. 256 FP pipes + ~40k delay FFs *per PE*),
+  so lint-"elaborates-clean" ≠ buildable. Rewrote it as a **sequential** fold (one fp32_mul + one
+  fp32_add reused over all blocks), **O(NB²)→O(1)** FP pipes, **bit-exact** (matmul TB 224/224 at NB=2
+  and NB=16; `make bitacc` 14/14 + argmax 28/28; slice-model argmax unchanged). yosys now elaborates
+  `glm_matmul_fp8` at KMAX=16384 (was an elaboration hang) — the product config is now buildable.
 - P1.3 Close the prototype correctness gaps for product: **per-position causal KV** (replace the
   PE_M shared-pos decode-batch regime with a real per-row position/KV). **Done so far:** per-row
   position/extent threaded model→decoder→mla; the **KV pager storage side** carries `NSEQ`

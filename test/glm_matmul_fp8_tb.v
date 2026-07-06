@@ -175,7 +175,7 @@ module glm_matmul_fp8_tb;
             while (out_valid !== 1'b1) begin
                 @(negedge clk);
                 t = t + 1;
-                if (t > KMAX + 200) begin
+                if (t > KMAX + NB*PE_M*PE_N*8 + 500) begin  // seq-fold rescale is NOUT*NB*(mul+add) cyc
                     $display("FATAL [%0s]: out_valid never asserted", tag);
                     $fatal(1, "timeout");
                 end
