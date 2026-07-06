@@ -8,13 +8,23 @@
 #     LUT / DSP / BSRAM(block RAM) / registers  +  achieved Fmax per clock.
 #   This is the #1 unknown that gates FPGA class -> size / thermal / BOM / price.
 #
-# WHY A VENDOR FLOW (not yosys):
-#   yosys 0.66 cannot map the FP8 datapaths through `abc -lut4` (it times out on
-#   glm_matmul_fp8's accumulator banks -- see docs/PHYSICAL_SKY130.md).  So the
-#   repo's `make synth-glm` only elaborates + structurally checks; it does NOT
-#   emit a LUT count.  Gowin's GowinSynthesis is a different mapper and is the
-#   whole point of running this.  (It may still struggle on the FP8 math -- if so
-#   that is itself a finding to record; see fpga/README.md caveats.)
+# WHY A VENDOR FLOW (updated -- the earlier yosys walls are retired):
+#   1. yosys `synth_gowin` (NOT `abc -lut4`) DOES map the FP8 datapath -- it infers
+#      hardware DSPs (MULT18X18/MULT9X9) for the multiplies, so glm_matmul_fp8 maps
+#      (leaf @ KMAX=256: ~17.8K LUT-eq + 20 DSP).  The old "abc-lut4 times out" wall
+#      is broken (docs/FPGA_DEMO_PLAN.md).
+#   2. The whole-system elaboration hang was a REAL area bug -- glm_matmul_fp8's
+#      dequant was an O(NB^2) unrolled fold (NB=ceil(KMAX/BLK); NB=128 @ KMAX=16384).
+#      It is FIXED: O(NB^2)->O(1) sequential fold, bit-exact (matmul 224/224,
+#      bitacc 14/14+argmax, model argmax 4/31/20).  The design now elaborates at
+#      product KMAX.
+#   So the vendor flow is no longer needed to "get a LUT count at all" -- it is
+#   needed for the ROUTED numbers yosys 0.66 can't give: placed LUT/DSP/BSRAM
+#   utilization + real per-clock Fmax, correct BRAM inference for the O(NB) `accx`
+#   block-accumulator memory, and a mapper that doesn't hit yosys 0.66's SAT-based
+#   `SHARE` pass (the remaining yosys scalability limit at full NB).  GowinSynthesis
+#   handles all of these.  (If it still struggles on the FP8 math, record it -- see
+#   fpga/README.md caveats.)
 #
 # HOW TO RUN (from the repo root, with Gowin EDA installed & licensed):
 #     gw_sh fpga/gowin/build_gowin.tcl                 # default config, synth-only

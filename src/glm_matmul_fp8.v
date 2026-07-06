@@ -424,8 +424,12 @@ module glm_matmul_fp8 #(
     reg  [31:0]    acc_run;            // running fp32 fold for the current output
     reg            mul_go;             // 1-cycle kick for the current block's multiply
 
+    // exact index width for the NB-entry accx first dim (fb is BKW=clog2(NB+1) bits,
+    // one wider when NB is a power of two -- slice to the array's index width).
+    localparam integer NBIW = (NB <= 1) ? 1 : $clog2(NB);
+
     // current (block,output) operands: fixed_to_fp32(bank) and bf16->fp32(block scale).
-    wire signed [ACC_W-1:0] bank_sel = accx[fb][ri][rj];
+    wire signed [ACC_W-1:0] bank_sel = accx[fb[NBIW-1:0]][ri][rj];
     wire [31:0]  acc_fp = fixed_to_fp32(bank_sel);
     wire [31:0]  w_lin  = fb*PE_N + {{(32-NW){1'b0}}, rj};   // linear (K-block, col)
     wire [31:0]  wsc_fp = bf16_to_fp32(w_scale_q[16*w_lin +: 16]);

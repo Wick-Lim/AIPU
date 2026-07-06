@@ -13,33 +13,43 @@ Everything downstream is bounded by the number this flow returns.
 > to **~17.8 K LUT4-equiv + 20 DSP mults (`MULT18X18`/`MULT9X9`) + ~5.4 K DFF**, by
 > **inferring hardware DSPs** for the multiplies. So "the compute die is un-mappable"
 > was an `abc -lut4` limitation, not a design one.
-> **What's still open:** the *assembled* top does not synth in yosys 0.66 — every
-> parent instantiates `glm_matmul_fp8` at **`KMAX=16384`** (the big-GEMM/LM-head
-> accumulator cap), which yosys 0.66 **can't even elaborate** (2048 elaborates but its
-> map pass is slow). So the **whole-system routed LUT/DSP/BSRAM/Fmax still needs the
-> vendor flow below** (Gowin EDA / `nextpnr-himbaechel`) or K-tiling the accumulator.
-> Gowin EDA is not installed here, so those cells stay a **template to fill in**.
+> **The whole-system elaboration hang is now FIXED (RTL).** It was a real area bug:
+> `glm_matmul_fp8`'s dequant was an **O(NB²)** unrolled fold (NB=ceil(KMAX/BLK); at the
+> product KMAX=16384 → NB=128 → 256 FP pipes + ~40k delay FFs *per PE* — unbuildable).
+> Rewritten to an **O(1)** sequential fold, **bit-exact** (matmul 224/224, bitacc
+> 14/14+argmax, model argmax 4/31/20); yosys now elaborates `glm_matmul_fp8` at product
+> KMAX. **What still needs the vendor flow:** the *routed* LUT/DSP/BSRAM/**Fmax** (yosys
+> 0.66 can't route, flattens the O(NB) `accx` block-accumulator to registers instead of
+> BRAM, and its SAT-based `SHARE` pass doesn't scale at full NB). Gowin EDA is not
+> installed here, so those cells stay a **template to fill in**.
 > Full plan + measured probes: [`../docs/FPGA_DEMO_PLAN.md`](../docs/FPGA_DEMO_PLAN.md).
 
 ---
 
-## Why this exists (the yosys wall)
+## Why this exists (what yosys 0.66 can and can't give)
 
-The repo's own structural gate `make synth-glm` only *elaborates* the product top
-and runs `check -assert`; it deliberately does **not** emit a LUT count, because
-**yosys 0.66 cannot map the FP8 datapaths through `abc -lut4`** — it times out on
-`glm_matmul_fp8`'s accumulator banks. This is documented in
-[`../docs/PHYSICAL_SKY130.md`](../docs/PHYSICAL_SKY130.md) ("FPGA resource fit
-(ECP5) — partial, honest"), which was able to map only the *memory-system
-controllers*: those **6 controllers alone are ~71,475 LUT4 ≈ 85% of an ECP5-85**,
-so the full system needs a larger FPGA — but the *compute die's* mapped size
-remains **unmeasured** because of the tooling wall.
+`make synth-glm` only *elaborates* the product top + `check -assert`; it emits no LUT
+count. Two former yosys walls are now **retired**:
+1. **`abc -lut4` timeout** — broken: `yosys synth_gowin` maps the FP8 datapath by
+   inferring hardware DSPs (glm_matmul_fp8 leaf @ KMAX=256: ~17.8K LUT-eq + 20 DSP).
+2. **whole-system elaboration hang** — was a real area bug (glm_matmul_fp8's O(NB²)
+   dequant); **fixed** to O(1), bit-exact. The design now elaborates at product KMAX.
 
-**A vendor flow breaks that wall.** Gowin's `GowinSynthesis` (and, as a fallback,
-a newer yosys + nextpnr-himbaechel) is a different mapper than the repo-baseline
-yosys 0.66 `abc`, and can give the real LUT/DSP/BSRAM/Fmax numbers. That is the
-entire reason this directory exists. *(If GowinSynthesis itself struggles on the
-FP8 math, that outcome is itself a finding — record it.)*
+What yosys 0.66 **still can't** give, and why this vendor flow exists:
+- **Routed** LUT/DSP/BSRAM utilization + **per-clock Fmax** — yosys `synth_gowin` is a
+  mapper, not a P&R; only Gowin EDA / `nextpnr` route + time.
+- **BRAM inference** for the O(NB) `accx` block-accumulator memory (one `[128,128]`
+  block sum each — 128 words at product KMAX). yosys 0.66 *flattens it to registers*
+  (huge + slow); **GowinSynthesis infers BSRAM** — confirm a non-trivial BSRAM count in
+  the report (if accx lands in LUTs/FFs, the fit will be wrong-huge — a red flag to fix).
+- **Scale**: yosys 0.66's SAT-based `SHARE` pass doesn't finish on the full-NB design; a
+  production mapper doesn't hit that.
+
+Reference anchor: [`../docs/PHYSICAL_SKY130.md`](../docs/PHYSICAL_SKY130.md) mapped only
+the **memory-system controllers** on ECP5 (**~71,475 LUT4 ≈ 85% of an ECP5-85**) — so the
+system needs a mid-size FPGA; this flow measures the *whole* GW5AT-138 fit.
+*(If GowinSynthesis itself struggles on the FP8 math, that outcome is itself a finding —
+record it.)*
 
 ## Target device
 
@@ -177,10 +187,18 @@ required — then propagate to size / thermal / BOM / price in
 
 - **Un-run scaffold.** Nothing here has been executed; Gowin isn't installed in
   the authoring environment. The numbers come from *you* running Gowin.
-- **The yosys `abc`/`-lut4` wall** on the FP8 datapaths is *why* a vendor flow is
-  needed ([`../docs/PHYSICAL_SKY130.md`](../docs/PHYSICAL_SKY130.md)). Gowin's
-  synthesizer may still struggle on the FP8 math — if so, that's a finding to
-  record, not a script bug.
+- **⚠ Check BSRAM inference first (the #1 red flag).** The `glm_matmul_fp8` `accx`
+  block-accumulator is an O(NB) memory (128 words × 48b per matmul at product KMAX).
+  It **must** map to **BSRAM** — if the synthesis report shows it in LUTs/registers
+  instead, the fit will read wrong-huge. GowinSynthesis normally infers BSRAM for it;
+  if not, add a RAM style attribute / `set_option` and re-run. (This is the memory
+  yosys 0.66 flattens to registers — the vendor tool must not.)
+- **The FP8 math now maps** (yosys `synth_gowin` via DSP inference; the O(NB²) dequant
+  bug is fixed). If GowinSynthesis still struggles on it, that's a finding to record,
+  not a script bug.
+- **Pre-flight:** the O(NB²) dequant fix is committed (`glm_matmul_fp8`), so the source
+  list here elaborates at product KMAX. Confirm you're on a commit that includes it
+  (matmul TB ALL 224 PASS at NB=2 and NB=16) before running the vendor flow.
 - **Part string is a placeholder.** Confirm the exact GW5AT-138 package/speed/
   grade for your board before running (comment in `build_gowin.tcl`).
 - **Board pinout is user-provided.** Pin locations live in a board-specific
