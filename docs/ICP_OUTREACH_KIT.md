@@ -1,0 +1,213 @@
+# ICP outreach kit — landing the first legal design partner
+
+*Turns the [`ICP.md`](ICP.md) beachhead (confidentiality-bound legal) into a copy-paste BD motion whose
+single goal is **Gate 3**: one signed design-partner LOI. Companion to the customer's-side of the
+[`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) / [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md).*
+
+> **Honest stance — read first.** There is **no shippable box yet** (P1.1 fidelity + FPGA fit/demo are
+> open gates). So this is **not** a sales motion for a finished product. It is a **design-partner /
+> problem-validation** motion: we're building it, and we want a small number of legal firms that
+> *actually have the can't-cloud constraint* to (a) validate the pain, (b) shape the product, and (c)
+> sign a **non-binding LOI to pilot when the demo lands**. Never imply a product you can ship today —
+> the credibility is the whole asset. Sell the **vision + the design-partner relationship**, backed by
+> the measured evidence (verified RTL, real-checkpoint bit-accuracy), not a demo you don't have.
+
+---
+
+## 0. This kit runs for **any** can't-cloud wedge (legal is the worked example)
+
+The ICP is a **constraint** (frontier quality on data that can't touch a cloud), not a sector
+([`ICP.md`](ICP.md)). This kit is written out for **legal** because you close by instantiating *one*
+concrete motion — but the structure (pain script, discovery flow, LOI, objection logic) is identical
+for every wedge. To run a second wedge in parallel (recommended: **quant/prop-trading**, the co-lead),
+swap only the **buyer persona + vocabulary**:
+
+| | Legal (worked example) | Quant / prop-trading (parallel swap) |
+|---|---|---|
+| Champion | Director of Innovation / KM / Practice Tech | Head of Research Eng / CTO / a PM running an internal LLM |
+| Sponsor | practice-group partner | a portfolio manager / desk head |
+| Approver | CISO / GC / risk | CISO / Head of Infosec (already FPGA/colo-savvy) |
+| The pain line | "privileged & client-confidential matters can't touch cloud AI" | "your signals, positions, and research can't leak to any cloud" |
+| Cold-email subject | "on-prem frontier AI for [Firm] — nothing leaves your network" | "frontier AI on your research — nothing leaves your infra" |
+| Reference value | sells the next law firm | sells the next fund |
+
+Everything below reads as legal; mentally substitute the row above to fire the quant motion at the same
+time. **Test both for ~2 weeks; let the reply rate pick the beachhead.**
+
+## 1. Target — the account and the three people
+
+**Account fit (all three, or don't bother):**
+- **Frontier quality genuinely needed** — the work is hard (M&A, litigation, complex drafting), not
+  form-filling a 70B model already handles.
+- **A real can't-cloud constraint** — a firm/practice with clients who contractually forbid cloud AI,
+  or a GC/risk posture that already blocked ChatGPT/Copilot for client matters.
+- **AI-forward enough to move** — they've *tried* private AI (Harvey, Copilot, an internal pilot) and
+  hit the data-boundary wall. A firm that's never thought about AI is too early.
+
+**Where to find them:** AmLaw 100–200 innovation teams; firms publicly piloting legal AI; legal-tech
+conference speaker lists (ILTACON, Legalweek); "Director of Innovation / Knowledge Management /
+Practice Technology" on LinkedIn; boutiques in IP / M&A / regulated-industry practices.
+
+**The three personas (you need all three to close a design partner):**
+
+| Persona | Title patterns | What they care about | Their role |
+|---|---|---|---|
+| **Champion** | Director of Innovation / KM / Practice Technology; "Legal AI" lead | Being first to a defensible AI edge without a data-breach headline | **Entry point** — start here |
+| **Sponsor** | A practice-group partner (litigation / M&A / IP) | Leverage on the confidential work they can't currently use AI on | **Pain owner** — makes it real |
+| **Approver** | CISO / Head of IT Security / GC / risk | "Nothing leaves the building," auditability | **Unblocker** — loves "provably local" |
+
+---
+
+## 2. The message (positioning, translated for legal — not the investor story)
+
+Lead with *their* pain, not FP8/RTL. Three lines you can say in an elevator:
+
+> **"The AI your attorneys actually want is off-limits on your most sensitive matters, because the good
+> models are all cloud. We're building an appliance that runs a full frontier-scale model **entirely
+> inside your network** — nothing ever leaves the building — so privileged and client-confidential
+> work finally gets frontier AI. And because it's provably the same computation as the real model,
+> your security team and GC can audit it."**
+
+Keep two proof-points in your back pocket for the technical/security persona (these are *measured*, not
+marketing): the datapath is **bit-exact to the published model** and the memory controllers are
+**formally verified** — i.e. "provably local **and** provably correct." Don't lead with them; deploy
+them when the approver asks "how do I trust it."
+
+---
+
+## 3. Cold outreach
+
+### Email A — to the Champion (primary)
+> **Subject: on-prem frontier AI for [Firm] — nothing leaves your network**
+>
+> Hi [Name],
+>
+> I'm building AIPU — an appliance that runs a full **frontier-scale** AI model **entirely on your own
+> network**: no data leaves the building, no cloud API, no per-use fees. It's aimed squarely at the work
+> your attorneys *can't* put into ChatGPT or Copilot today — privileged and client-confidential matters.
+>
+> We're selecting a small number of **design partners** in legal to shape it before release. No cost and
+> no commitment beyond a few conversations — you'd get early access and direct input into what we build;
+> we'd get to build it for a firm that actually lives with the constraint.
+>
+> Worth a 20-minute call? I mainly want to understand how [Firm] handles AI on confidential matters
+> today, and whether *provably local* would change that.
+>
+> [Name] · [link to a 1-page brief]
+
+### Email B — to a Sponsor partner (pain-led, if you have a warm angle)
+> **Subject: the AI you can't use on your [practice] matters**
+>
+> Hi [Name] — quick one. On your most confidential [M&A / litigation / IP] matters, is your team
+> effectively locked out of the good AI tools because the data can't go to a cloud? I'm building an
+> on-prem appliance that fixes exactly that — a frontier model that runs entirely inside the firm.
+> We're picking a few design-partner firms in legal. Would 20 minutes be worth it to pressure-test
+> whether this is real for your practice?
+
+### LinkedIn DM (short)
+> Hi [Name] — I'm building an on-prem appliance that runs a full frontier AI model **inside** a firm's
+> network (nothing leaves the building), for the privileged/confidential work that's off-limits to cloud
+> AI. Selecting a few legal design partners. Open to a 20-min call to see if it's relevant to [Firm]?
+
+### Warm-intro ask (send to a mutual connection)
+> Would you introduce me to [Name] at [Firm]? I'm building on-prem frontier AI for legal — runs entirely
+> inside the firm's network for privileged matters — and I'm looking for a design partner who actually
+> has the can't-cloud constraint. One line from you would mean a lot. Happy to send a blurb you can
+> forward.
+
+### Follow-ups (space 4–6 days; stop after two)
+- **Nudge 1:** *"Bumping this up — one line is enough: is 'frontier AI that never leaves your network'
+  a real need for [Firm]'s confidential matters, or not a fit? Either answer helps me."*
+- **Nudge 2 (value, then close the loop):** *"Last note — [one concrete proof: 'we just got the FP8
+  compute die mapping to an FPGA, de-risking the box's cost']. If the timing's wrong I'll stop here;
+  if it's worth a look, grab any 20 min: [link]."*
+
+---
+
+## 4. Discovery call — script (20–30 min)
+
+**Frame (first 60s):** *"Thanks for the time. I'm not selling anything — there's no box to buy yet.
+I'm building this and I want to learn from firms who actually have the constraint, and find one or two
+design partners. So mostly I want to ask about how you work today. That ok?"* → disarms, earns candor.
+
+**Qualify — ask, then listen (don't pitch yet):**
+1. "Where do your attorneys use AI today — and where are they *not allowed* to?"
+2. "On privileged / client-confidential matters, what's the actual rule — firm policy, client contract,
+   GC call? How binding?" *(This is the whole thesis — probe hard.)*
+3. "Have you piloted anything (Harvey, Copilot, internal)? Where did it stop?"
+4. "If there were a tool that ran a frontier model **entirely inside your network**, what would it
+   unlock — and who'd have to bless it (IT/security, GC, the partners)?"
+5. "How do you buy tools like this — per seat? Who signs? What's a normal per-seat number here?"
+
+**Green flags** (pursue): a named client contract or GC policy that blocks cloud AI · a partner who
+already asked for this · a security lead who says "on-prem changes everything" · existing per-seat tool
+budget. **Red flags** (deprioritize): "we just use ChatGPT, it's fine" · no confidential-data constraint
+· "call us in two years" · wants a finished product now.
+
+**Then — and only then — the vision (2 min):** the one-box/one-seat appliance, full 753B locally,
+nothing leaves the network, provably the same answers as the real model (auditable). Show the 1-page
+brief / evidence. Be explicit about stage: *"here's what's proven today, here's the two gates left, and
+here's why I want a design partner **now** — so we build the thing your firm would actually deploy."*
+
+**The ask (close):** *"Would [Firm] be one of our design partners? Concretely: a few working sessions
+to shape it, and a short, non-binding letter that says you'd pilot it when the on-prem demo is ready.
+No cost. In return you get first access and you shape the product around your constraints."*
+
+### Objection handling (legal-specific)
+
+| They say | You say (honest) |
+|---|---|
+| "You don't even have a product." | "Correct — that's *why* I want you now. Design partners shape it and get first access; the tech risk is unusually retired (verified datapath, real-checkpoint bit-accuracy, FPGA fit de-risked). I'm asking for input + an LOI, not a purchase." |
+| "How is this different from Harvey / Copilot?" | "Those still send your text to a cloud. This runs the whole model **inside your network** — nothing leaves. That's the exact line your confidential matters can't cross." |
+| "Our GC will never approve cloud AI." | "Right — that's the point. There's no cloud. Your security team can audit that nothing egresses, and that the output matches the real model bit-for-bit." |
+| "Is a local model good enough?" | "The small models that fit a laptop aren't — that's the gap. This runs the *full* 753B frontier model locally, not a shrunk one." |
+| "What will it cost?" | "TBD until the FPGA fit closes — we're targeting a **per-seat** price, in the range of the premium tools you already buy, not a datacenter build. Design partners get preferential terms." |
+| "When is it real?" | "Two gates: real-model fidelity (a GPU run) and a measured FPGA demo. I'll show you the demo the moment it exists — the LOI just means you're first in line, non-binding." |
+
+---
+
+## 5. The design-partner offer
+
+Make it a clear, low-friction, mutual deal:
+
+**They give:** 3–4 working sessions (pain, workflow, security requirements) · a signed non-binding LOI ·
+a named security/IT contact to define the "nothing-leaves-the-network" audit · willingness to pilot when
+the demo lands. **They get:** direct product influence · first access / priority allocation ·
+design-partner pricing · a demonstrable head-start on defensible, compliant AI. **No cost** at this
+stage. **Timeline:** LOI now → design sessions over the next weeks → pilot when Gate 2 (demo) closes.
+
+---
+
+## 6. LOI template (non-binding — keep it one page)
+
+> **Letter of Intent — AIPU legal design partnership**
+>
+> This non-binding letter records the mutual intent of **[Firm]** and **AIPU** to collaborate on an
+> on-premise, single-user frontier-AI appliance for confidential legal work.
+>
+> **[Firm] intends to:** (1) participate as a design partner through a small number of working sessions;
+> (2) provide input on requirements, workflow, and the "no data leaves the network" security posture;
+> (3) **evaluate a pilot** of the appliance on [Firm]'s premises once a working demonstration is
+> available, subject to a separate pilot agreement and [Firm]'s security review.
+>
+> **AIPU intends to:** (1) give [Firm] early/priority access and design-partner terms; (2) build toward
+> the on-prem, provably-local guarantees discussed; (3) keep [Firm]'s shared information confidential.
+>
+> This letter is **non-binding**, creates no purchase obligation or exclusivity, and either party may
+> end the collaboration at any time. It signals genuine intent to work together toward a pilot.
+>
+> [Firm] ______________________  ·  AIPU ______________________  ·  Date __________
+
+*(Have a lawyer review before sending — you're pitching lawyers; a clean, correct LOI is itself a
+credibility signal. Keep it non-binding to lower the bar to signature.)*
+
+---
+
+## 7. Cadence & the one metric
+
+- **Target list:** ~30–50 qualified accounts (fit criteria in §1). Quality over volume.
+- **Outreach:** ~5–8 personalized touches/week (Champion first; Sponsor/warm-intro where available).
+- **Goal:** book ~5–8 discovery calls → **1 signed design-partner LOI.** That single LOI, plus the
+  measured FPGA demo, is the pre-seed package ([`ICP.md`](ICP.md) §"investable levers").
+- **Disqualify fast.** A "no constraint / call us in two years" is a *gift* — it saves weeks. Log it and
+  move on.

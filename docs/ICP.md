@@ -22,13 +22,38 @@ in the triple intersection.** Everything below is about finding the segment wher
 
 ---
 
-## Primary ICP — confidentiality-bound senior professionals in **legal**
+## The ICP — defined by the **constraint**, not the vertical
 
-> **A law firm / corporate legal & compliance org that equips its confidentiality-bound
-> professionals with a personal on-prem frontier-AI appliance — one box per seat — because those
-> professionals work on privileged/confidential text that legally cannot touch a cloud LLM.**
+> **A confidentiality-bound team that needs frontier-model quality on data it legally or contractually
+> cannot send to a cloud LLM — in *any* industry.** That constraint, not a job title or a sector, is the
+> ICP. The **product is horizontal**; what must be narrow is the **first go-to-market wedge**.
 
-**Why legal is the sharpest beachhead** (vs the alternates below):
+**Don't confuse the market with the wedge.** The need is horizontal — legal, quant/finance, IP-heavy
+R&D, government, healthcare all share the exact triple intersection above. Constraining the *product* or
+the *pitch* to one sector would be a mistake. But a pre-seed team can only build **one** message, learn
+**one** buyer, and produce **one** reference at a time, so the *first sales motion* must be narrow —
+otherwise you get five half-run motions and zero references. **Pick the first wedge empirically**, by
+`speed-to-first-LOI × acute pain × ability to pay × reference value`, and **run the top two in parallel
+for ~2 weeks** — let the reply rate crown the beachhead rather than betting blind.
+
+**The two co-lead wedges to test first:**
+
+| | **Legal** (law firms / corp legal) | **Quant / prop-trading / hedge funds** |
+|---|---|---|
+| Pain | Privilege + client confidentiality bar cloud AI | Won't leak signals/positions/research to any cloud |
+| Frontier quality needed? | Yes — hard drafting/analysis | Yes — dense research/filings/code |
+| Pays per-seat? | Yes — $100–500+/seat/mo tooling culture | Yes — deep pockets, pays for any edge |
+| Speed to sign | Weeks–months (innovation/KM buyer) | **Fastest** — small, fast decisions; **FPGA-native** already |
+| Market size | **Largest** | Smaller seat count |
+| Reference value | High within legal | High within finance |
+| The trade | biggest market, more conservative | fastest first LOI, narrower |
+
+Both are strong; they're strong *differently* (legal = biggest, quant = fastest). Testing both de-risks
+the beachhead bet. The rest of this doc uses **legal as the worked example** (and the
+[`ICP_OUTREACH_KIT.md`](ICP_OUTREACH_KIT.md) instantiates it), but every section below is
+constraint-driven and re-instantiates for whichever wedge pulls — swap only the buyer persona + vocabulary.
+
+**The legal wedge in detail** (the worked example):
 
 | Fit test | Legal |
 |---|---|
@@ -39,7 +64,7 @@ in the triple intersection.** Everything below is about finding the segment wher
 | Procurement speed | **Weeks–months** via an innovation/KM partner — faster than gov/health. |
 | Willingness to pay | **High** — legal bills at $300–$1000+/hr; even small time savings justify a box. |
 
-**The buyer & champion:** the firm's **Director of Innovation / Knowledge Management / Practice
+**The legal buyer & champion:** the firm's **Director of Innovation / Knowledge Management / Practice
 Technology** (the person already piloting "private AI"), sponsored by a **practice-group partner** who
 feels the confidentiality pain, with **IT/Security** as the approver (they *love* "nothing leaves the
 building").
@@ -89,12 +114,15 @@ the cloud, at a desk price."** The buyer is paying for **access under a constrai
    real GLM-5.2 weights locally and (b) can be **audited to prove no network egress** — security's
    checkbox is the close.
 
-## Ranked alternates (why not primary — yet)
+## Wedge menu & expansion ladder
 
-| Segment | Why it's strong | Why not the *first* pilot |
+Quant is a **co-lead wedge tested up front** (see the two-wedge table above), not a fallback. The rest
+are the **expansion ladder** — sequence them after the beachhead proves out, don't run them all at once.
+
+| Segment | Why it's strong | When / caution |
 |---|---|---|
-| **Quant / prop-trading / hedge funds** | Fastest-moving buyers, **FPGA-native culture**, deep pockets, extreme data secrecy (won't leak signals/positions), love any edge | Use case (LLM on confidential research/filings) is real but *secondary* to their core; smaller # of seats. **Best fast alternate — pursue in parallel.** |
-| **IP-sensitive R&D** (pharma, semiconductor, defense-adjacent, proprietary-code shops) | Genuinely un-cloudable secrets (molecules, chip designs, source); real budgets | Longer eval cycles; more heterogeneous use cases to support. |
+| **Quant / prop-trading / hedge funds** | Fastest-moving buyers, **FPGA-native culture**, deep pockets, extreme data secrecy (won't leak signals/positions), love any edge | **Co-lead — test in parallel with legal from day one.** Fewer seats/account, but the fastest path to a first LOI. |
+| **IP-sensitive R&D** (pharma, semiconductor, defense-adjacent, proprietary-code shops) | Genuinely un-cloudable secrets (molecules, chip designs, source); real budgets | Second wave — longer eval cycles; more heterogeneous use cases to support. |
 | **Government / defense / intelligence** | Highest willingness to pay; air-gap is *mandatory*; sovereignty tailwind | **Slow procurement (12–24 mo)** + a **GLM = Chinese-origin model** problem for US federal (needs an RTL retarget to a Western model first). High-value, wrong *first* customer. |
 | **Healthcare / clinical** (PHI/HIPAA) | Huge market, absolute privacy mandate | Very risk-averse, long procurement, heavy validation burden. |
 | **Sovereign-AI / non-US-aligned orgs** | GLM's Chinese origin is an *advantage*; model-sovereignty tailwind | Fragmented, relationship-driven, geopolitically complex. |
@@ -115,4 +143,6 @@ the cloud, at a desk price."** The buyer is paying for **access under a constrai
 1. **A measured FPGA fit → a real per-seat BOM** (the [`fpga/`](../fpga/README.md) D0.2 track). Without it,
    "low-$k's per seat" is a hope, not a price.
 2. **One signed design partner from the primary segment** — a single law firm innovation team that says
-   *"yes, we'd pay per seat for a provably-local frontier box."* One real LOI > any spec sheet.
+   *"yes, we'd pay per seat for a provably-local frontier box."* One real LOI > any spec sheet. The
+   copy-paste BD motion to land it — targeting, cold outreach, discovery script, the design-partner
+   offer, and an LOI template — is in [`ICP_OUTREACH_KIT.md`](ICP_OUTREACH_KIT.md).
