@@ -7,12 +7,19 @@ what sets the **FPGA class**, and the FPGA class sets the device's **size,
 thermal budget, BOM, and price** (§8 of that doc: *"cost is FPGA-dominated"*).
 Everything downstream is bounded by the number this flow returns.
 
-> **Honest status: nothing here has been run.** Gowin EDA is not installed in the
-> environment where this scaffold was written, so there are **no measured numbers
-> yet**. This directory is a **ready-to-run scaffold**: a user who *has* Gowin EDA
-> (free, login/license-gated) can run it to get the real fit. The results table
-> below is a **template to fill in** — do not treat any cell as measured until you
-> run it.
+> **Status update: the yosys wall is broken; the vendor P&R fit is still open.**
+> Using `yosys 0.66`'s **`synth_gowin`** (not the `abc -lut4` path that timed out),
+> the FP8 compute datapath **maps** — `glm_matmul_fp8` at `KMAX=256` mapped in ~77 s
+> to **~17.8 K LUT4-equiv + 20 DSP mults (`MULT18X18`/`MULT9X9`) + ~5.4 K DFF**, by
+> **inferring hardware DSPs** for the multiplies. So "the compute die is un-mappable"
+> was an `abc -lut4` limitation, not a design one.
+> **What's still open:** the *assembled* top does not synth in yosys 0.66 — every
+> parent instantiates `glm_matmul_fp8` at **`KMAX=16384`** (the big-GEMM/LM-head
+> accumulator cap), which yosys 0.66 **can't even elaborate** (2048 elaborates but its
+> map pass is slow). So the **whole-system routed LUT/DSP/BSRAM/Fmax still needs the
+> vendor flow below** (Gowin EDA / `nextpnr-himbaechel`) or K-tiling the accumulator.
+> Gowin EDA is not installed here, so those cells stay a **template to fill in**.
+> Full plan + measured probes: [`../docs/FPGA_DEMO_PLAN.md`](../docs/FPGA_DEMO_PLAN.md).
 
 ---
 
