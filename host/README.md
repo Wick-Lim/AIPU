@@ -1,9 +1,11 @@
 # AIPU host software (D2 scaffold)
 
-The host-side software that turns the AIPU device into **a local OpenAI-compatible
-endpoint** — point any existing client (a chat UI, a VS Code extension, the `openai`
-SDK with `base_url=http://localhost:8000/v1`) at it and it drives the device through
-the exact RTL host protocol. This is the **software track's first deliverable**
+The host-side software that turns the AIPU device into **a local, single-user
+OpenAI-compatible endpoint** (one box, one user — binds `127.0.0.1` by default, a
+personal appliance's front door, not a multi-tenant service) — point any existing
+client (a chat UI, a VS Code extension, the `openai` SDK with
+`base_url=http://localhost:8000/v1`) at it and it drives the device through the exact
+RTL host protocol. This is the **software track's first deliverable**
 ([`docs/USBC_PRODUCT_PLAN.md`](../docs/USBC_PRODUCT_PLAN.md) Phase D2), buildable and
 testable **with zero hardware** so it is ready when D1 (first real tokens over USB-C)
 lands.

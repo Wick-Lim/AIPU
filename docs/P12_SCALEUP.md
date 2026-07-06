@@ -116,6 +116,15 @@ arithmetic, and a full-config functional run is infeasible per §6).
 
 ## 5. Batch-dimension scale-up — multi-sequence batched attention (B=4)
 
+> **Scope — this is the NON-TARGET datacenter/aggregate regime, not the product.**
+> The product is a **local, single-user box** that runs **B=1** (one user, one sequence);
+> single-user interactive throughput (~3–12 → ~25–40 tok/s [EST] with the faithful levers
+> stacked) is the only metric that matters for it. Batching B *different* sequences is the
+> *aggregate-serving* (datacenter) use of the **same** silicon — a legitimate analysis of
+> what the RTL *could* do batched, kept here as a secondary result, but **never** the
+> product's headline speed. The "batching bandwidth win" below applies only when many
+> different users are co-batched, which the personal box does not do.
+
 §1–§4 scale the *parameter* (model-dimension) axis. The **batch** axis scales
 independently: `glm_model_fp8` runs `PE_M=B` **different** sequences in ONE forward
 (`PER_ROW_SEQ=1`), each row attending its OWN sequence's KV window (per-row-slot union +

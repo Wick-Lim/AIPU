@@ -10,6 +10,12 @@ This is the software-emulation core of "FPGA emulation" — **measured cycles**,
 It does **not** produce an absolute real-753B tok/s (that needs full-scale weights / a real FPGA);
 it validates the *mechanism and scaling* the roofline rests on.
 
+The throughput measured here is the product's own number: the **LOCAL, SINGLE-USER box** running the
+full GLM-5.2-FP8 753B locally at **B=1** (one box, one user — see `docs/USBC_PRODUCT_PLAN.md`).
+`cyc_per_tok` / `EFF_CYC` are single-stream per-token latencies, so single-user tok/s = clock ÷
+`EFF_CYC`. (The same silicon's aggregate/datacenter-batch throughput is a separate, non-target
+analysis, not this product's speed.)
+
 ## Harness
 
 - `test/glm_fp8_system_perf_tb.v` — the functional system TB (`token == standalone glm_model_fp8`,

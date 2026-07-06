@@ -23,14 +23,18 @@ So per-token energy splits roughly:
 
 **The blunt conclusion: DVFS, die-shrink and clock-gating only touch the ~20 % compute slice.
 Real low power is won on the ~80 % Flash bytes — cut them, or amortize each fetch across more
-tokens/users.** Everything below is ranked by that truth.
+tokens** (spec-decode K — the single-user box's lever). Amortizing across B *users* instead is the
+**non-target datacenter-batch** regime (the same silicon batched, kept for analysis but not this
+personal box, which runs B=1). Everything below is ranked by that truth.
 
 ## 2. The irreducible floor
 
 The active experts **must** be re-read from Flash every token (the model is fixed; the 753 GB
 routed-expert set can't reside in 64 GB DDR5). That sets a hard J/token floor. The *only* bit-exact
 ways under it are: **(a) fewer bytes per fetch** (lossless compression), **(b) fewer fetches per
-token** (amortize one weight-load across K tokens or B users), **(c) more of the hot working set
+token** (amortize one weight-load across K tokens via spec decode — the single-user box's lever;
+the across-**B-users** batch variant is the non-target datacenter regime, kept for analysis, not
+this product), **(c) more of the hot working set
 resident** (bigger DDR5 → higher hit-rate → fewer Flash misses; a hardware-$ lever). Compute tricks
 cannot touch the floor.
 
@@ -45,7 +49,7 @@ Stacking on the ~9 J/token baseline (numbers are modeled `bytes × energy/bit`, 
 | `weight_decomp` (lossless, order-0) | 1.34× fewer Flash bytes | ~6.7 | ✅ built, bit-exact (Huffman, 5.97 b/sym) |
 | `weight_decomp2` (lossless, order-1) | ~1.4–1.5× fewer Flash bytes | ~6.3 | ✅ built, bit-exact (context-modeled, ~1.13× over order-0; optional — default datapath wires order-0) |
 | MTP/spec **K=2** | verify 2 tokens per weight-load (K_eff 1.7) | ~4.5 | ✅ built, spec==greedy exact |
-| grouped MoE **union-skip** batch | B rows share 1 expert fetch (÷ up to B) | ↓ at B>1 | ✅ built, byte-identical |
+| grouped MoE **union-skip** batch **[non-target: B>1 multi-user datacenter regime; the box runs B=1]** | B rows share 1 expert fetch (÷ up to B) | ↓ at B>1 | ✅ built, byte-identical |
 | **DVFS freq** (`clk_throttle`) | run die f/div in the 4–5× slack (§4) | **peak-power only** (not J/token) | ✅ **RTL built + byte-identical** — the eco/thermal knob |
 | **DVFS voltage** | lower supply at the reduced f | −~15 % total **energy** | vendor/physical (the J/token half) |
 | **spec high-K verify** (÷K weight-loads) | verify K+1 draft positions in ONE model weight-load (PE_M=K+1 batch) → **÷(K+1) weight-loads on the 80 %** | scales with K_eff | ✅ **HW built + bit-exact** (`spec_batched_top` / `spec_chain_top`, spec==greedy EXACT; weight-share `glm_model_fp8_pem` ALL 3) |

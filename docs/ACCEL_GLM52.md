@@ -45,6 +45,13 @@ overridable from the real weights. Everything else above is exact.
 
 ### 1.2 Honest scale reality — what one chip can and cannot do
 
+**Product scope (who this is for).** The target is a **local, single-user personal box** —
+one FPGA card running the full GLM-5.2-FP8 model locally for one user (**B=1**), streaming
+the quantized model from ~1 TB Flash with a ~64 GB DDR5 hot-weight cache (see
+`docs/USBC_PRODUCT_PLAN.md`). The bf16 residency math and any multi-chip / aggregate-batch
+framing in this doc are a **secondary, non-target datacenter analysis of the same silicon**,
+kept for sizing — not the product's deployment.
+
 - **Weights:** ~753B params = **725B cold routed experts** (75 MoE layers × 256 experts ×
   37.75M) + **~28B hot** (MLA projections, dense-front FFN, norms, router, embed/LM head).
   bf16 ≈ **1.5 TB**, INT4 ≈ **376 GB**. **[SYS-EST]**
@@ -245,8 +252,12 @@ over tile memory, and owns the latent cache.
     not all `N_EXPERT`) — **byte-identical** to per-row routing. On the real 256-expert config
     this is up to **~32× fewer Flash expert fetches** at small batch (union of ≤8 vs 256), with
     the benefit tending to 1× as `B→256` where the union approaches the full expert set.
-  - **Multi-sequence batching (`PER_ROW_SEQ`) [BUILT].** The batch rows need not belong to one
-    sequence. With `PER_ROW_SEQ=1` each `PE_M` row is a **DIFFERENT sequence**: `mla_attn_fp8`
+  - **Multi-sequence batching (`PER_ROW_SEQ`) [BUILT].** *(This is an aggregate / multi-user
+    serving capability of the same silicon — a **secondary, non-target datacenter regime**, NOT
+    the single-user product, which runs one sequence at `B=1`. The same `PE_M` weight-sharing
+    serves the product by batching a sequence's speculative-decode draft tokens; it is verified
+    here because it exercises the identical fetch-sharing datapath.)* The batch rows need not
+    belong to one sequence. With `PER_ROW_SEQ=1` each `PE_M` row is a **DIFFERENT sequence**: `mla_attn_fp8`
     builds a per-row-slot union (tagged by `union_seq`) and emits `kc_seq` to route every KV
     fetch to that sequence's own cache window, so **each row attends its OWN sequence's KV**
     while the **query-side weight/projection fetch stays SHARED** across sequences (the batching

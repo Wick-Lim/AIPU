@@ -144,6 +144,11 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
 
 ## 4. Batching & speculative decode (throughput layers)
 
+> **Scope.** The product — a local, single-user box — runs at **B=1**; **speculative decode** (last
+> bullet) is its single-user tok/s lever. The **batching / multi-sequence / continuous-batching**
+> layers below, and the **aggregate-throughput regime** they realize, are the **non-target
+> datacenter deployment** of the same silicon (§6) — kept as analysis, not the product.
+
 - **Batching (PE_M = B):** B independent token rows decode in lockstep, sharing one weight fetch
   per GEMM. With **union-skip**, the per-token routed-expert footprint shrinks with B toward the
   union (`E[distinct]=256·(1−0.96875^B)`), realizing the aggregate-throughput regime.

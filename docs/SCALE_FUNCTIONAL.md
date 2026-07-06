@@ -44,7 +44,12 @@ KV store (`kv_mem`); its **multi-step continuous-batching decode loop** (`N_STEP
 each decode token's KV written to `kv_mem` and attended — with each row's step-k token
 **BIT-EXACT** vs a standalone `PE_M=1` model decoding that sequence alone N steps (`N_STEPS=1`
 byte-identical). These run at a small faithful slice (batch-axis correctness), not the real
-operator dims of the table above.
+operator dims of the table above. Scope: this batch / multi-seq axis is a **capability of the
+silicon**, not the product's operating mode — the product is a **local, single-user box** that
+runs **B=1** (one user, the full GLM-5.2-FP8 753B model, ~3–12 → ~25–40 tok/s [EST], comfortably
+interactive). Verifying the batch axis proves the *same* silicon *could* run batched — a
+**non-target, datacenter deployment** where many *different* users share the weight/projection
+fetch (the "batching bandwidth win") — which the personal box does not do.
 
 ## The `mla_attn_fp8` fix — a TB-golden/stimulus bug, not an RTL bug
 

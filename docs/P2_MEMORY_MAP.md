@@ -93,6 +93,17 @@ poisons the whole row — the conservative choice). Proven with back-door fault
 injection by `kv_cache_pager_ecc_tb` and `kv_ecc_ring_tb`. The same partitioning
 applies to `glm_fp8_soc_ms.kv_mem` (identical row width).
 
+**Product-scope note (single-user box).** The product is the LOCAL, SINGLE-USER
+personal box — one box, one user, running the full GLM-5.2-FP8 model locally (see
+`docs/USBC_PRODUCT_PLAN.md`). It decodes **one sequence (NSEQ=1 / B=1)**, so its
+resident KV here is just the single user's hot set + that one user's KV. The
+**batched multi-seq path** (`glm_fp8_soc_ms`, the `kv_cache_pager` `NSEQ>1` mode,
+and the `NSEQ`-scaled `kv_mem`) is the SAME silicon run as continuous batching for
+the **non-target datacenter deployment** (aggregate serving of many *different*
+users); it is kept in this map because the SECDED/parity classification is
+identical in both regimes — the per-array protection rules do not change with
+`NSEQ`. It just changes how many independent KV windows the array holds.
+
 ### 2.2 Active FP8 datapath — activation / KV / accumulator scratch (SECDED-class model data, single-token scope)
 
 These hold live numeric intermediates (bf16 activations, FP8-block accumulators,

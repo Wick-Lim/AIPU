@@ -50,14 +50,15 @@ exhaustive enumeration, a real PDK, or a formal solver).
 | **Memory-system controllers** | z3 | **BMC** (6 controllers) + **unbounded k-induction** ([`FORMAL.md`](docs/FORMAL.md)) |
 | **Cycle-accurate memory-stall mechanism** | assembled system, **real RTL cycles** | exposed stall is exactly **`3·FLASH_LAT + 9`**; faithful `cyc_per_tok` **grows** with Flash latency (flat 7947 → **8607** @ FLASH_LAT=256) ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)) |
 | **PE_M batch path** (0 extra weight BW) — **4/4 wrappers** | per-row single-token refs | swiglu **513** / router **192** / mla **6** / mtp **44** — bit-exact + weight-share, *"B rows == 1 fetch stream"* |
-| **Multi-sequence batched attention** — each PE_M row a *different* sequence, real end-to-end through the full model | per-seq PE_M=1 goldens | per-row argmax/logits **bit-exact** at B=2 (~41% fewer attn-weight beats than 2 runs) and **B=4** (~52%), dense + sparse; `PER_ROW_SEQ=0` byte-identical ([`PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)) |
+| **Multi-sequence batched attention** — each PE_M row a *different* sequence (a batched-serving capability of the silicon; the **personal box runs B=1**) | per-seq PE_M=1 goldens | per-row argmax/logits **bit-exact** at B=2 (~41% fewer attn-weight beats than 2 runs) and **B=4** (~52%), dense + sparse; `PER_ROW_SEQ=0` byte-identical ([`PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)) |
 | **Truncated full-model token chain** (real weights, DSA threaded, incl. the dense→MoE seam) | fp32-accumulate ref, real GLM prompt | **argmax match** (real 256-expert route; "The capital of France is" → **20259 == 20259**), top-8 preserved — the DSA-IndexShare + fused-expert blockers **retired** ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)) |
 | **Full 753B config elaboration** | verilator, true dims (6144/78/154880/256-expert) | **0 errors** — parameterization threads clean at real scale; full-config lints cleared (SELRANGE 4122→0, byte-identical) ([`FULL_CONFIG_ELAB.md`](docs/FULL_CONFIG_ELAB.md)) |
 
 **Modeled, not silicon — flagged [EST].** All throughput/energy figures come from a
 bandwidth-roofline model (`tokens/s ≈ Flash_BW / [(1−h)·footprint] · K`), **not** from a routed
-netlist or silicon: single-user **~3 → ~30+ tok/s** and **~9 → ~3 J/token** [EST] after stacking
-the Flash levers. Read them as an optimistic ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md),
+netlist or silicon: single-user **~3 → ~25–40 tok/s** and **~9 → ~3 J/token** [EST] after stacking
+the Flash levers (~16–27 with today's built levers → ~25–40 as the all-levers ceiling). Read them as
+an optimistic ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md),
 [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)). What *is* measured — the proven row above — is
 the roofline's underlying **memory-stall mechanism**, now validated on real RTL cycles (stall exactly
 `3·FLASH_LAT + 9`, faithful `cyc_per_tok` grows with Flash latency); the absolute tok/s stays [EST]
@@ -147,7 +148,9 @@ buffers, verified bit-exact and weight-sharing (*"B rows == 1 fetch stream"*). O
 scan + combinational `any_has`), byte-identical to the all-expert path — up to **~32× fewer Flash expert
 fetches** at small batch on the real 256-expert config (≈ no benefit at B≈256, where the union ≈ all).
 
-**Multi-sequence batching is real end-to-end** (beyond same-sequence decode-batching). Each PE_M row can now
+**Multi-sequence batching is real end-to-end** (beyond same-sequence decode-batching) — a proof of what the
+same silicon *could* serve in the **non-target multi-user/aggregate regime** (the personal box itself runs
+B=1; see the identity note above), not the appliance's own path. Each PE_M row can now
 be a **different sequence**: `mla_attn_fp8` carries a `PER_ROW_SEQ` mode (per-row-slot union + `kc_seq`
 routing — each row attends its *own* sequence's KV while the query-side weight/projection fetch stays shared,
 the batching bandwidth win), threaded model→decoder→mla via `seq_vec`/`kc_seq`. Proven full-model:

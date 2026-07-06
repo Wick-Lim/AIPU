@@ -4,6 +4,15 @@
 > 검증은 기존 **모듈 단위 유닛테스트(각 TB의 독립 fp64/fp8 golden, iverilog/CPU, GPU 0)** 방식을 신뢰 기준으로 삼는다.
 > 아래 모든 작업은 **GPU 불필요**. file:line 참조는 이번 감사에서 실제 코드로 검증됨.
 
+> **제품 정체성 (단일 렌즈):** 이 가속기는 **로컬·싱글유저 개인 박스**다 — 한 대·한 사용자가
+> 전체 GLM-5.2-FP8 753B를 로컬(프라이빗·오프라인·토큰당 API 요금 0)에서 돌린다(개인 어플라이언스;
+> `docs/USBC_PRODUCT_PLAN.md`). 제품이 보는 **유일한** 속도 지표는 **싱글유저 대화형 처리량
+> ~3–12 → ~25–40 tok/s [EST]**(B=1, 채팅 가능). 아래 완료 목록의 **배치 멀티시퀀스 트랙**
+> (`glm_fp8_soc_ms`, N_STEPS 연속배치 디코드, `make bcov` B∈{1,2,3,5,8})은 *같은 실리콘*을
+> 배치했을 때 무엇이 되는지에 대한 **비대상(non-target) 데이터센터 배치 분석**이지 제품 타깃이
+> 아니다 — 개인 박스는 B=1로 돈다(집계 상한을 배치수로 나눈 per-user 수치를 제품 속도로 제시하지
+> 않는다).
+
 > **동기화 노트 (2026-07, 코드 대조 재감사):** 아래 계획의 **Track B 전 항목과 Track C
 > 대부분이 이후 커밋에서 완료됨**. 완료된 마일스톤(코드로 확인): A2 멀티시퀀스 배치 어텐션
 > (`PER_ROW_SEQ`, 풀모델 B=2·B=4 per-row bit-exact) · 배치 멀티시퀀스 SoC top
@@ -74,7 +83,7 @@
 - [x] **ECC/MBIST 작업 언블록:** 모든 reg-array 분류 → *docs/P2_MEMORY_MAP.md* (**C2**)
 - [x] **unbounded ddr5 증명:** connect-bind lift(`make formal-ind`에 편입) → *test/formal/ddr5_xbar_ind_fv.v*, *docs/FORMAL.md* (**C5**)
 - [x] **CI 부트스트랩:** `.github/workflows/ci.yml` 존재
-- [ ] **문서 정합화:** `make all` 스코프 명시(현재 `test hazard unittests lint synth synth-glm formal`, Makefile:58), tok/s ~27 vs ~30+ (README:125), `q_lora/kv_lora` 값 통일(실 checkpoint 확인값 **2048/512** vs slice 64/32; `docs/P12_SCALEUP.md` 참조)
+- [x] **문서 정합화:** single-user tok/s 사다리 통일 — **~3 baseline → ~16–27 built today → ~25–40 [EST] ceiling**(전체 레버); README/SSP를 이 사다리에 정렬(README ~30+→~25–40, SSP ~3–6은 보수 subset으로 명시하고 full-stack ~25–40 지시). `q_lora/kv_lora` = 실 checkpoint **2048/512**(q_lora CONFIRMED, kv_lora standard-assumed). `make all` = `test hazard unittests lint synth synth-glm formal`(Makefile:58).
 
 ## 재조준 타임라인 (P1.1 제거)
 
@@ -113,4 +122,4 @@ WEEKS 4-8 — XL 구조 작업 (오라클 게이트)
 9. **~~`reset_sync`·P2 프리미티브·`weight_decomp/2`가 어떤 product top에도 미인스턴스~~ — 부분 폐쇄.** `reset_sync`는 CDC top에 배선(C3), `weight_decomp`는 Flash→loader refill 경로에 배선(C9, `glm_fp8_system` DECOMP=1). **남은 미인스턴스:** `mbist_ctrl`/`icg_cell`(system top에는 아직 미배선 — `clk_gate_cluster`는 유닛 레벨만; C7 잔여).
 10. **"모든 dim은 param bump"는 한 구조 변경 과소평가** — `mla_attn_fp8`이 scratch를 S_MAX(1M)로 사이징 → SWIN 디커플 필요(B7). RTL default(`Q_LORA=64`,`KV_LORA=32`,`POSW=20`,`S_MAX=8`)는 slice 값.
 11. **~~`ecc_mem_wrap`은 read시 정정만~~ — C4로 폐쇄됨.** scrub-write-back + sticky `serr`/`derr` + `err_ack` + back-door raw-codeword 주입이 구현되어 P2.1 "retry/recovery" 요구를 충족(read 후 재read에서 `serr=0`).
-12. **문서 불일치:** README "~3→~30+ tok/s"(README:125) vs ~27; `make all` = **`test hazard unittests lint synth synth-glm formal`**(Makefile:58 — C1로 `synth-glm` 추가됨)이고 `bitacc`/`cache-study`/`bcov`/`formal-ind`/`coverage`/`spec-slow`/`cdc`는 별도.
+12. **문서 불일치 — 해소됨:** single-user tok/s를 한 사다리로 통일(**~3 → ~16–27 built → ~25–40 [EST] ceiling**); README ~30+→~25–40, SSP ~3–6은 보수 subset으로 라벨. `make all` = **`test hazard unittests lint synth synth-glm formal`**(Makefile:58 — C1로 `synth-glm` 추가됨)이고 `bitacc`/`cache-study`/`bcov`/`formal-ind`/`coverage`/`spec-slow`/`cdc`는 별도.

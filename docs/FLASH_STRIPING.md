@@ -128,7 +128,11 @@ concern.
 - **MLA/attention projection weights** (the 7 projections) — read every token/layer.
 - **Embeddings + LM head, DSA index** — the LM head GEMV and index reads are large and constant.
 
-**Batching (B rows) changes the channel arithmetic in strategy A's favor.** With `B` tokens
+**Batching (B rows) changes the channel arithmetic in strategy A's favor** — but note this is
+the **non-target aggregate/datacenter regime**, not the product. The product is a **local,
+single-user box running `B=1`**; large `B` only arises when batching many *different* users'
+tokens together, which the personal box does not do. This paragraph is kept as analysis of what
+the *same* silicon could do batched. With `B` tokens
 processed per weight fetch (the **PE_M-batch path — now complete: DONE 4/4 across
 swiglu/router/mla/mtp, and the union-fetch integrated in `glm_decoder_block_fp8`**, all verified
 bit-exact), a layer's *union* of active experts approaches all 256 as `B` grows
@@ -139,7 +143,8 @@ fetches **only** that union (a `T_ESCAN` scan + combinational `any_has` skip of 
 so **the batch axis of this striping story is realized in the model, not just modeled** — up to
 ~32× fewer expert fetches at small batch, ~none at B≈256 (union≈all). See
 [`ULTRA_PERF.md`](ULTRA_PERF.md) #1. **Striping (per-token, strategy A/B) and batching compose:**
-striping keeps single-user balanced, batching keeps aggregate balanced.
+striping keeps the single-user product (`B=1`) balanced — *that* is this box; batching keeps a
+**non-target datacenter deployment** (`B`≈256, many *different* users) balanced on the same silicon.
 
 ---
 

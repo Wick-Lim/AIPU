@@ -9,7 +9,9 @@
 > throughput. Revisit once P1 is green and the vendor flow (E1) can measure the real LUT delta.
 
 How to make the FP8 compute die dramatically smaller (for a smaller FPGA / lower cost / lower
-power), ranked and phased. Grounded in the architecture's defining property.
+power — i.e. a cheaper, cooler **local single-user box**), ranked and phased. Grounded in the
+architecture's defining property. (Every lever cuts BOM/power; none change the product's
+single-user interactive tok/s — the die is Flash-bandwidth-bound, so compute is nearly free.)
 
 ## Thesis — a Flash-bandwidth-bound die should be *minimal*
 

@@ -237,7 +237,10 @@ ultimately the full 753 B run (multi-GPU) — the DSA-plumbing **and** fused-exp
 ### Real-weight multi-seq batching cross-check (A2 on the real checkpoint) — wired into `mode=model`
 
 The same `modal_partial_f1.py --mode model` run also cross-checks the **multi-sequence batching**
-claim (the RTL's `PER_ROW_SEQ` / `glm_fp8_soc_ms` hardware path) on the REAL checkpoint. It tokenizes
+claim (the RTL's `PER_ROW_SEQ` / `glm_fp8_soc_ms` hardware path) on the REAL checkpoint. (Multi-sequence
+batching — B>1 across *different* users — is the **non-target datacenter / aggregate-serving** regime of
+the same silicon, not the product: the local single-user personal box runs **B=1**. This is a correctness
+cross-check of that secondary capability, not the product's own path.) It tokenizes
 **two different real prompts** (default `"The capital of France is"` and `"Water boils at a temperature
 of about"`), runs them (a) **BATCHED** as a `[2, L]` batch and (b) **SEPARATELY** as two `[1, L]`
 forwards through the SAME real-weight truncated `GlmMoeDsa` model, then compares **each row's

@@ -3,7 +3,7 @@
 > **Scope.** A system design for running the *published* `zai-org/GLM-5.2-FP8`
 > checkpoint on **one module** — a custom FP8 compute die + **64 GB DDR5** (the fast working
 > memory) + **1 TB Flash** (the whole model) — instead of a multi-chip HBM cluster. It targets
-> "the real 753B model runs, at interactive-ish speed," e.g. as a USB-C external accelerator,
+> "the real 753B model runs, at interactive-ish speed," e.g. as a **local, single-user** USB-C external accelerator (a private, offline personal box),
 > not datacenter-scale real-time serving.
 >
 > **Fast-memory choice: multi-channel DDR5, not HBM/GDDR6.** This workload is **Flash-bandwidth-
@@ -199,10 +199,16 @@ model or multi-token MTP) K can exceed 2.
 **Batching is not a free Nx** in this Flash-bandwidth-bound regime — it only helps through the
 hit rate, and trained-router entropy caps the reuse: batch 32 gives **~1.5× aggregate**, split
 across the B streams (**per-user = aggregate ÷ B**), i.e. it trades single-user latency for
-aggregate throughput.
+aggregate throughput — that **batched/aggregate regime is a non-target datacenter deployment of the
+same silicon, not this single-user (B=1) product**.
 
-**Bottom line (FP8):** **~3–6 tokens/s single-user**, **~6–12 with MTP ×2**, and **~10–18
-aggregate** at batch 32 + MTP ×2 (~100 GB/s on-module Flash). Prefetch is required (hides
+**Bottom line (FP8):** this section's **conservative** model (prefetch + batch-hit-rate + MTP only)
+puts single-user at **~3–6 tokens/s**, **~6–12 with MTP ×2**. Stacking the *full* faithful lever set
+(`flash_xbar` N-channel banking + `weight_decomp` + activation-sparsity + draft-K + hot-weight) raises
+the single-user ceiling to **~25–40 tok/s [EST]** — that fuller stack is the product headline
+([`ULTRA_PERF.md`](ULTRA_PERF.md) §4). The **~10–18 aggregate** at batch 32 + MTP ×2 (~100 GB/s
+on-module Flash) is the **non-target batched/datacenter regime of the same silicon, not the product's
+speed** (the box runs B=1). Prefetch is required (hides
 latency → reach the bandwidth wall); MTP and raw Flash bandwidth are the real multipliers;
 batching is a modest, latency-costing aggregate boost. Interactive, not datacenter-real-time.
 Compute and the single die are *not* the limit (the die idles on Flash); the wall is moving
@@ -223,7 +229,7 @@ can't be statically placed — it's a **caching + scheduling** problem:
   share it across B rows — now realized in RTL: `glm_decoder_block_fp8`'s PE_M>1 MoE loop fetches
   **only** the union (`T_ESCAN` scan + `any_has` skip), and the PE_M batch-widen is **DONE 4/4**
   (swiglu/router/mla/mtp), all bit-exact. This reframes aggregate batching from the ~1.5×
-  hit-rate view (§7.2) to a **6–8× aggregate** lever near B≈256; see
+  hit-rate view (§7.2) to a **6–8× aggregate** lever near B≈256 (a **non-target batched/datacenter regime**; the product itself runs B=1); see
   [`ULTRA_PERF.md`](ULTRA_PERF.md) #1 and [`FLASH_STRIPING.md`](FLASH_STRIPING.md) §4.
 - **Prefetch/predict**: speculate next experts (the next layer's router is cheap and runs ahead)
   and DMA into DDR5 during the current layer's compute → hide the **big Flash fetch latency**.
