@@ -2,14 +2,14 @@
 
 > **Scope.** A system design for running the *published* `zai-org/GLM-5.2-FP8`
 > checkpoint on **one module** — a custom FP8 compute die + **64 GB DDR5** (the fast working
-> memory) + **1 TB Flash** (the whole model) — instead of a multi-chip HBM cluster. It targets
+> memory) + a **1–4 TB NVMe SSD** (the whole model) — instead of a multi-chip HBM cluster. It targets
 > "the real 753B model runs, at interactive-ish speed," e.g. as a **local, single-user** USB-C
 > external accelerator — a **fully offline / air-gapped** box that runs the full 753B frontier model
 > **with the ethernet unplugged** (nothing leaves because there is **no path out** — see §3),
 > not datacenter-scale real-time serving.
 >
-> **Fast-memory choice: multi-channel DDR5, not HBM/GDDR6.** This workload is **Flash-bandwidth-
-> bound** (the wall is reading cold experts from Flash), so the fast tier only needs ~300–600 GB/s.
+> **Fast-memory choice: multi-channel DDR5, not HBM/GDDR6.** This workload is **NVMe/PCIe-bandwidth-
+> bound** (the wall is reading cold experts from the NVMe SSD), so the fast tier only needs ~300–600 GB/s.
 > An **8–12-channel DDR5** subsystem delivers that (DDR5-6400 ≈ 51 GB/s/ch → ~410 GB/s at 8 ch,
 > ~615 at 12), making HBM's multi-TB/s — and even GDDR6's ~400–600 GB/s (8–12 ch) — more than required.
 > DDR5 is the **cheapest (~$2–4/GB → ~$150–300 for 64 GB)** and **lowest-power per bit** of the
@@ -25,9 +25,9 @@
 > is **designed, not built**.
 >
 > **Compute die → FPGA card (current roadmap).** The committed product realizes this "compute
-> die" on a **data-center-class FPGA** (FPGA + on-board DDR5 + NVMe/Flash on one card), **not a
-> custom ASIC** — because the workload is Flash-bandwidth-bound the die already sits ~75–80% idle
-> behind Flash, so an ASIC's compute-density edge is largely wasted against multi-million NRE (see
+> die" on a **data-center-class FPGA** (FPGA + on-board DDR5 + an NVMe SSD via M.2/PCIe on one card), **not a
+> custom ASIC** — because the workload is NVMe/PCIe-bandwidth-bound the die already sits ~75–80% idle
+> behind the NVMe read path, so an ASIC's compute-density edge is largely wasted against multi-million NRE (see
 > [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2). The single-package memory-hierarchy analysis
 > below is agnostic to that choice — read "the die" as "the FPGA fabric"; a custom ASIC is only
 > revisited if volume/power economics ever justify it.
@@ -37,7 +37,7 @@
 ## 1. Goal
 
 One module that runs GLM-5.2-FP8 (753B params, ~40B active/token, 1M context) by **storing
-the whole model in cheap Flash and streaming the per-token working set through fast DDR5
+the whole model on a cheap NVMe SSD and streaming the per-token working set through fast DDR5
 into an FP8 compute die** — exploiting MoE sparsity (8/256 experts/layer) so only a small
 fraction of the 753 GB is touched per token. Optimize for **cost + interactive speed** (a
 USB-C external accelerator) over peak throughput.
@@ -69,7 +69,7 @@ So the design problem is a **memory hierarchy + streaming** problem.
                  │                                      miss ▲   │ refill         │
                  │                                            │   ▼                │
                  │                              ┌──────────────────────────────┐  │
-                 │                              │   1 TB FLASH (~10s GB/s)      │  │
+                 │                              │  1–4 TB NVMe (~10s GB/s agg) │  │
                  │                              │  • full 725 GB cold experts   │  │
                  │                              │  • KV overflow (cold pages)    │ │
                  │                              └──────────────────────────────┘  │
@@ -96,8 +96,8 @@ Three components, three roles:
   MTP) with FP8 E4M3 weight matmuls + bf16 tail. Pulls weights via a streaming interface.
 - **64 GB DDR5** — the *fast working memory*: everything reused every token (hot weights), the
   KV working window, and the **routed-expert cache**. (~400–600 GB/s at 8–12 channels ≈ exactly the ~300–600 GB/s this workload needs, since it
-  is Flash-bound — HBM's/GDDR6's higher BW would be wasted.)
-- **1 TB Flash** — the *cheap bulk store*: the entire 753 GB FP8 model + KV overflow.
+  is NVMe/PCIe-bound — HBM's/GDDR6's higher BW would be wasted.)
+- **1–4 TB NVMe SSD** — the *cheap bulk store*: the entire 753 GB FP8 model + KV overflow.
 
 ## 4. Memory tiering & map
 
@@ -105,11 +105,11 @@ Three components, three roles:
 |---|---|---|---|---|
 | On-die SRAM | MBs | ~10s TB/s | activations, GEMM tiles, DSA index scratch, double-buffers | — |
 | **DDR5** | **64 GB** | **~400–600 GB/s (8–12 ch)** | **hot weights ~28 GB** (attention all layers, shared expert, dense FFN, router, embed/LM-head, norms) + KV working window + **expert cache ~34 GB** | hot: yes |
-| **Flash** | **1 TB** | **~10s GB/s** | **full 725 GB cold routed-expert pool** + KV cold pages | no (streamed on demand) |
+| **NVMe SSD** | **1–4 TB** | **~10s GB/s agg [EST]** (per-drive ~3.5 GB/s Gen3 x4 / ~7 Gen4 x4; scale via PCIe lanes / multiple drives) | **full 725 GB cold routed-expert pool** + KV cold pages | no (streamed on demand) |
 
 The split that makes it work: **non-routed params (~28 GB) are a *fixed* set used every
 token → resident in DDR5.** The **725 GB routed experts are a *data-dependent* set (8/256 per
-layer, chosen at runtime) → live in Flash, streamed/cached on demand.**
+layer, chosen at runtime) → live on the NVMe SSD, streamed/cached on demand.**
 
 ## 5. Per-token dataflow
 
@@ -118,16 +118,16 @@ layer, chosen at runtime) → live in Flash, streamed/cached on demand.**
    a. RMSNorm(x) (bf16, DDR5).
    b. **MLA attention** — weight projections (W_dq..W_o) pulled FP8 from **DDR5 (hot)**; q·K
       score + softmax + weighted-V in bf16; KV append + DSA-gather of 2048 rows from the **KV
-      window (DDR5)** / overflow (Flash).
+      window (DDR5)** / overflow (NVMe).
    c. **FFN** — dense layers (first 3): SwiGLU from DDR5. MoE layers (75): **router** picks
       top-8 experts → for each, **check the DDR5 expert cache → hit: read DDR5; miss: stream
-      the ~37 MB expert from Flash into DDR5, evict LRU** → SwiGLU; + shared expert (DDR5).
+      the ~37 MB expert from the NVMe SSD into DDR5, evict LRU** → SwiGLU; + shared expert (DDR5).
    d. Residual adds (bf16).
 3. Final RMSNorm + **LM-head GEMV** (bf16, DDR5) → next-token logits → argmax/sample.
-4. **Prefetch**: while layer L computes, DMA layer L+1's likely experts Flash→DDR5 (double-buffer).
+4. **Prefetch**: while layer L computes, DMA layer L+1's likely experts NVMe→DDR5 (double-buffer).
 
 Hot reads (~28 GB) come from DDR5 (fast). The **routed-expert reads (~22 GB) are the
-bottleneck** — DDR5-cache hits are fast, misses hit Flash.
+bottleneck** — DDR5-cache hits are fast, misses hit the NVMe SSD.
 
 ## 6. The bottleneck — routed-expert streaming
 
@@ -136,7 +136,7 @@ scattered data-dependently across the 725 GB pool. Speed is set by:
 
 ```
   t_token ≈ max( t_compute≈80ms , t_hot_DDR5 , t_routed )
-  t_routed ≈ (miss_rate × 22 GB) / Flash_BW   +   (hit × 22 GB) / DDR5_BW
+  t_routed ≈ (miss_rate × 22 GB) / NVMe_BW   +   (hit × 22 GB) / DDR5_BW
 ```
 
 With a 34 GB expert cache (≈900 of 19,200 expert-instances) and expert-popularity skew +
@@ -176,11 +176,11 @@ within a layer across the batch) the hit rate is ~28–50 % (batch 8) to ~47–6
 
 ### 7.2 Combined throughput model (batching + prefetch)
 
-With **prefetch** the Flash *latency* is hidden behind compute (§8: 99 % of stall removed when
-the compute window ≥ flash latency), so the machine runs at the Flash **bandwidth** wall. The
+With **prefetch** the NVMe *latency* is hidden behind compute (§8: 99 % of stall removed when
+the compute window ≥ NVMe latency), so the machine runs at the NVMe/PCIe **bandwidth** wall. The
 master equation (per-token routed footprint = 600 experts; FP8 = 22 GB, INT4 = 11 GB):
 
-> **aggregate tokens/s ≈ Flash_BW / [ (1 − h) × footprint ]**  ·  (then × K for speculative/MTP)
+> **aggregate tokens/s ≈ NVMe_BW / [ (1 − h) × footprint ]**  ·  (then × K for speculative/MTP)
 
 where **h** is the *batched* cache hit rate measured through the real RTL (§7.1, §8):
 batch 1 = 26.5 %, batch 8 = 29.7 %, batch 32 = 50.5 %. Each lever moves one term:
@@ -191,12 +191,13 @@ batch 1 = 26.5 %, batch 8 = 29.7 %, batch 32 = 50.5 %. Each lever moves one term
 | **Batching** | raises **h** → lowers (1 − h) | h 27 %→50 % (batch 1→32) ⇒ only **~1.5×** here |
 | **INT4** (re-quant) | halves the **footprint** | **~2×** |
 | **Speculative/MTP** | **÷K** weight passes (K tokens/pass) | **~×K** |
-| **Flash bandwidth** (hardware) | raises **Flash_BW** | linear |
+| **NVMe/PCIe bandwidth** (hardware) | raises **NVMe_BW** (more lanes / drives) | linear |
 
 **This project runs FP8** — the published `zai-org/GLM-5.2-FP8` checkpoint, faithfully, no
 re-quantization. So the throughput levers are the **FP8-compatible** ones; INT4 is *off the
 faithful path* (it means re-quantizing the model ourselves and owning the quality risk) and is
-listed only as an escape hatch. Aggregate tokens/s on the FP8 path (Flash 50 / 100 GB/s,
+listed only as an escape hatch. Aggregate tokens/s on the FP8 path (NVMe 50 / 100 GB/s
+**aggregate** — striped across many PCIe lanes / multiple NVMe drives, **not** a single M.2 [EST];
 prefetch on):
 
 | Config (FP8 path) | h | (1−h)×22 GB | @50 GB/s | @100 GB/s |
@@ -209,10 +210,10 @@ prefetch on):
 
 **The FP8 multiplier that matters is speculative / MTP decoding (×K).** GLM-5.2 ships an MTP head
 (`num_nextn_predict_layers=1`) and we built it (`mtp_head`): verifying K tokens per weight-load
-pass divides the Flash traffic ~K× **without leaving FP8**. With a longer draft (a small draft
+pass divides the NVMe traffic ~K× **without leaving FP8**. With a longer draft (a small draft
 model or multi-token MTP) K can exceed 2.
 
-**Batching is not a free Nx** in this Flash-bandwidth-bound regime — it only helps through the
+**Batching is not a free Nx** in this NVMe/PCIe-bandwidth-bound regime — it only helps through the
 hit rate, and trained-router entropy caps the reuse: batch 32 gives **~1.5× aggregate**, split
 across the B streams (**per-user = aggregate ÷ B**), i.e. it trades single-user latency for
 aggregate throughput — that **batched/aggregate regime is a non-target datacenter deployment of the
@@ -220,15 +221,15 @@ same silicon, not this single-user (B=1) product**.
 
 **Bottom line (FP8):** this section's **conservative** model (prefetch + batch-hit-rate + MTP only)
 puts single-user at **~3–6 tokens/s**, **~6–12 with MTP ×2**. Stacking the *full* faithful lever set
-(`flash_xbar` N-channel banking + `weight_decomp` + activation-sparsity + draft-K + hot-weight) raises
+(`flash_xbar` N-way read banking across PCIe lanes / drives + `weight_decomp` + activation-sparsity + draft-K + hot-weight) raises
 the single-user ceiling to **~25–40 tok/s [EST]** — that fuller stack is the product headline
 ([`ULTRA_PERF.md`](ULTRA_PERF.md) §4). The **~10–18 aggregate** at batch 32 + MTP ×2 (~100 GB/s
-on-module Flash) is the **non-target batched/datacenter regime of the same silicon, not the product's
+aggregate NVMe — many PCIe lanes / drives striped [EST]) is the **non-target batched/datacenter regime of the same silicon, not the product's
 speed** (the box runs B=1). Prefetch is required (hides
-latency → reach the bandwidth wall); MTP and raw Flash bandwidth are the real multipliers;
+latency → reach the bandwidth wall); MTP and raw NVMe/PCIe bandwidth are the real multipliers;
 batching is a modest, latency-costing aggregate boost. Interactive, not datacenter-real-time.
-Compute and the single die are *not* the limit (the die idles on Flash); the wall is moving
-~11–16 GB of routed-expert weights per token across the on-module Flash bus. (INT4 would ~2×
+Compute and the single die are *not* the limit (the die idles on NVMe reads); the wall is moving
+~11–16 GB of routed-expert weights per token across the on-module NVMe/PCIe bus. (INT4 would ~2×
 everything but is a different, re-quantized model — outside the "run the published FP8" goal.)
 
 ## 8. MoE expert-cache subsystem (the heart of it)
@@ -248,16 +249,16 @@ can't be statically placed — it's a **caching + scheduling** problem:
   hit-rate view (§7.2) to a **6–8× aggregate** lever near B≈256 (a **non-target batched/datacenter regime**; the product itself runs B=1); see
   [`ULTRA_PERF.md`](ULTRA_PERF.md) #1 and [`FLASH_STRIPING.md`](FLASH_STRIPING.md) §4.
 - **Prefetch/predict**: speculate next experts (the next layer's router is cheap and runs ahead)
-  and DMA into DDR5 during the current layer's compute → hide the **big Flash fetch latency**.
+  and DMA into DDR5 during the current layer's compute → hide the **big NVMe fetch latency**.
   Built + measured as **`src/expert_cache_pf.v`** (a prefetch hint port + demand-priority
-  background Flash fetch + a `demand_stall_cycles` counter; demand path bit-exact to
+  background NVMe fetch + a `demand_stall_cycles` counter; demand path bit-exact to
   `expert_cache_ctrl` with prefetch off; a `CACHE_HIT_LAT` parameter models the DDR5 read).
   Honest result (compute-window model, FLASH_LAT=20, DDR5 `CACHE_HIT_LAT=4`): prefetch
-  **trades the big Flash-miss stall (≈22 cyc) for the small DDR5 read** — demand stall cut
+  **trades the big NVMe-miss stall (≈22 cyc) for the small DDR5 read** — demand stall cut
   **~81 %** (4400 → 818), not the ~99 % an idealized zero-latency cache (CACHE_HIT_LAT=0) shows.
   The residual is the irreducible DDR5 read floor (`+CACHE_HIT_LAT` per resident hit); a
   second-level DDR5→die read-ahead could hide that too (future work).
-- **Layout**: store co-activated experts contiguously / aligned for sequential Flash reads
+- **Layout**: store co-activated experts contiguously / aligned for sequential NVMe reads
   (bandwidth- not IOPS-bound, since each expert is a ~37 MB contiguous block).
 - **Speculative / MTP decoding**: GLM-5.2 ships an MTP head (built here as `mtp_head`) — verify
   K tokens per weight-load pass → cut weight traffic ~K×.
@@ -266,7 +267,7 @@ can't be statically placed — it's a **caching + scheduling** problem:
 
 | | Sets it | Knobs |
 |---|---|---|
-| **Hardware ceiling** | raw Flash/DDR5 bandwidth, bus width, **energy/bit**, compute rate | more Flash/DDR5 channels, wider bus, faster die |
+| **Hardware ceiling** | raw NVMe/DDR5 bandwidth, bus width, **energy/bit**, compute rate | more PCIe lanes / NVMe drives + DDR5 channels, wider bus, faster die |
 | **Software leverage** | how much you *actually* move + when | batching, expert cache policy, prefetch, **quantization**, speculative/MTP, storage layout, scheduling/overlap |
 
 Software can't beat the bandwidth/energy ceiling but **gets you close to it and cuts demand** —
@@ -276,7 +277,7 @@ FlexGen) run 600B+ MoE models on a single GPU + RAM/SSD.
 ## 10. Power / heat
 
 The dominant dynamic energy is **moving ~16–22 GB/token of weights**. Keeping the whole model
-**on-module** (DDR5 + Flash next to the die) is the key win — vastly less energy than streaming
+**on-module** (DDR5 + NVMe next to the die) is the key win — vastly less energy than streaming
 weights from a host over USB/PCIe. Among the fast-tier options DDR5 is the **lowest-power**
 choice (mainstream, not the high-speed/high-power GDDR6; its per-bit energy is above an
 in-package HBM stack but it uses far fewer, slower devices than GDDR6). On the compute side
@@ -284,32 +285,34 @@ FP8's 4×4-mantissa multiply (measured: `glm_matmul_fp8` uses 18× 7-bit multipl
 24×24) keeps the die's dynamic power and DSP/area down. Net: a few tens of W — needs a
 heatsink/fan (a small box, not a thin USB stick), powerable over USB-C PD (~60–100 W).
 
-> **Honest energy caveat (research-backed).** Prefetch + caching hide Flash *latency* but **cannot
-> remove its energy-per-bit penalty** — NAND read energy is **~24–26× DRAM**, and for offloaded
-> decode the per-token energy can be **up to ~12× an HBM-resident baseline**. So **Flash offload is
-> a *capacity/throughput* tool, not an energy win** — the lever is to **minimize byte traffic**
-> (expert caching + batching to reuse fetched experts), not the Flash bus itself. (Sources via the
-> deep-research pass; this corrects any "Flash = low power" reading.)
+> **Honest energy caveat (research-backed).** Prefetch + caching hide NVMe *latency* but **cannot
+> remove its energy-per-bit penalty** — an NVMe SSD is still a NAND array behind a PCIe controller, so
+> the storage-read energy (NAND array **plus** the PCIe SerDes/host controller) is at least the
+> **~24–26× DRAM** the NAND term alone costs, and for offloaded decode the per-token energy can be
+> **up to ~12× an HBM-resident baseline**. So **NVMe offload is a *capacity/throughput* tool, not an
+> energy win** — the lever is to **minimize byte traffic** (expert caching + batching to reuse fetched
+> experts, and `weight_decomp` to stream fewer bytes), not the NVMe/PCIe bus itself. (Sources via the
+> deep-research pass; this corrects any "storage = low power" reading.)
 
 ## 11. Cost — memory BOM [EST, 2025–26, volatile]
 
 | Chip | $/GB | Qty | Cost |
 |---|---|---|---|
 | **DDR5** | ~$2–4 | 64 GB (a few DIMMs, e.g. 8× 8 GB across 8 channels) | **~$150–300** |
-| NAND Flash | ~$0.05–0.10 | 1 TB | **~$50–100** |
+| NVMe SSD (M.2 / PCIe) | ~$0.05–0.10 | 1–4 TB | **~$60–300** |
 | **Memory chips total** | | | **≈ $200–400** |
 
 (DDR5 is the cheapest fast tier — ~5–8× under 64 GB HBM (~$1–1.5k) and below GDDR6 (~$200–500),
-at no performance loss since the workload is Flash-bound. The trade is a **wide 8–12-channel
+at no performance loss since the workload is NVMe/PCIe-bound. The trade is a **wide 8–12-channel
 memory controller** (server-class) to reach the bandwidth, not extra chips — DIMMs are dense and
-upgradeable. The Flash that holds the entire 753 GB model is nearly free either way.)
+upgradeable. The NVMe SSD that holds the entire 753 GB model is cheap either way — a small fraction of the DDR5 BOM.)
 
-*Not included:* the board (a few DDR5 DIMMs across 8–12 channels + the die + Flash on a PCB —
+*Not included:* the board (a few DDR5 DIMMs across 8–12 channels + the die + an NVMe SSD via M.2/PCIe on a PCB —
 DDR5 needs **no CoWoS / interposer**, a real simplification vs HBM, and far fewer devices than
-GDDR6), the **wide multi-channel DDR5 controller IP** (the real engineering cost), the Flash
-controller, and the custom compute-die NRE + die cost. For context, an H100's 80 GB *HBM* alone
+GDDR6), the **wide multi-channel DDR5 controller IP** (the real engineering cost), the **NVMe/PCIe
+host controller**, and the custom compute-die NRE + die cost. For context, an H100's 80 GB *HBM* alone
 is ~$2k of its BOM — the DDR5 here is ~$150–300 for the same capacity, the payoff for being
-Flash-bound.
+NVMe/PCIe-bound.
 
 ## 12. Mapping to the committed RTL
 
@@ -319,7 +322,7 @@ Flash-bound.
   `glm_decoder_block_fp8`, and the capstone **`glm_model_fp8`** (full forward pass, next-token
   argmax matches the fp8 golden).
 - **Streaming weight-pull interfaces** (`w_req`/`w_col` + per-[128,128]-block bf16 scales) on
-  every unit — the weight *source is abstracted*, so DDR5/Flash/host can drive them.
+  every unit — the weight *source is abstracted*, so DDR5/NVMe/host can drive them.
 - The **`mtp_head`** for speculative decoding.
 - **PE_M batch-widening (4/4)** on all FP8 wrappers (`swiglu_expert_fp8` / `moe_router_fp8` /
   `mla_attn_fp8` / `mtp_head_fp8`) — B token-rows share one weight fetch, verified bit-exact — and
@@ -329,7 +332,7 @@ Flash-bound.
   `scatter_gather`/`cdc_async_fifo`) exercising the control logic.
 - The **MoE expert-cache controller** in RTL — `expert_cache_ctrl` (tag/LRU; hit/miss bit-exact
   vs a python LRU model) and the prefetching **`expert_cache_pf`** (prefetch-hint port +
-  demand-priority background Flash fetch + a `demand_stall_cycles` counter). The DDR5/Flash it
+  demand-priority background NVMe fetch + a `demand_stall_cycles` counter). The DDR5/NVMe it
   caches from is still a model/stub.
 - The **KV-cache pager** `kv_cache_pager` (append + DSA-gather window, `NSEQ` independent ring
   windows, optional SECDED-ECC); its backing memory is still a model/stub. A batched
@@ -337,8 +340,8 @@ Flash-bound.
   cache + a host prefill/decode FSM together.
 
 **What this design adds (not built — the system layer):**
-- DDR5 + Flash **PHYs** and USB-C device controller (the licensed vendor IP + real backing store,
-  vs the stubbed `ddr5_xbar`/`flash_xbar` crossbars and cache/pager models above).
+- DDR5 PHY + an **NVMe/PCIe host controller** (PCIe root complex + PHY) and USB-C device controller (the licensed vendor IP + real backing store,
+  vs the stubbed `ddr5_xbar`/`flash_xbar` crossbars and cache/pager models above). **Note:** `flash_xbar` (with `FLASH_LAT`, `flash_req`/`flash_seq`/`flash_is_expert`/`flash_expert_id`) is the committed RTL name for the **storage-read fabric**; its address→weight-bytes read-request / latency-hiding abstraction is **medium-agnostic**, so in the product the NAND-specific backend is swapped for the NVMe/PCIe host controller with the module names left unchanged.
 - The runtime/scheduler (batching, prefetch, speculative-decode loop) — largely software.
 
 ## 13. Open questions / honest limits
@@ -348,8 +351,10 @@ Flash-bound.
   ~22 GB, and batching as the dominant lever. Still **calibrated, not captured** — the actual
   numbers need a *real* GLM-5.2 routing trace (can't run 753B here); the trained-router balance
   assumption could be off in either direction.
-- **Flash bandwidth** (~10s GB/s) is assumed; real on-module NAND BW must be validated — NAND
-  read physics caps it well below DDR5 (which is exactly why Flash, not DDR5, is the wall).
+- **NVMe/PCIe bandwidth** (~10s GB/s **aggregate**) is assumed; this is **not** one M.2's figure — a
+  single PCIe Gen3 x4 NVMe is ~3.5 GB/s and Gen4 x4 ~7 GB/s [EST], so ~10s GB/s means **striping many
+  PCIe lanes / several NVMe drives**, which the custom board must actually deliver. PCIe/NVMe read BW
+  still caps well below DDR5 (which is exactly why the NVMe tier, not DDR5, is the wall).
 - **64 GB DDR5 is comfortable for FP8** (hot 28 GB + ~34 GB cache, ~923 cache slots); **48 GB
   drops the cache below the ~22 GB / 600-slot batch=1 threshold → ~27 % slower single-user**
   (measured), while **~56 GB already recovers full performance**. Batched serving is insensitive

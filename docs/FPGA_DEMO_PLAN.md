@@ -91,7 +91,10 @@ whole-system number is a vendor-flow measurement, no longer blocked by an RTL ar
 
 **tok/s is already grounded in RTL, not hand-waved:** the memory-stall mechanism and `cyc_per_tok`
 are measured on real RTL cycles ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md); stall = `3·FLASH_LAT+9`,
-`cyc_per_tok` grows with Flash latency). So once L1/L2 give a routed **Fmax**, `tok/s = Fmax ÷
+`cyc_per_tok` grows with storage-read latency). (`FLASH_LAT` and the `flash_xbar` read path are
+committed RTL names for a **medium-agnostic storage-read abstraction** — address → weight bytes,
+latency-hidden — that in the product fronts an **NVMe/PCIe** backend, not a NAND die.) So once L1/L2
+give a routed **Fmax**, `tok/s = Fmax ÷
 cyc_per_tok` is a *measured*, not modeled, single-user number — the thing that converts the
 [`ULTRA_PERF.md`](ULTRA_PERF.md) [EST] ladder into fact.
 
@@ -100,9 +103,11 @@ cyc_per_tok` is a *measured*, not modeled, single-user number — the thing that
 - **L0–L2 are near-free:** the tooling is `yosys` (have) + **Gowin EDA (free, license-gated)** or
   open `nextpnr-himbaechel`; the board (**Tang Mega 138K Pro, ~$200–300**) is only needed to *program*.
 - **L3 (the money shot)** needs the board + a Flash/SD-resident quantized weight image (`ckpt_pack.py`
-  produces it) and a reduced config (a few layers) — **not** the full 1 TB / real DDR5/Flash PHYs
-  (those are the vendor-IP, out-of-scope-for-demo items). The demo is a **reduced-config proof that
-  real weights produce real tokens on real silicon at a measured rate**, not the shippable box.
+  produces it — the demo board's on-board Flash/SD is all a reduced config needs) and a reduced config
+  (a few layers) — **not** the product's full **1–4 TB NVMe model store** or real **DDR5 + NVMe/PCIe
+  (M.2) host controller** (those are the custom-board / vendor-IP, out-of-scope-for-demo items). The
+  demo is a **reduced-config proof that real weights produce real tokens on real silicon at a measured
+  rate**, not the shippable box.
 
 ## Why this is the investable lever
 

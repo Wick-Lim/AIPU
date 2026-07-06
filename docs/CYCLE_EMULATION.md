@@ -3,8 +3,17 @@
 Moves the perf story off the pure `[EST]` roofline in one specific, defensible way: the
 **memory-stall mechanism the roofline assumes is now measured on real RTL cycles** by running the
 *assembled* system top `glm_fp8_system` (compute die + `expert_cache_pf` + `kv_cache_pager` +
-Flash arbiter + `ddr5_xbar` + `weight_loader`) under a cycle-accurate testbench with the Flash
-latency model engaged, sweeping the knobs, and counting cycles.
+storage-read arbiter (`flash_xbar`) + `ddr5_xbar` + `weight_loader`) under a cycle-accurate testbench with the storage
+read-latency model (NVMe/PCIe) engaged, sweeping the knobs, and counting cycles.
+
+> **Storage note (one-time).** The `flash_xbar` / `FLASH_LAT` storage-read fabric and its latency
+> model are **medium-agnostic** (address → weight bytes, with read-request issue and latency
+> hiding). In the product this fabric fronts an **NVMe/PCIe (M.2) backend** — the model store is
+> an **NVMe SSD (1–4 TB)**, tiered **NVMe (bulk, slow) → DDR5 (64 GB hot set, fast) → die** — and
+> the NAND-specific PHY is swapped for an NVMe host controller. The committed RTL keeps the
+> `flash_*` identifiers (`flash_xbar`, `FLASH_LAT`, `flash_req`, `flash_seq`, …); below, a "Flash"
+> in a param / sweep-label / PERF-output string is that committed name, while the storage *concept*
+> it models is NVMe/PCIe read latency and bandwidth.
 
 This is the software-emulation core of "FPGA emulation" — **measured cycles**, not a board run.
 It does **not** produce an absolute real-753B tok/s (that needs full-scale weights / a real FPGA);
@@ -21,7 +30,7 @@ analysis, not this product's speed.)
 - `test/glm_fp8_system_perf_tb.v` — the functional system TB (`token == standalone glm_model_fp8`,
   X-aware) extended with overridable params (`FLASH_LAT_CFG`, `DDR_NCH_CFG`, `CACHE_SLOTS_CFG`,
   plus `L_CFG` / `N_EXPERT_CFG` to size a larger cache-thrashing config and `EXPERT_STALL_CFG` —
-  see §Faithful integration —, wired into both the DUT and the TB Flash-PHY responder), a
+  see §Faithful integration —, wired into both the DUT and the TB storage-read (NVMe/PCIe) latency responder), a
   free-running cycle counter (`cyc_per_tok` = start → `tok_valid`), and a machine-readable `PERF …`
   line reading the DUT's exposed counters `ec_demand_stall_cycles` / `ec_hit_count` / `ec_miss_count`.
 - `tools/perf_sweep.sh` — compiles once per config via `iverilog -P glm_fp8_system_perf_tb.<P>=<v>`,
@@ -34,7 +43,7 @@ reference) — so every cycle number below is from a *correct-token* run. The FL
 ## Measured sweep
 
 `cyc_per_tok` = cold-token compute latency (start→tok_valid). `stall` = `ec_demand_stall_cycles`
-(cycles the cache/Flash subsystem was in a demand-miss refill) over 3 tokens. **`EFF_CYC` =
+(cycles the cache/storage subsystem was in a demand-miss refill) over 3 tokens. **`EFF_CYC` =
 `cyc_per_tok + stall`** — the *integrated* latency (see §Integration). `MEM%` = `stall / EFF_CYC`.
 
 | sweep | FLASH_LAT | DDR_NCH | CACHE_SLOTS | cyc/tok | stall | **EFF_CYC** | **MEM%** | hit | miss |
@@ -52,8 +61,8 @@ reference) — so every cycle number below is from a *correct-token* run. The FL
 
 1. **The memory-stall mechanism is exactly the roofline's, measured on real cycles.** `stall`
    rises strictly linearly: `stall = 3·FLASH_LAT + 9`, where the slope **3 = the number of
-   demand-miss Flash fetches** across the 3 tokens. This *is* the roofline term *exposed stall =
-   (#misses) × (Flash latency)* — no longer assumed, but counted on the RTL.
+   demand-miss storage fetches** across the 3 tokens. This *is* the roofline term *exposed stall =
+   (#misses) × (storage read latency)* — no longer assumed, but counted on the RTL.
 2. **Stall ∝ miss count (cache-capacity is a real, measured signal).** Halving `CACHE_SLOTS`
    (4→2) raised misses 3→6 and **doubled** the stall (777→1554) → `EFF_CYC` 8724→9501, MEM%
    8.9→16.4. The cache size moves the exposed stall exactly as the miss count moves.
@@ -67,11 +76,11 @@ Raw `cyc_per_tok` is **FLASH_LAT-invariant (flat 7947)** — by construction, no
 is dead. In the TB, the compute die `u_model` receives expert weights *combinationally* from the
 weight-source stub, and the host FSM waits only on `mdl_done`; the `expert_cache_pf` that
 accumulates `ec_demand_stall_cycles` sits on a **parallel observer path** that models the
-Flash-refill stall but does not gate `mdl_done`. So `cyc_per_tok` measures pure compute latency and
+storage-refill (NVMe/PCIe) stall but does not gate `mdl_done`. So `cyc_per_tok` measures pure compute latency and
 `stall` measures the refill cost *concurrently*.
 
-**Real hardware cannot compute a missed expert's GEMM until its weights arrive from Flash.** The
-faithful cost is therefore **compute + the *exposed* (un-prefetch-hidden) demand-stall** — exactly
+**Real hardware cannot compute a missed expert's GEMM until its weights arrive from the NVMe SSD.**
+The faithful cost is therefore **compute + the *exposed* (un-prefetch-hidden) demand-stall** — exactly
 `ec_demand_stall_cycles`, which counts only demand misses the prefetcher did *not* hide. Hence
 **`EFF_CYC = cyc_per_tok + stall`** is the honest integrated latency.
 
@@ -80,8 +89,8 @@ faithful cost is therefore **compute + the *exposed* (un-prefetch-hidden) demand
 `glm_fp8_system` now has an **`EXPERT_STALL`** parameter (default **0** = byte-identical to the
 committed system) that makes the model faithful: it **clock-gates the compute die** (`glm_model_fp8`)
 for exactly the cycles `expert_cache_pf` holds `ec_busy` — i.e. every cycle a demand-miss is being
-serviced by Flash — using the same glitch-free negedge-latched clock gate the C8 loopback path
-already proves bit-exact (the cache / FIFO / Flash-arbiter keep running on the ungated clock, so the
+serviced by the NVMe/storage backend — using the same glitch-free negedge-latched clock gate the C8 loopback path
+already proves bit-exact (the cache / FIFO / `flash_xbar` storage-read arbiter keep running on the ungated clock, so the
 fetch always completes — no deadlock). With it enabled, **`cyc_per_tok` itself now GROWS with
 `FLASH_LAT`** as a direct measurement (no longer flat at 7947) while the token stays byte-identical.
 
@@ -107,17 +116,17 @@ real exposed stall / token  ≈  (layers · experts · (1−h)) · FLASH_LAT_exp
 ```
 
 so `EFF_CYC` becomes **memory-dominated** — the slice's 0.4–28% memory fraction is a *floor*, and
-real scale pushes it toward the roofline's ~75–80% Flash-bound regime. This is a
+real scale pushes it toward the roofline's ~75–80% NVMe/PCIe-bound regime. This is a
 **measured-mechanism projection** (per-miss cost and hit rate are measured; only the miss *count*
 is scaled by the known config), which is stronger than the pure first-order roofline.
 
 ## What this does / does not establish
 
-- **Establishes (measured):** the memory-stall term is linear in Flash latency and proportional to
+- **Establishes (measured):** the memory-stall term is linear in storage read latency and proportional to
   miss count on real RTL cycles; the assembled system produces a *correct* token while these hold;
-  the integrated `EFF_CYC` decomposition (compute vs exposed Flash stall).
+  the integrated `EFF_CYC` decomposition (compute vs exposed storage/NVMe stall).
 - **Does NOT establish:** an absolute real-753B tok/s (needs full-scale weights / a real FPGA run),
-  achievable-vs-peak Flash bandwidth on silicon, or overlap efficiency at production widths. Those
+  achievable-vs-peak NVMe/PCIe bandwidth on silicon, or overlap efficiency at production widths. Those
   remain the FPGA-prototype step (`PRODUCT_ROADMAP.md`).
 
 All of this is at the committed **slice** dims. The value is the *mechanism and scaling*, not the

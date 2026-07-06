@@ -1,11 +1,19 @@
 # ULTRA_PERF — Ranked Ultra-High-Performance Opportunity Report
-### GLM-5.2-FP8 single-module accelerator (FP8 die + 64 GB DDR5 + 1 TB Flash)
+### GLM-5.2-FP8 single-module accelerator (FP8 die + 64 GB DDR5 + 1–4 TB NVMe SSD)
 
 **Scope.** Opportunities *beyond* the already-built+measured levers (flash_xbar 7.99× latency-hide,
 weight_decomp 1.34×, MTP K=2 +23%, clk_en_ctrl 74% idle-gate, flash_layout +40% balance, the −87.6% BFP
 accumulator, fmax fixes, predictor-prefetch [measured no-op]). Numbers marked **[EST]** are model estimates,
 not measured. Compute is bit-exact to real GLM-5.2-FP8 (docs/BIT_ACCURACY.md); levers that change outputs are
 flagged **NOT bit-exact**.
+
+> **Naming note (storage backend).** The committed RTL identifiers — `flash_xbar`, `FLASH_LAT`,
+> `flash_req`, `flash_seq`, `flash_layout`, `flash_is_expert`, `flash_expert_id`, … — are kept
+> **as-is** and are *not* renamed. `flash_xbar` is the medium-agnostic **storage-read fabric**
+> (address → weight bytes, with latency-hiding) that in the product sits in front of the
+> **NVMe/PCIe host-controller backend**: the NAND-specific backend is swapped for NVMe, while the
+> crossbar's read-request/latency abstraction and the compute die / `weight_loader` /
+> `expert_cache_pf` / `kv_cache_pager` are **unchanged**.
 
 > **Product identity — a LOCAL, single-user box that works fully offline / air-gapped (read this
 > first).** The headline is **frontier AI with the ethernet unplugged**: this accelerator is a
@@ -26,11 +34,11 @@ flagged **NOT bit-exact**.
 > that per-user latency does **not** describe the box you plug in. When in doubt, the single-user
 > numbers are the product.
 
-**The one equation.** The workload is Flash-bandwidth-bound:
-`tok/s ≈ Flash_BW / [(1−h)·footprint] · K`. Only three classes of idea move this wall:
-**(i) move fewer expert bytes** (sparsity / dedup / stronger decomp), **(ii) compute at the data** (near-Flash),
+**The one equation.** The workload is NVMe/PCIe-bandwidth-bound:
+`tok/s ≈ NVMe_BW / [(1−h)·footprint] · K`. Only three classes of idea move this wall:
+**(i) move fewer expert bytes** (sparsity / dedup / stronger decomp), **(ii) compute at the data** (near-storage),
 **(iii) raise speculative K** (better drafts + batched verify). Everything else is incremental — die-side
-fmax/area work does **not** move the wall (the die is already ~75% idle behind Flash).
+fmax/area work does **not** move the wall (the die is already ~75% idle behind the NVMe/storage read).
 
 ---
 
@@ -38,19 +46,19 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind F
 
 | # | Opportunity | Mechanism (1-line) | Quantified impact **[EST]** | Where | Effort | Ceiling? |
 |---|-------------|--------------------|------------------------------|-------|--------|----------|
-| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **INTEGRATED in `glm_decoder_block_fp8`** | Fetch the per-layer expert *union* once from Flash, reuse across B token-rows (the PE_M>1 grouped MoE now scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; union-fetch + multi-seq batched top (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) + paged KV realized at small B (datacenter B≈256 scheduler remains) | rtl-here | high | ✅ |
+| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **INTEGRATED in `glm_decoder_block_fp8`** | Fetch the per-layer expert *union* once from the NVMe SSD, reuse across B token-rows (the PE_M>1 grouped MoE now scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; union-fetch + multi-seq batched top (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) + paged KV realized at small B (datacenter B≈256 scheduler remains) | rtl-here | high | ✅ |
 | 2 | **PE_M batch-widening of FP8 wrappers** — ✅ **DONE (4/4), verified** | **All four** FP8 wrappers (swiglu/router/mla/**mtp**) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Verified bit-exact in the regression: **swiglu 513, router 192, mla 6, mtp 44** (+ mla `ppos`/`pslen`/`sparse-perrow`); the weight-share check confirms *"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"* — e.g. mtp `{cn/pw/gn/aw/kc/fw/lw}` beats identical at PE_M=3 (0 extra weight BW) | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW | **rtl-here** | **✅ done** | (enabler) |
-| 3 | **Stronger weight decompressor (context-modeled)** — ✅ **BUILT (`weight_decomp2`), measured ~1.4–1.5×** | Spend idle die on an order-1 context-modeled Huffman decoder in the Flash→DDR5 refill path | 1.34×→**~1.4–1.5×** (measured, `weight_decomp2(ctx)`) fewer Flash bytes → ~16→~18 tok/s, ~3.8→~3.4 J/tok | **rtl-here** | **✅ done** | ✅ |
+| 3 | **Stronger weight decompressor (context-modeled)** — ✅ **BUILT (`weight_decomp2`), measured ~1.4–1.5×** | Spend idle die on an order-1 context-modeled Huffman decoder in the NVMe→DDR5 refill path | 1.34×→**~1.4–1.5×** (measured, `weight_decomp2(ctx)`) fewer NVMe bytes → ~16→~18 tok/s, ~3.8→~3.4 J/tok | **rtl-here** | **✅ done** | ✅ |
 | 4 | **Resident dense draft model → high-K spec decode** | ~1–3B DDR5-resident draft proposes K=4–8; target verifies in one pass | K_eff 1.7→**3–5** → ~2–3× single-user, **bit-exact** | rtl-here* | high | ✅ |
-| 5 | **Batched single-pass verification** — ✅ **BUILT (`spec_batched_top`/`spec_chain_top`), verified** | Forward {base + D draft} positions *together* as a PE_M=K+1 batch in ONE weight-load (spec Flash ÷(K+1)) | The gate for spec Flash gain, now **realized**; spec==greedy (bit-exact). Remaining lift is draft α (#4) | **rtl-here** | **✅ done** | ✅ |
+| 5 | **Batched single-pass verification** — ✅ **BUILT (`spec_batched_top`/`spec_chain_top`), verified** | Forward {base + D draft} positions *together* as a PE_M=K+1 batch in ONE weight-load (spec NVMe ÷(K+1)) | The gate for spec NVMe gain, now **realized**; spec==greedy (bit-exact). Remaining lift is draft α (#4) | **rtl-here** | **✅ done** | ✅ |
 | 6 | **Contextual activation sparsity in SwiGLU** | Low-rank predictor → fetch only active W_up cols / W_down rows | ~1.5–3× fewer routed bytes (22→8–14 GB); **NOT bit-exact** | **rtl-here** | high | ✅ |
 | 7 | **Dynamic top-k expert pruning (k_eff<8)** | Threshold-mask tiny renormalized gates in the router FSM | ~1.3–1.6× fewer routed bytes; cheapest big lever; **NOT bit-exact** | **rtl-here** | low | ✅ |
 | 8 | **Exact router-driven prefetch + K-token union** | Run cheap router GEMV for K spec tokens → exact union prefetch | Demand-stall 81%→~99% + ~1.5–2× byte-dedup; **bit-exact** | **rtl-here** | med | ✅ |
 | 9 | **Unmask + compress the 28 GB hot-weight DDR5 read** | Point weight_decomp at hot path; amortize K×; +DDR5 channels | The *next* wall: ~21 GB/56→42 ms → ~24 tok/s hot-bound floor | **rtl-here** | med | ✅ |
-| 10 | **IndexShare (DSA index once / 4 layers)** | Cache index-list; skip dsa_indexer on 3 of 4 layers (model-faithful) | At 1M ctx: index-read 10→2.5 GB/tok → keeps long-ctx Flash-bound | **rtl-here** | med | ✅ |
+| 10 | **IndexShare (DSA index once / 4 layers)** | Cache index-list; skip dsa_indexer on 3 of 4 layers (model-faithful) | At 1M ctx: index-read 10→2.5 GB/tok → keeps long-ctx NVMe-bound | **rtl-here** | med | ✅ |
 | 11 | **Parallel/pipelined DSA indexer** | Replace in-order 1-MAC dot with 128-lane reduction tree | At 1M ctx: ~0.05→~6 tok/s (kills O(S)·7-cyc drain); **bit-exact** | **rtl-here** | high | ✅ |
 | 12 | **MLA weight absorption (attend in 512-dim latent)** | Fold W_uk into q, W_uv into W_o; drop per-key up-projection | Removes ~3.2e5 per-key GEMMs/tok; **bit-exact** (matmul reassoc) | **rtl-here** | high | ✅ |
-| 13 | **Near-Flash / computational-storage expert compute** | Move FP8 MACs to NAND; stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling. **No J/tok win** | out-of-scope | high | ✅ |
+| 13 | **Near-storage / computational-storage expert compute** | Move FP8 MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling. **No J/tok win** | out-of-scope | high | ✅ |
 | 14 | **Batch × MTP multiply** | Run all B streams' MTP drafts in the same grouped pass | ~1.7× *on top of* batch → ~60–85 tok/s aggregate @B≈256 | **rtl-here** | low | (compose) |
 | 15 | **Paged multi-sequence KV cache** — ✅ **BUILT (`kv_cache_pager` NSEQ windows + `glm_fp8_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler now **realized**: B>1 *distinct users* decode in one forward, per-row bit-exact (proven B=2/4) | **rtl-here** | **✅ done** | (enabler) |
 
@@ -60,12 +68,12 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind F
 
 ## 2. CEILING-CHANGERS vs INCREMENTAL/CONDITIONAL
 
-### 2a. CEILING-CHANGERS — flip Flash-bound → compute-bound, or 10×-class
+### 2a. CEILING-CHANGERS — flip NVMe/storage-bound → compute-bound, or 10×-class
 
 These touch `(1−h)·footprint`, `K`, or the bus itself.
 
-- **Near-Flash compute (#13)** — the single biggest lever: ~1000× fewer bus bytes/expert lifts the ceiling
-  to the NAND internal-sense limit (**10×+ tok/s [EST]**). Caveats: custom CSD/PIM silicon (**out-of-scope**
+- **Near-storage compute (#13)** — the single biggest lever: ~1000× fewer bus bytes/expert lifts the ceiling
+  to the SSD's internal NAND-sense limit (**10×+ tok/s [EST]**). Caveats: custom CSD/PIM silicon (**out-of-scope**
   for this repo), and it does **not** cut J/token (the sense energy is the cost). The compute core is reusable
   verified RTL.
 - **Aggregate batching (#1/#2/#3-knee)** — ⚠️ **NOT the product; a secondary "what-if" for a datacenter
@@ -75,27 +83,27 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   batched top** (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) decodes B distinct users in one forward with paged per-seq
   KV — proven per-row bit-exact at B=2/4. New knee at **B≈256** (all 256 experts active:
   `E[distinct]=256·(1−0.96875^B)`), new ceiling = the compute roofline **~50 tok/s aggregate @100 GB/s
-  Flash**, reached near B≈355. **But per-user latency floors at ~0.14 tok/s at that batch — so THIS regime
+  NVMe [EST]**, reached near B≈355. **But per-user latency floors at ~0.14 tok/s at that batch — so THIS regime
   is offline/throughput serving, NOT the local personal box.** The personal box runs at B=1 (single-user row
   above); this bullet just documents that the RTL *also supports* batched serving if a datacenter product is
   ever wanted.
 - **Stronger weight decomp (#3)** — only thing that uses the 75%-idle die to cut the *actual* wall. **Now
   built** (`weight_decomp2`, order-1 context-modeled Huffman, measured ~1.4–1.5× lossless): 1.34→~1.5× is a
-  direct multiplier on **both** single-user tok/s **and** J/token (Flash bytes ≈ 80% of
+  direct multiplier on **both** single-user tok/s **and** J/token (the NVMe/PCIe storage read ≈ 80% of
   per-token energy). **rtl-here**, faithful, stacks multiplicatively.
 - **Higher speculative K (#4 + #5 + #8)** — the faithful single-user lever. #5 batched-verify is now **BUILT**
-  (`spec_batched_top`/`spec_chain_top`: PE_M=K+1 verify in one weight-load → Flash ÷(K+1), spec==greedy) — the
+  (`spec_batched_top`/`spec_chain_top`: PE_M=K+1 verify in one weight-load → NVMe ÷(K+1), spec==greedy) — the
   self-draft MTP chain reaches K_eff ~1.7–2.2; #4 a resident dense draft (needs trained weights) would raise α
   (K_eff → 3–5); #8 exact-router-union dedups the K-token expert set.
   **All bit-exact** (target verifies every token). Honest cap: the MoE union penalty (#22 below) keeps
-  K_eff_flash well below the dense-model ×K.
+  K_eff_nvme well below the dense-model ×K.
 - **Activation sparsity (#6) + dynamic top-k (#7)** — shrink `footprint` directly (~1.5–3× and ~1.3–1.6×).
   Both **NOT bit-exact** (quality knobs). #7 is the cheapest big lever (a comparator+mask in the router).
-- **Hot-weight DDR5 second wall (#9)** — not today's wall, but bites once the first 3–4 Flash levers land;
-  decomp+K-amortize+channels keep the post-Flash-fix regime from re-stalling at a ~24 tok/s DDR5 floor.
+- **Hot-weight DDR5 second wall (#9)** — not today's wall, but bites once the first 3–4 NVMe/storage levers land;
+  decomp+K-amortize+channels keep the post-NVMe-fix regime from re-stalling at a ~24 tok/s DDR5 floor.
 - **Long-context faithful set (#10 IndexShare, #11 parallel indexer, #12 MLA absorption)** — at 1M ctx the
-  O(S) indexer and per-key up-projection, *not* Flash, become the wall (in-order indexer ≈ 0.05 tok/s). These
-  restore the Flash-bound ~6 tok/s at extreme context. All **model-faithful / bit-exact**.
+  O(S) indexer and per-key up-projection, *not* NVMe/storage, become the wall (in-order indexer ≈ 0.05 tok/s). These
+  restore the NVMe-bound ~6 tok/s at extreme context. All **model-faithful / bit-exact**.
 
 ### 2b. INCREMENTAL / CONDITIONAL — smaller or regime-specific
 
@@ -108,14 +116,14 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
 - **Pipelined KV gather / FP8 latent-KV / widen attention engines** — long-ctx *latency/footprint*, ~1% of
   bytes; not ceiling movers.
 - **PE-array scaling (wider PE_N), fmax tail fixes, output-stationary SRAM, pipeline MLA softmax** — **~0 on
-  single-user decode** (compute already hidden 4× under Flash). Value is **prefill/TTFT** (linear in array
+  single-user decode** (compute already hidden 4× under the NVMe/storage read). Value is **prefill/TTFT** (linear in array
   size) and energy/voltage headroom.
-- **Pipeline draft into Flash shadow / reuse accepted KV / deeper layer-pipeline** — latency-only on the
+- **Pipeline draft into NVMe/storage shadow / reuse accepted KV / deeper layer-pipeline** — latency-only on the
   already-idle die; **0% on the bandwidth ceiling**.
 
 ### 2c. HONEST NEGATIVES (do not re-propose)
 
-- **Multiple compute dies sharing one DDR5+Flash** — **0** within the module (shared bus). Linear only as
+- **Multiple compute dies sharing one DDR5+NVMe** — **0** within the module (shared bus). Linear only as
   N *separate* modules (N× cost). The bottleneck is the bus, not die count.
 - **Deeper prefetch / layer-pipeline** — already bandwidth-bound (81% demand-stall removed); residual is the
   irreducible DDR5 read floor (~5% utilization, not throughput).
@@ -140,14 +148,14 @@ The only thing that needs to be *invented*; the math die is ready.
    + LM head) threads PE_M through per-row and enables **Batch × MTP (#14)**.
 2. **Grouped dispatcher.** Per MoE layer: (a) route all B tokens, histogram top-8 picks into a per-expert
    token-list (reuse scatter_gather.v + topk_select); (b) for each *distinct* active expert, gather its rows
-   into a PE_M tile, fetch the ~37 MB expert from Flash/DDR5 **once**, run the grouped GEMM, scatter back;
+   into a PE_M tile, fetch the ~37 MB expert from NVMe/DDR5 **once**, run the grouped GEMM, scatter back;
    (c) advance all B tokens to L+1 in lockstep. Union ≤256 experts ≤9.5 GB → resident in 64 GB DDR5; the
-   union is the **only** Flash traffic, shared across all B rows.
+   union is the **only** NVMe/storage traffic, shared across all B rows.
    **✅ (b) is now INTEGRATED + verified.** `glm_decoder_block_fp8` (PE_M>1) already fetches **only** the
    union of experts any row selected — a `T_ESCAN` scan over the expert axis with a combinational `any_has`
    membership test skips every non-union expert (reference pattern: `batched_moe.v`). Verified BYTE-IDENTICAL:
    `glm_decoder_block_fp8_union_tb` ALL 4 (*"PE_M=2 evaluated 3 experts == distinct-selected, skipped 5 of 8,
-   bit-exact"*), `glm_model_fp8_pem` ALL 3, decoder TB ALL 9. Effect: up to **~32×** fewer Flash expert
+   bit-exact"*), `glm_model_fp8_pem` ALL 3, decoder TB ALL 9. Effect: up to **~32×** fewer NVMe/storage expert
    fetches at small batch (real 256-expert config), realizing this lever's aggregate footprint reduction
    **in the model**; ~no benefit at B≈256 (union≈all). The *multi-distinct-token* path is now proven at small
    batch — `glm_fp8_soc_ms` decodes B DIFFERENT sequences in one forward (`PER_ROW_SEQ`, per-row bit-exact,
@@ -161,7 +169,7 @@ The only thing that needs to be *invented*; the math die is ready.
    expert cache. Remaining: scale the window count to datacenter B and a vLLM-style shared-pool block table.
 
 **Payoff [EST]:** per-token routed footprint `75·256·(1−0.96875^B)·37MB/B` → B=256 ≈ 2.8 GB/tok (7.9×) →
-~36 tok/s aggregate @100 GB/s; ~50 tok/s compute-roofline cap near B≈355; ×1.7 more with MTP (#14).
+~36 tok/s aggregate @100 GB/s NVMe; ~50 tok/s compute-roofline cap near B≈355; ×1.7 more with MTP (#14).
 
 ### Build B — Faithful high-K speculation (#5+#4+#8) — the single-user ceiling
 1. **Batched verify (#5) — ✅ BUILT.** `spec_batched_top` / `spec_chain_top` forward {base + D draft} positions
@@ -169,13 +177,13 @@ The only thing that needs to be *invented*; the math die is ready.
    `spec_decode_seq` commits the accepted prefix (longest-accepted = greedy = bit-exact). spec==greedy verified.
 2. **Resident dense draft (#4) — still PENDING (needs trained weights).** The self-draft path exists today
    (`spec_chain_top` chains the MTP head, K_eff ~1.7–2.2); a ~1–3B DDR5-resident draft (attention + shared
-   expert + heads only → **zero Flash**) proposing K=4–8, or Medusa heads (no chain decay), would raise α to
+   expert + heads only → **zero NVMe**) proposing K=4–8, or Medusa heads (no chain decay), would raise α to
    K_eff 3–5. Output stays bit-exact (target verifies).
 3. **Exact union prefetch (#8).** Run the cheap router GEMV for all K spec tokens during draft compute →
-   exact top-8 union → prefetch before needed. Hides Flash latency (81%→~99%) and dedups the K-token set.
-4. **Geometry rule (#22):** on a Flash-bound MoE, prefer **deep-narrow chains** over wide trees — each branch
-   drags in (1−r) divergent experts you may reject; a naive 4-wide tree at r=0.35 → K_eff_flash≈0.85
-   (a **regression**). Depth keeps K_eff_flash>1.
+   exact top-8 union → prefetch before needed. Hides NVMe/storage latency (81%→~99%) and dedups the K-token set.
+4. **Geometry rule (#22):** on a NVMe/storage-bound MoE, prefer **deep-narrow chains** over wide trees — each branch
+   drags in (1−r) divergent experts you may reject; a naive 4-wide tree at r=0.35 → K_eff_nvme≈0.85
+   (a **regression**). Depth keeps K_eff_nvme>1.
 
 ---
 
@@ -186,17 +194,26 @@ under deployments this product does not target — kept for honesty, not as the 
 
 | Regime | Deployment | Bound by | tok/s (today → with levers) **[EST]** | Levers that apply |
 |--------|---------|----------|----------------------------------------|-------------------|
-| **Single-user ← THE PRODUCT** | **local personal box, interactive** | Flash BW (16 GB routed/tok @100 GB/s) | ~3–12 → **~25–40** | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
-| Aggregate-serving *(not the product)* | datacenter batch, offline | Flash union then compute roofline | ~6 (B=1) → **~36–50** (×1.7 MTP → 60–85) *aggregate; per-user ~0.14* | batched MoE #1, PE_M #2, paged KV #15, B≈256 knee, scheduler |
-| Compute-bound *(hypothetical)* | full-resident HBM | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-Flash #13 or HBM); array-scale for prefill |
+| **Single-user ← THE PRODUCT** | **local personal box, interactive** | NVMe BW (16 GB routed/tok @100 GB/s [EST]) | ~3–12 → **~25–40** | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
+| Aggregate-serving *(not the product)* | datacenter batch, offline | NVMe/storage union then compute roofline | ~6 (B=1) → **~36–50** (×1.7 MTP → 60–85) *aggregate; per-user ~0.14* | batched MoE #1, PE_M #2, paged KV #15, B≈256 knee, scheduler |
+| Compute-bound *(hypothetical)* | full-resident HBM | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-storage #13 or HBM); array-scale for prefill |
+
+**On the ~100 GB/s storage figure [EST].** This is an *aggregate* NVMe/PCIe target, **not a single drive**:
+one PCIe Gen4 ×4 NVMe delivers ~7 GB/s (Gen3 ×4 ~3.5, Gen5 ×4 ~14), so ~100 GB/s implies a **multi-drive /
+many-lane array** (order ~14× Gen4 or ~7× Gen5 M.2 drives striped, or an equivalent many-lane PCIe fan-out)
+on a **custom board** — aggressive, and it scales *with lanes/drives* exactly as the old NAND story scaled
+with channels. `weight_decomp` (lossless FP8) shrinks the bytes streamed, buying *effective* NVMe bandwidth
+on top. Treat 100 GB/s as an upper-bound target, not a single-M.2 spec; the tok/s rows below scale down
+roughly linearly with the storage BW actually deployed (e.g. a single Gen5 x4 ~14 GB/s ≈ ~0.9 tok/s at
+16 GB routed/tok, before decomp/sparsity/spec-K multipliers).
 
 **Reading it.** The product — a **single-user local box** — stacking the faithful RTL levers (flash_xbar N× +
-decomp 1.34→~1.5× + activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~25–40 tok/s @100 GB/s**,
+decomp 1.34→~1.5× + activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~25–40 tok/s @100 GB/s NVMe [EST]**,
 comfortably interactive, approaching the ~50 tok/s compute ceiling — at which point the answer is a
 bigger/cheaper compute die (compute is **not** the BOM cost). *(The aggregate-serving row is a separate,
 non-target deployment: batching many users reaches the **same** ~50 tok/s ceiling but as pooled throughput, so
 each of the ~355 users floors at ~0.14 tok/s — that per-user figure belongs to a datacenter box, never to the
-personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-Flash compute (#13,
+personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-storage compute (#13,
 custom silicon). Cache cleverness (predictor) and extra dies are provably capped.
 
 ---

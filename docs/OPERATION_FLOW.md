@@ -5,9 +5,9 @@ token, across every committed RTL block. Grounded in main @ current state (PE_M 
 union-skip, cycle-accurate emulation). This is the *operational* view; per-block detail lives in
 [`ACCEL_GLM52.md`](ACCEL_GLM52.md) / [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md).
 
-The one fact that shapes everything: **the workload is Flash-bandwidth-bound.** The 753 GB model
-lives in Flash; each token streams its active experts through a DDR5 cache into a mostly-idle FP8
-die. Throughput ≈ `Flash_BW / [(1−h)·footprint] · K`.
+The one fact that shapes everything: **the workload is NVMe/PCIe-bandwidth-bound.** The 753 GB model
+lives on the NVMe SSD; each token streams its active experts through a DDR5 cache into a mostly-idle FP8
+die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K`.
 
 ## 0. Physical / logical stack
 
@@ -25,7 +25,7 @@ die. Throughput ≈ `Flash_BW / [(1−h)·footprint] · K`.
   │                                   │      ddr5_xbar (N-ch)     flash_xbar (N-ch, QDEPTH)      │ │
   │                                   └──────│──────────────────────────│─────────────────────┘ │
   │                                   ┌──────▼──────┐            ┌───────▼────────┐               │
-  │                                   │ 64 GB DDR5  │            │  1 TB Flash    │               │
+  │                                   │ 64 GB DDR5  │            │  NVMe (1-4TB)  │               │
   │                                   │ (working)   │◄─boot_loader│ (753 GB model) │               │
   │                                   └─────────────┘   load     └────────────────┘               │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -34,9 +34,9 @@ die. Throughput ≈ `Flash_BW / [(1−h)·footprint] · K`.
 - **`glm_fp8_system_cdc`** — the 2-clock chip top: host/USB clock ↔ compute clock via
   `cdc_async_fifo` (request in, token out), `reset_sync` per domain.
 - **`glm_fp8_system`** — the compute-domain core: the die + the memory subsystem.
-- Memories are TB-modeled here; real DDR5 / ONFI-Flash / USB-C PHYs are vendor IP (out of scope).
+- Memories are TB-modeled here; real DDR5 / NVMe (PCIe) / USB-C PHYs are vendor IP (out of scope).
 
-## 1. Boot — execution conditions & resident-set load (Flash → DDR5)
+## 1. Boot — execution conditions & resident-set load (NVMe → DDR5)
 
 **Inference is NOT released by power-on** — it is released by `boot_loader.done`. The full power-on
 → ready sequence (its *execution conditions*, in order):
@@ -46,19 +46,21 @@ die. Throughput ≈ `Flash_BW / [(1−h)·footprint] · K`.
 | 1 | **power** | all rails up | board |
 | 2 | **clocks stable** | `host_clk` (USB), `core_clk` (compute), memory clk — PLLs locked | board / vendor IP |
 | 3 | **reset sequenced** | `host_rst` / `core_rst` (per-domain, sync active-high) cleanly de-asserted (`reset_sync`) | RTL |
-| 4 | **memory PHY init** | DDR5 training + Flash controller init | vendor IP |
-| 5 | **model present in Flash** | the 753 GB FP8 model **pre-written** (one-time provisioning, `ckpt_pack.py` / `flash_layout.py`) | manufacturing / setup |
-| 6 | 🔑 **`boot_loader.done`** | DMA the **~28 GB resident set** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas) **Flash → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, 9240 tests, BMC-proven) |
+| 4 | **memory PHY init** | DDR5 training + NVMe/PCIe controller init | vendor IP |
+| 5 | **model present on NVMe** | the 753 GB FP8 model **pre-written** (one-time provisioning, `ckpt_pack.py` / `flash_layout.py`) | manufacturing / setup |
+| 6 | 🔑 **`boot_loader.done`** | DMA the **~28 GB resident set** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas) **NVMe → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, 9240 tests, BMC-proven) |
 | 7 | **USB enumerated** | host driver loaded, endpoint open | host + vendor USB IP |
 
-The **256 routed experts stay in Flash** (753 GB ≫ 64 GB DDR5) and are demand-streamed per token
+The **256 routed experts stay on the NVMe SSD** (753 GB ≫ 64 GB DDR5) and are demand-streamed per token
 (§4). Boot 6 is pure DMA — no arithmetic, byte-exact.
 
 **Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + resident load (~28 GB /
-50–100 GB/s ≈ 0.3–0.6 s) + USB enum (~ms) ≈ **~1–2 s power-on → ready**. Short boot, not instant-on.
+NVMe read BW — ~4–8 s on one Gen3/4 ×4 drive at ~3.5–7 GB/s, dropping toward ~1 s only with several
+NVMe striped across more PCIe lanes) + USB enum (~ms) ≈ **~1–2 s (multi-NVMe array) to a few seconds
+(single drive) power-on → ready**. Short boot, not instant-on.
 
-**Three timescales:** ① *one-time provisioning* — write the 753 GB model to Flash. ② *every
-power-on* — conditions 1–7 (~1–2 s). ③ *per token* — §2 (demand-stream experts from Flash; KV
+**Three timescales:** ① *one-time provisioning* — write the 753 GB model to the NVMe SSD. ② *every
+power-on* — conditions 1–7 (~1–2 s). ③ *per token* — §2 (demand-stream experts from NVMe; KV
 lives in DDR5, per session).
 
 **Host interface (what USB-C carries — all on `host_clk`):** in = `start` (pulse), `prompt_tok`
@@ -66,7 +68,7 @@ lives in DDR5, per session).
 token IDs + position/length — the heavy weight/KV traffic never crosses USB-C (it is all inside
 `glm_fp8_system` on `core_clk`).
 
-> **Real-hardware note.** The RTL takes clocks/resets as ports and treats DDR5 / Flash / USB PHYs as
+> **Real-hardware note.** The RTL takes clocks/resets as ports and treats DDR5 / NVMe (PCIe) / USB PHYs as
 > vendor IP (conditions 2, 4, 7 are the board/vendor bring-up — device-plan Phase D1,
 > [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The RTL's own execution condition is the
 > `boot_loader.done` gate (6) once those are up.
@@ -122,7 +124,7 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
    weights **once** and run `swiglu_expert_fp8` at PE_M over all B rows; each row accumulates
    `gate·expert(x)` only if it selected that expert. (Inside the expert, gate/up/down share **one**
    FP8 GEMM engine — §10a.) Byte-identical to per-row; up to ~32× fewer
-   Flash expert-fetches at small B (the aggregate-throughput lever). Then the always-on **shared
+   NVMe expert-fetches at small B (the aggregate-throughput lever). Then the always-on **shared
    expert** (weight 1). (`batched_moe.v` is the standalone reference of this dispatch.)
 
 ## 3. Weight paths — resident vs demand-streamed
@@ -130,15 +132,20 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
 | what | where it lives | path to the die | per-token cost |
 |---|---|---|---|
 | attention / dense-FFN / router `W_g` / norms / embed / LM-head | **DDR5-resident** (boot-loaded) | `ddr5_xbar` → `weight_loader` → die pull | small, fixed |
-| **routed experts** (the 753 GB bulk) | **Flash** | `flash_xbar` → `expert_cache_pf` (DDR5 LRU) → die | **the bottleneck** |
+| **routed experts** (the 753 GB bulk) | **NVMe SSD** | `flash_xbar` → `expert_cache_pf` (DDR5 LRU) → die | **the bottleneck** |
 
-- **`flash_xbar`** banks reads across N Flash dies and hides NAND's ~10–100 µs latency with a
-  deep per-channel outstanding queue (QDEPTH ~ FLASH_LAT, Little's law) → ~N× aggregate BW.
-  Placement matters: expert→channel layout (`flash_layout.py`) + the proposed sub-expert striping
-  keep all channels busy ([`FLASH_STRIPING.md`](FLASH_STRIPING.md)).
+- **`flash_xbar`** is the storage-read fabric (a committed RTL identifier, kept as-is); in the product it
+  **fronts the NVMe/PCIe backend** — a labeled placeholder, since the crossbar's read-request /
+  latency-hiding abstraction (address → weight bytes) is medium-agnostic, so the NAND-specific backend is
+  swapped for an NVMe/PCIe host controller. It banks reads across N channels (**PCIe lanes / multiple NVMe
+  drives**) and hides storage-read latency (~10–100 µs) with a deep per-channel outstanding queue
+  (QDEPTH ~ FLASH_LAT, Little's law) → ~N× aggregate BW. Placement matters: expert→channel layout
+  (`flash_layout.py`) + the proposed sub-expert striping keep all channels busy
+  ([`FLASH_STRIPING.md`](FLASH_STRIPING.md)).
 - **`expert_cache_pf`** — DDR5 routed-expert cache: LRU + frequency + confidence-thresholded
-  prefetch; a demand miss stalls the die for the exposed Flash-refill (see §7). `weight_decomp`
-  (optional) losslessly decompresses on the Flash→loader refill (fewer Flash bytes).
+  prefetch; a demand miss stalls the die for the exposed NVMe-refill (see §7). `weight_decomp`
+  (optional) losslessly decompresses on the NVMe→loader refill (fewer NVMe bytes = more effective NVMe
+  bandwidth + less read energy).
 - **`weight_loader`** — turns cache/DDR5 responses (FP8 codes + [128,128] block scales) into the
   die's matmul pull stream, bit-exactly.
 
@@ -167,7 +174,7 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
   position/extent. Each row's step-k token is bit-exact vs a standalone PE_M=1 model decoding that
   sequence alone N steps; `N_STEPS=1` is byte-identical to the single-step top.
 - **Speculative decode (`spec_batched_top`):** the MTP head drafts K tokens; the main model
-  **verifies all K+1 positions in ONE PE_M=K+1 weight-load** (Flash traffic ÷ up to K+1), and the
+  **verifies all K+1 positions in ONE PE_M=K+1 weight-load** (NVMe traffic ÷ up to K+1), and the
   committed stream is proven **== greedy** (spec==greedy safety). `spec_chain_top` chains the
   MTP steps.
 
@@ -178,10 +185,10 @@ async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
 
 ## 6. Timing & bandwidth — how fast, and why
 
-- **The die is ~75 % idle**, gated behind Flash bandwidth; `clk_en_ctrl`/ICG clock-gates the idle
-  cycles. So die-side fmax is **not** the throughput knob — Flash BW is.
+- **The die is ~75 % idle**, gated behind NVMe/PCIe bandwidth; `clk_en_ctrl`/ICG clock-gates the idle
+  cycles. So die-side fmax is **not** the throughput knob — NVMe/PCIe BW is.
 - **Measured (cycle-accurate emulation, `EXPERT_STALL`):** a demand-miss delays the token by the
-  exposed Flash-refill; `cyc_per_tok` grows with `FLASH_LAT` (`stall = 3·FLASH_LAT+9` at the
+  exposed NVMe-refill; `cyc_per_tok` grows with `FLASH_LAT` (`stall = 3·FLASH_LAT+9` at the
   slice; `cyc_per_tok` 7947→8607 @FLASH_LAT=256), the roofline *mechanism* measured on real RTL
   cycles ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)).
 - **Projected (roofline, `[EST]`):** **single-user ~6–16 tok/s** (→ ~25–40 with all levers), ~3 J/token
@@ -192,7 +199,7 @@ async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
   only token IDs + position, §1), so it passes the unplugged-ethernet test that every cloud option fails,
   "secured cloud" included (in-VPC / zero-retention / TEE all need connectivity). Offline alone is
   table-stakes (a 70B laptop is offline too); the moat is the **combination** — offline + full-frontier
-  (753B) + appliance price. Honest caveat: the 753 GB model is written to Flash once (one-time
+  (753B) + appliance price. Honest caveat: the 753 GB model is written to the NVMe SSD once (one-time
   provisioning, §1) and model updates are physical re-provisioning. The *batched aggregate* ~40–85 tok/s
   figure is a **non-target datacenter regime** (per-user floors at ~0.14 tok/s there), kept only as
   analysis. All `[EST]` — see [`ULTRA_PERF.md`](ULTRA_PERF.md); real silicon lands below the roofline
@@ -201,9 +208,9 @@ async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
 ## 7. Per-token bottleneck (the honest critical path)
 
 ```
-  token latency ≈ compute_cycles(die, ~fixed)  +  exposed_Flash_stall(demand-miss experts)
-                                                    └── the dominant term at real scale ──┘
-  where exposed_Flash_stall ≈ (routed-expert misses this token) × FLASH_LAT_exposed
+  token latency ≈ compute_cycles(die, ~fixed)  +  exposed_NVMe_stall(demand-miss experts)
+                                                    └── the dominant term at real scale ─┘
+  where exposed_NVMe_stall ≈ (routed-expert misses this token) × FLASH_LAT_exposed
         routed-expert misses ≈ 75 MoE layers × ~8 experts × (1 − cache_hit_rate)   [after union-skip: only the union]
 ```
 The whole architecture (flash_xbar QDEPTH, expert cache + prefetch, weight decomp, union-skip,
@@ -245,10 +252,10 @@ cache) and slower / lower-BW, but the **decoded token is byte-identical**. They 
 | param | default | compact | true safe-min¹ | constraint | what it sizes | shrink / cost when reduced |
 |---|---|---|---|---|---|---|
 | `PE_N`        | 4  | **2** | 1              | —                     | matmul PE-array columns          | halves the PE array (**biggest die saving**); tiles more → same output, more cycles |
-| `DDR_NCH`     | 4  | **2** | 2              | power-of-two          | DDR5 fabric channels (`ddr5_xbar`)| smaller crossbar; ~½ aggregate read BW (Flash-bound anyway) |
-| `KV_RESIDENT` | 16 | **8** | `S_MAX` (=8)²  | POW2, `>= S_MAX`      | latent-KV ring capacity          | smaller ring RAM; more cold-row Flash gathers |
+| `DDR_NCH`     | 4  | **2** | 2              | power-of-two          | DDR5 fabric channels (`ddr5_xbar`)| smaller crossbar; ~½ aggregate read BW (NVMe/PCIe-bound anyway) |
+| `KV_RESIDENT` | 16 | **8** | `S_MAX` (=8)²  | POW2, `>= S_MAX`      | latent-KV ring capacity          | smaller ring RAM; more cold-row NVMe gathers |
 | `EFIFO_DEPTH` | 16 | **8** | 2 (1 passed³)  | power-of-two          | routed-expert request FIFO depth | smaller FIFO; risk of drop only under bursty routing |
-| `CACHE_SLOTS` | 4  | **2** | 1              | —                     | GDDR6 expert-cache slots         | smaller tag/data array; more misses → more Flash stalls |
+| `CACHE_SLOTS` | 4  | **2** | 1              | —                     | GDDR6 expert-cache slots         | smaller tag/data array; more misses → more NVMe stalls |
 
 ¹ Verified in the system TB slice (`test/glm_fp8_system_tb.v`, `S_MAX=4`): every value listed
 still prints `ALL 3 TESTS PASSED` with the **same token stream** as the committed config. The
@@ -260,7 +267,7 @@ but leaves zero slack against a burst; 2 is the recommended floor.
 **Why the token cannot change.** `kv_cache_pager`, `ddr5_xbar`, `expert_cache_pf` and the expert
 FIFO are *transparent* to the compute die: the die pulls its weight/KV bytes same-cycle from the
 weight/KV source (§2–§4); the pager/cache/xbar are the bandwidth/observability plumbing around it.
-Reducing their capacity changes only counters (hit/miss, cold-row Flash fetches, xbar req/resp) —
+Reducing their capacity changes only counters (hit/miss, cold-row NVMe fetches, xbar req/resp) —
 never the FP8 arithmetic. `PE_N` tiles the *same* matmul into more/fewer columns and reduces to
 the identical accumulated sum. Proven: committed and compact runs emit the byte-identical token
 stream `tok = {0, 11, 11}`; the all-minimums run (`PE_N=1 DDR_NCH=2 KV_RESIDENT=4 EFIFO_DEPTH=2
@@ -291,6 +298,6 @@ freed matmul core is **6186 LUT4** each (measured, `PPA_FP8.md` §1.3), so **≈
 the per-expert generic-cell delta is a measured **−1519**. After L1 **every chip module holds exactly one `glm_matmul_fp8`**
 (mla already time-shares its 7 projections on one engine; router one; mtp one), so the bounded
 byte-identical merges are exhausted; the last area lever is the invasive cross-module 3-way hoist,
-deferred to after vendor measurement. This is free in time (the Flash-bound die has the slack) and
+deferred to after vendor measurement. This is free in time (the NVMe-bound die has the slack) and
 keeps the decoded token byte-identical (`{4,31,20}`, gworst_rel 0.00689655). Full lever catalog and
 status in [`MINIATURIZATION.md`](MINIATURIZATION.md).

@@ -11,9 +11,9 @@ streams tokens to a host computer over a single USB-C cable.
   real. **This** doc is the **device / appliance track** on top of it: form factor, power, thermal,
   host software, enclosure, manufacturing, go-to-market.
 - [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md) — the single-package memory/tiering + cost
-  model (DDR5 fast tier + 1 TB Flash bulk; USB-C carries only token IDs).
+  model (DDR5 fast tier + 1–4 TB NVMe bulk store; USB-C carries only token IDs).
 - [`LOW_POWER.md`](LOW_POWER.md) — the energy budget + the bit-exact low-power levers (the ~80 %
-  Flash-byte reality; spec ÷K, compression, DVFS).
+  storage-read-byte reality — NVMe/PCIe reads dominate per-token energy; spec ÷K, compression, DVFS).
 - [`OPERATION_FLOW.md`](OPERATION_FLOW.md) — how one token flows end-to-end.
 
 > **All power/cost/size figures here are [EST]** — modeled, not measured on silicon or a board.
@@ -41,7 +41,7 @@ subscription-free come as the *result*.
 | **Target user** | air-gap / offline-mandated users (SCIF, defense-forward, isolated OT/critical-infra, field/edge), privacy-critical individuals, local-AI enthusiasts, cost-heavy power users |
 | **What it is NOT** | not a bus-powered dongle, not a multi-user server, not a general computer, not multi-modal |
 
-**Why the form factor fits the architecture.** The heavy traffic (Flash↔DDR5↔die, ~22 GB/token)
+**Why the form factor fits the architecture.** The heavy traffic (NVMe↔DDR5↔die, ~22 GB/token)
 is **entirely internal**; USB-C carries only the text token stream (a few bytes/token) + control.
 So USB-C bandwidth is a **non-issue** and the box is genuinely self-contained. The production top
 `glm_fp8_system_cdc` **already carries the 2-clock host/USB CDC** (31 tests, token identical across
@@ -68,13 +68,13 @@ The user experience is close to *"plug in, use it,"* with **a short boot** — n
 with **one one-time setup**:
 
 - **One-time provisioning (factory/first setup):** the 753 GB model is written to the internal
-  Flash (`ckpt_pack.py` / `flash_layout.py`). Done once; survives power cycles.
-- **Every power-on (~1–2 s [EST]):** power → clocks/PLL lock → resets → DDR5 PHY training + Flash
-  init → **`boot_loader` streams the ~28 GB resident set Flash→DDR5** → its `done` **releases
+  **NVMe SSD** (`ckpt_pack.py` / `flash_layout.py` — committed tool names). Done once; survives power cycles.
+- **Every power-on (~1–2 s [EST]):** power → clocks/PLL lock → resets → DDR5 PHY training + NVMe
+  init → **`boot_loader` streams the ~28 GB resident set NVMe→DDR5** → its `done` **releases
   inference** → USB device enumerates on the host. **Inference is gated by `boot_loader.done`, not
   by power-on.** (Full condition list + RTL detail: [`OPERATION_FLOW.md`](OPERATION_FLOW.md) §1.)
 - **Per request:** the host sends token IDs + position over USB-C; the box streams the demand
-  experts from Flash, runs the model, returns next tokens. **Session KV lives in the box's DDR5** —
+  experts from the **NVMe SSD**, runs the model, returns next tokens. **Session KV lives in the box's DDR5** —
   the host only exchanges tokens.
 
 **What crosses USB-C:** only `start` / `prompt_tok` / `start_pos` / `s_len` in and
@@ -99,6 +99,10 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 - The memory system (ddr5_xbar, flash_xbar, kv_cache_pager, expert_cache_pf, weight_loader,
   boot_loader), BMC-proven; the batching stack (PE_M on all 4 wrappers, union-skip MoE);
   the **spec ÷K weight-load hardware** (spec_batched_top / spec_chain_top).
+  (`flash_xbar` is the **medium-agnostic storage-read fabric** — address→weight-bytes with
+  latency hiding — that in the product **fronts an NVMe/PCIe host controller**; the RTL name is
+  a committed identifier, and only the NAND-specific backend is swapped — the abstraction, the
+  compute die, `weight_loader`, `expert_cache_pf` and `kv_cache_pager` are unchanged.)
 - Production top `glm_fp8_system_cdc` with **host/USB + memory + compute CDC** (async-clock token
   identity verified).
 - Power/area levers: BFP accumulator (−87.6 % cells), clock-gating (73.75 % idle), die-shrink
@@ -135,7 +139,7 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 | Interface | USB-C (USB 3.2 Gen 2 min) | + separate DC power in |
 | Host OS | macOS + Windows + Linux | signed driver + local server |
 | Retail price | ~$2.5–8 k [EST] | FPGA-class dependent (see §8) |
-| Model update | field-updatable weights (Flash re-flash) | new GLM point releases |
+| Model update | field-updatable weights (rewrite the NVMe model store) | new GLM point releases |
 
 ---
 
@@ -167,17 +171,21 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
   power). This is the project's #1 unknown; closes the yosys wall.
 - **D0.3 Power point** — decide the operating point (§7): ~100 W self-powered "fast" vs ~40 W
   throttled "quiet/small". Drives thermal + PSU + enclosure.
-- **D0.4 Bring-up feasibility** — confirm the target FPGA dev-kit has the DDR5 + NVMe/Flash + USB-C
-  IO the design needs.
+- **D0.4 Bring-up feasibility** — confirm the target FPGA dev-kit has the DDR5 + NVMe (M.2/PCIe) +
+  USB-C IO the design needs. *Dev-board vs product split:* the **Tang Mega 138K Pro** (GW5AT-138)
+  dev board is a **bring-up / reduced-demo board only** — it has ~32 MB onboard Flash + ~1 GB
+  soldered DDR3 [EST], nowhere near the model store — so the **product needs a custom board**
+  (GW5AT-138-class + big DDR5 + NVMe via M.2/PCIe). The dev board proves the pipeline at reduced
+  scale; the NVMe/DDR5 model store lives on the custom board (Phase D3).
 - **GATE D0:** real tokens match the real model **and** the design fits a costable FPGA at a viable
   power point. *If FPGA fit forces a >$8 k data-center card, revisit scope (throttle / smaller
   resident set / cost target).*
 
 ### Phase D1 — FPGA prototype bring-up
-- D1.1 Port the full-scale RTL to the chosen FPGA; DDR5 + Flash + USB-C PHY integration (vendor IP,
-  PRODUCT_ROADMAP P3.1).
-- D1.2 Boot-load the real model to Flash (productionize `ckpt_pack.py` / `flash_layout.py`);
-  first end-to-end token over USB-C on real hardware.
+- D1.1 Port the full-scale RTL to the chosen FPGA; DDR5 + NVMe (M.2/PCIe) + USB-C PHY integration
+  (vendor IP, PRODUCT_ROADMAP P3.1).
+- D1.2 Boot-load the real model to the NVMe model store (productionize `ckpt_pack.py` /
+  `flash_layout.py`); first end-to-end token over USB-C on real hardware.
 - D1.3 Measure the **real** tok/s, watts, thermals — replace every [EST] with a number.
 - **GATE D1:** the dev-kit emits the real model's tokens over USB-C at ≥ target tok/s within the
   power point. *This is the "it actually works as a device" proof.*
@@ -192,7 +200,7 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 - **GATE D2:** a user installs the app, points their editor at the box, and chats — no CLI.
 
 ### Phase D3 — Custom board, power, thermal, enclosure
-- D3.1 Multi-layer controlled-impedance PCB (FPGA + DDR5 + Flash + USB-C + power); PRODUCT_ROADMAP P4.1.
+- D3.1 Multi-layer controlled-impedance PCB (FPGA + DDR5 + NVMe/M.2 + USB-C + power); PRODUCT_ROADMAP P4.1.
 - D3.2 Power subsystem: PSU / USB-PD, power domains, DVFS hooks (PRODUCT_ROADMAP P2.4), protection.
 - D3.3 Thermal: heatsink + quiet fan curve for the power point; acoustic target.
 - D3.4 Industrial design: enclosure, connectors, status LEDs, EMI shielding.
@@ -201,13 +209,13 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 ### Phase D4 — DFM, certification, pilot build
 - D4.1 Design-for-manufacture, test fixtures, board bring-up automation, yield/binning.
 - D4.2 Certification: USB-IF, FCC/CE, EMC, electrical safety.
-- D4.3 Reliability qual: temp/voltage/aging, Flash-read endurance (read-mostly → benign), burn-in.
+- D4.3 Reliability qual: temp/voltage/aging, NVMe endurance (read-mostly → benign; writes only on model update), burn-in.
 - D4.4 Small pilot production run.
 - **GATE D4:** certified units pass reliability + a pilot cohort uses them without support fires.
 
 ### Phase D5 — Launch & lifecycle
 - D5.1 Packaging, docs, onboarding, warranty/RMA.
-- D5.2 Model-update pipeline (new GLM point releases → Flash re-flash tool).
+- D5.2 Model-update pipeline (new GLM point releases → NVMe model-store rewrite tool).
 - D5.3 Support + a channel for architecture-change models (new arch ⇒ RTL update ⇒ bitstream push).
 
 ---
@@ -219,9 +227,9 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 | **Power point** | ~100 W fast (self-powered) · ~40 W quiet (throttled, slower) | ship **self-powered ~90 W** (interactive tok/s); offer a quiet/eco mode — **the RTL knob exists** (`clk_throttle` runs the die f/div, byte-identical, [`LOW_POWER.md`](LOW_POWER.md) §4) |
 | **Power delivery** | own PSU/barrel · USB-PD EPR 240 W · bundled PD brick | **own DC input** (EPR host+cable support is still rare); USB-C = data |
 | **FPGA class** | mid FPGA (~$0.5–2 k) · data-center card (~$3–8 k) | **decided by D0.2 measurement** — the pivotal cost driver |
-| **Model updates** | Flash re-flash tool · sealed | **field-updatable** (GLM ships point releases) |
+| **Model updates** | NVMe model-store rewrite tool · sealed | **field-updatable** (GLM ships point releases) |
 | **Openness** | closed appliance · open driver/API | **open local API** (drives adoption via existing clients) |
-| **Storage grade** | TLC (balanced) · SLC (low-power, $$) · QLC (cheap, slow) | **TLC** bulk; SLC only if power ≫ cost ([`LOW_POWER.md`](LOW_POWER.md)) |
+| **NVMe drive grade** | TLC (balanced) · SLC (low-power, $$) · QLC (cheap, slow) | **TLC** NVMe bulk; SLC only if power ≫ cost ([`LOW_POWER.md`](LOW_POWER.md)) |
 
 ---
 
@@ -239,7 +247,7 @@ bus power**, so:
 Also, a laptop port cannot both source ~100 W **and** have the device consume it. **Conclusion: a
 self-powered box (own DC/PD input) with USB-C as the data link** — the eGPU / NAS model. Thermal:
 ~100 W dissipated quietly in ~1 L needs a heatsink + a tuned fan; a **~40 W throttled mode** enables
-smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (Flash + DDR5
+smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (NVMe + DDR5
 ~60–70 %); the compute die is ~20–30 % and mostly gated.
 
 ---
@@ -250,7 +258,7 @@ smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (
 |---|---|---|
 | FPGA (largest uncertainty) | ~$0.5–1.5 k (mid, e.g. GW5AT-class) | ~$3–8 k (Alveo/Versal-class) |
 | DDR5 64 GB | ~$150–300 | ~$300 (128 GB ≈ $500) |
-| TLC NAND ~1 TB (multi-channel) | ~$150–300 | ~$300–400 |
+| NVMe SSD ~1–2 TB (M.2 / PCIe Gen3–4 x4) | ~$100–250 | ~$300–500 (2–4 TB or multi-drive) |
 | PCB / PSU / controllers / enclosure | ~$150–300 | ~$300 |
 | **BOM total** | **~$1.0–2.4 k** | **~$4–9 k** |
 | **Indicative retail (≈2× BOM)** | **~$2.5–5 k** | **~$8–16 k** |

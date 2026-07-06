@@ -5,22 +5,22 @@
 > means **fit a smaller / cheaper FPGA** (fewer LUT/DSP/BSRAM), *not* an ASIC shrink or tapeout.
 > The analysis stays valid — every lever is correctness-invariant (byte-identical token) — but the
 > study is **deprioritized behind a green P1** (real-model fidelity + full-scale correctness):
-> compute is Flash-starved and already cheap, so shrinking it buys cost/power headroom, not
+> compute is NVMe/PCIe-starved and already cheap, so shrinking it buys cost/power headroom, not
 > throughput. Revisit once P1 is green and the vendor flow (E1) can measure the real LUT delta.
 
 How to make the FP8 compute die dramatically smaller (for a smaller FPGA / lower cost / lower
 power — i.e. a cheaper, cooler **local single-user box**), ranked and phased. Grounded in the
 architecture's defining property. (Every lever cuts BOM/power; none change the product's
-single-user interactive tok/s — the die is Flash-bandwidth-bound, so compute is nearly free.)
+single-user interactive tok/s — the die is NVMe/PCIe-bandwidth-bound, so compute is nearly free.)
 
-## Thesis — a Flash-bandwidth-bound die should be *minimal*
+## Thesis — an NVMe/PCIe-bandwidth-bound die should be *minimal*
 
-The workload is **Flash-bandwidth-bound**: the die sits ~75–80 % idle behind the Flash→DDR5
+The workload is **NVMe/PCIe-bandwidth-bound**: the die sits ~75–80 % idle behind the NVMe→DDR5
 expert stream ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md), [`ULTRA_PERF.md`](ULTRA_PERF.md)). So
 **compute speed is nearly free** — you can make the die much *slower* (more serial, more shared)
-with **zero throughput loss**, up to the point where compute time exceeds the exposed Flash stall.
+with **zero throughput loss**, up to the point where compute time exceeds the exposed NVMe/PCIe stall.
 Yet the die today carries **parallel / duplicated compute hardware sized for a throughput the
-Flash-starved workload cannot use** — separate `glm_matmul_fp8` instances per operator, duplicated
+NVMe/PCIe-starved workload cannot use** — separate `glm_matmul_fp8` instances per operator, duplicated
 fp32 tail units. That unused parallelism is the miniaturization target.
 
 ### The "compute is nearly free" budget (the enabling constraint)
@@ -44,7 +44,7 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
 | **L2** ❌ | tail vector-ALU sharing | *(assessed — NOT bounded-viable)* only `glm_softmax` instances the pipelined primitives, and its 4 pipes are **distinct ops** (exp/add/mul/rsqrt — nothing to merge); RMSNorm/RoPE/act use **inline `glm_fp.vh` fp32 macros**, not shareable module instances | small (fp32 tail ≪ FP8 GEMM) | small | ✔ | high (cross-module scheduler) | **skip — reward≪risk** |
 | **L3** ◐ | intra-op serialization | swiglu gate/up → 1 **captured by L1**; the remaining piece is the **cross-module 3-way hoist** (mla+router+swiglu → one engine) | further PE-array cut | 2×+ that op | ✔ *within budget* | high | **deferred** (needs PE_N=8 + top-level ports + arbiter) |
 | **L4** ✅ | shared dequant/fold | after L1 each `glm_matmul_fp8` already carries a single BFP-accumulate + block-scale fold; **nothing further** | small | — | ✔ | falls out of L1 | **subsumed by L1** |
-| **L5** ✅ | memory-fabric trim | *(assessed — already spent)* the 4 controllers (ddr5_xbar, kv_cache_pager, expert_cache_ctrl/pf) were **already trimmed** (6b2c82f, 899ea64): minimal-width regs, verilator-clean; QDEPTH off-limits (Flash latency-hide) | small | none | ✔ (except QDEPTH) | med | **no change (already minimal)** |
+| **L5** ✅ | memory-fabric trim | *(assessed — already spent)* the 4 controllers (ddr5_xbar, kv_cache_pager, expert_cache_ctrl/pf) were **already trimmed** (6b2c82f, 899ea64): minimal-width regs, verilator-clean; QDEPTH off-limits (NVMe/PCIe latency-hide) | small | none | ✔ (except QDEPTH) | med | **no change (already minimal)** |
 | **L6** ⚠ | bit-serial FP8 MAC | 1-bit/cycle multiply → tiny multiplier | large per-PE | **16–32×** | ✖ **OVERSHOOTS budget** (compute becomes the bottleneck) | high | **high — skip** unless a deeper-idle regime is proven |
 | **L7** ⚠ | tail precision trade | bf16 tail → fp16/bf12 | moderate | none | n/a | med | **NOT byte-identical** (fidelity trade) — separate decision |
 | **L8** | repo dead-code quarantine | move the 44 non-chip modules (legacy TPU, bf16 golden, redundant `batched_moe`) out of the build | **0 on the chip** | — | ✔ | low | none (hygiene only) |
@@ -64,7 +64,7 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
   (Gowin EDA / nextpnr) to confirm the fit on the target FPGA (e.g. GW5AT-138), and E2 pin the
   exact serialization budget. **This is where the estimates become numbers.**
 - **Out of scope / caution.** L6 (bit-serial — overshoots the budget), L7 (precision trade — not
-  byte-identical, a fidelity decision), and cutting QDEPTH (hurts the Flash latency-hide).
+  byte-identical, a fidelity decision), and cutting QDEPTH (hurts the NVMe/PCIe latency-hide).
 
 ## Enablers (unblock the above)
 

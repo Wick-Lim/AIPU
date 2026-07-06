@@ -53,6 +53,8 @@ the step because the inductive hypothesis admits unreachable states; each harnes
 | `ddr5_xbar` | request-path routing safety (one-hot routing / banked select / ready coherence / payload integrity) **+ response-FIFO no-overflow/no-underflow (conservation form: `cnt[c]≤RESP_QD`, `inflight ≤ N_CH·RESP_QD`, no phantom emit)** | 12 | tag-issued |
 | `flash_xbar` | **per-channel-queue no-overflow `cnt[c]≤QDEPTH`, `outstanding ≤ N_CH·QDEPTH` (P3), `inflight ≤ outstanding`, no-underflow (P1a/P1b)** | 3 | tag-issued (P2) |
 
+> **Storage-backend note (product reframe).** `flash_xbar`, `FLASH_LAT`, `flash_req`/`flash_seq`/`flash_idx`/… are **committed RTL identifiers**, kept verbatim here to match the DUTs. They name a *medium-agnostic* storage-read fabric — an address→bytes read-request queue with latency hiding — **not** a NAND-specific block. In the product this fabric fronts an **NVMe/PCIe** backend (M.2 / PCIe host controller); the NAND-specific backend is the swapped-out placeholder replaced by an NVMe/PCIe host controller. The invariants proven below (per-channel queue occupancy `cnt[c]≤QDEPTH`, no-overflow, no-deadlock, tag-issued) are properties of that control logic and hold independent of the backing medium (NAND or NVMe); likewise `kv_cache_pager`'s "cold (Flash-spilled)" path is the same read abstraction over the backing store.
+
 **`flash_xbar` — how the internal counters are reached.** P3 / per-channel no-overflow are *not*
 inductive on the harness's black-box shadow counters alone: in a spurious pre-state the global
 `outstanding` can sit at the cap while one channel is over-full, so the step admits an issue that

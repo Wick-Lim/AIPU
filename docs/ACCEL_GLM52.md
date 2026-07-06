@@ -49,7 +49,7 @@ overridable from the real weights. Everything else above is exact.
 runs the full GLM-5.2-FP8 model **fully offline / air-gapped — nothing leaves because there is
 no path out** (the audit is literally "does it work with the ethernet unplugged?" — yes). The
 on-box residency described in this doc is exactly what makes that possible: the entire ~753 GB
-FP8 model lives **on the box**, streamed from ~1 TB Flash with a ~64 GB DDR5 hot-weight cache
+FP8 model lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a ~64 GB DDR5 hot-weight cache
 (see `docs/USBC_PRODUCT_PLAN.md`), so after a **one-time provisioning** load (itself doable in a
 secure facility; new-model/weight updates are a physical re-provision) the card serves one user
 (**B=1**) with no internet and no cloud, ever. That unlocks frontier-model use in the
@@ -260,7 +260,7 @@ over tile memory, and owns the latent cache.
     In `glm_decoder_block_fp8` the `PE_M>1` grouped MoE fetches **only the UNION of the
     selected experts** across the batch (an expert-axis scan + combinational membership test,
     not all `N_EXPERT`) — **byte-identical** to per-row routing. On the real 256-expert config
-    this is up to **~32× fewer Flash expert fetches** at small batch (union of ≤8 vs 256), with
+    this is up to **~32× fewer NVMe expert fetches** at small batch (union of ≤8 vs 256), with
     the benefit tending to 1× as `B→256` where the union approaches the full expert set.
   - **Multi-sequence batching (`PER_ROW_SEQ`) [BUILT].** *(This is an aggregate / multi-user
     serving capability of the same silicon — a **secondary, non-target datacenter regime**, NOT

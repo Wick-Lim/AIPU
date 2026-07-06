@@ -6,7 +6,7 @@
 >
 > **Scope:** every on-chip memory / register array declared in the synthesizable
 > RTL under `src/` (the `test/` testbenches are out of scope). Rows are cited to
-> `file:line`. Off-die DDR5 / Flash payloads (modeled by the TB as latency
+> `file:line`. Off-die DDR5 / NVMe payloads (modeled by the TB as latency
 > memories) are called out explicitly and excluded from on-die ECC/MBIST.
 
 ---
@@ -20,7 +20,7 @@ three consequences, and each wants a different protection strategy:
 |-------|------------------|--------------|---------------------|
 | **SECDED** | **Model data** — weights, activations, KV latents, logits, partial-sum accumulators, weight-defining decode tables. | A single flip **silently corrupts a numeric result** (wrong token). Indistinguishable from correct data without a code. | Single-Error-Correct / Double-Error-Detect (Hamming+overall-parity, see `src/ecc_secded.v` / `src/ecc_mem_wrap.v`). Correct SBUs transparently; surface DBUs. **(C6 target.)** |
 | **PARITY+MBIST** | **Control state** — cache directory tags/valid/rank, FIFO pointers & occupancy counters, outstanding-request counters, expert-id queues, clock-gate counters, DSA/top-k index lists. | A flip mis-routes, mis-counts, or mis-selects. Usually self-healing over time, but a wrong tag can return the *wrong* resident line silently. | At least **parity-detect** (flag + recover/flush); every such array is on-die SRAM/flops and is **MBIST-testable** for manufacturing defects. **(C7 target; parity is a lighter C6 add.)** |
-| **OFF-DIE** | **External DDR5 / Flash payload** (the actual weight/KV/expert bytes) reached *through* the xbars and loaders. Modeled in the TB as a latency memory; **not on our die**. | Handled by the DRAM/Flash device's own ECC and by the SECDED wrapper at the on-die memory-controller boundary. | **Out of scope** for on-die ECC/MBIST. Protect at the `ecc_mem_wrap` boundary where the payload lands on-die. |
+| **OFF-DIE** | **External DDR5 / NVMe payload** (the actual weight/KV/expert bytes) reached *through* the xbars and loaders. Modeled in the TB as a latency memory; **not on our die**. | Handled by the DRAM / NVMe device's own ECC and by the SECDED wrapper at the on-die memory-controller boundary. | **Out of scope** for on-die ECC/MBIST. Protect at the `ecc_mem_wrap` boundary where the payload lands on-die. |
 
 The infrastructure to implement the SECDED class already exists and is **not** in
 the table as a target (it *is* the mechanism):
@@ -62,10 +62,10 @@ greps appears here or in the §5 exclusion list.
 | cdc_async_fifo.v:92 | `mem [0:DEPTH-1]` | `DATA_W`(32) × `2^ADDR_W`(16) | **CDC-crossing** dual-clock FIFO payload | **PARITY+MBIST** | Two-clock crossing; payload transits for only a few cycles between SECDED-protected endpoints. Parity-detect on transit + MBIST; do **not** put a same-cycle SECDED decode in the CDC path (adds crossing latency). Gray pointers are the CDC-safe part; the RAM cells still need MBIST. |
 | ddr5_xbar.v:156 | `fifo [0:N_CH-1][0:RESP_QD-1]` | `PAY_W`={tag,data} × `N_CH·RESP_QD` | Per-channel **response** {tag,data} in flight | **PARITY+MBIST** | Response-path transit buffer, not a resting store (payload's home is off-die DDR5, SECDED'd at the controller boundary). Classify as control/transit: parity-detect + MBIST. |
 | ddr5_xbar.v:157–159 | `head`,`tail`,`cnt [0:N_CH-1]` | `PTR_W`/`CNT_W` × `N_CH` | FIFO read/write pointers + occupancy | **PARITY+MBIST** | Pure FIFO control; a flip mis-drains → parity-detect. |
-| flash_xbar.v:177 | `fifo [0:N_CH-1][0:RESP_QD-1]` | `PAY_W`={tag,data} × `N_CH·RESP_QD` | Per-channel Flash **response** in flight | **PARITY+MBIST** | Same transit-buffer role as `ddr5_xbar` response FIFO. |
+| flash_xbar.v:177 | `fifo [0:N_CH-1][0:RESP_QD-1]` | `PAY_W`={tag,data} × `N_CH·RESP_QD` | Per-channel storage **response** in flight (NVMe backend) | **PARITY+MBIST** | Same transit-buffer role as `ddr5_xbar` response FIFO. (`flash_xbar` is a committed RTL name — the storage-read fabric that in the product fronts the **NVMe/PCIe host controller**; the read-request/latency-hiding abstraction is medium-agnostic, only the NAND-specific backend is swapped.) |
 | flash_xbar.v:178–180 | `head`,`tail`,`cnt [0:N_CH-1]` | `PTR_W`/`CNT_W` × `N_CH` | FIFO pointers + occupancy | **PARITY+MBIST** | FIFO control. |
 | flash_xbar.v:142 | `outst [0:N_CH-1]` | `OST_W` × `N_CH` | Per-channel outstanding-read counter | **PARITY+MBIST** | Flow-control counter; flip → lost/double issue → parity-detect. |
-| boot_loader.v:134 | `fifo_mem [0:BURST-1]` | `DATA_W` × `BURST`(8) | Flash→DDR5 copy **skid FIFO** (weight/data words) | **PARITY+MBIST** | Payload-in-transit skid buffer; **both** endpoints (Flash source, DDR5 sink) are SECDED-protected, so detect-only + MBIST here suffices. (Optionally carry the SECDED codeword through it for end-to-end coverage — C6 decision.) |
+| boot_loader.v:134 | `fifo_mem [0:BURST-1]` | `DATA_W` × `BURST`(8) | NVMe→DDR5 copy **skid FIFO** (weight/data words) | **PARITY+MBIST** | Payload-in-transit skid buffer; **both** endpoints (NVMe source, DDR5 sink) are SECDED-protected, so detect-only + MBIST here suffices. (Optionally carry the SECDED codeword through it for end-to-end coverage — C6 decision.) |
 | boot_loader.v:118–120 | `fbase_q`,`dbase_q`,`len_q [0:SEG_MAX-1]` | `ADDR_W`/`LEN_W` × `SEG_MAX` | Latched copy-segment descriptors (base/base/len) | **PARITY+MBIST** | Address/length control; a flip mis-addresses a DMA burst → parity-detect. |
 | glm_fp8_soc.v:422 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO to the cache | **PARITY+MBIST** | Queue of expert **ids** (control), not weights; flip → wrong expert fetched → parity-detect. |
 | glm_fp8_system.v:453 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO (system-level dup) | **PARITY+MBIST** | Same role as `glm_fp8_soc` efifo. |
@@ -179,7 +179,7 @@ modules above; the testbench models them as latency memories.
 | Payload | Reached via | Class | Rationale |
 |---------|-------------|-------|-----------|
 | **DDR5 payload** (weights/activations resident set) | `ddr5_xbar` `mem_*` ports; `weight_loader` / `boot_loader` `mem_*`/`ddr_*`; `glm_fp8_system(_cdc)` `wl_mem_*` | **OFF-DIE** | On the DRAM die, not ours; protected by device ECC + the `ecc_mem_wrap` boundary where it lands on-die. |
-| **Flash payload** (cold KV rows, cold expert weights) | `kv_cache_pager` `flash_*`; `flash_xbar` `flash_*`; `expert_cache_*` `flash_*`; `weight_decomp*` compressed input | **OFF-DIE** | Off-die NAND; SECDED belongs at the on-die controller boundary, not in these routing blocks. |
+| **NVMe payload** (cold KV rows, cold expert weights) | `kv_cache_pager` `flash_*`; `flash_xbar` `flash_*`; `expert_cache_*` `flash_*`; `weight_decomp*` compressed input | **OFF-DIE** | Off-die **NVMe SSD (M.2 / PCIe)**; SECDED belongs at the on-die controller boundary, not in these routing blocks. The `flash_*` ports / `flash_xbar` are committed RTL identifiers for the storage-read fabric — kept as-is; in the product they front an **NVMe/PCIe host controller** (address→weight-bytes abstraction is medium-agnostic, only the NAND-specific backend is swapped). |
 
 ---
 
@@ -213,7 +213,7 @@ modules above; the testbench models them as latency memories.
 ### 3.3 OFF-DIE (no on-die ECC/MBIST; protect at the controller boundary)
 
 - DDR5 payload (via `ddr5_xbar` / loaders).
-- Flash payload (via `flash_xbar` / `kv_cache_pager` / `expert_cache_*` / `weight_decomp*`).
+- NVMe payload (via `flash_xbar` / `kv_cache_pager` / `expert_cache_*` / `weight_decomp*`).
 
 ---
 
@@ -275,5 +275,5 @@ few cycles. A flip is transient and overwritten. Not ECC/MBIST targets.
   register **suffixes** (`opcode_mem`, `dst_mem`, `result_head`, `REG_*`), not
   memory arrays.
 
-**Excluded — off-die (see §2.4):** external DDR5 / Flash payloads modeled by the
+**Excluded — off-die (see §2.4):** external DDR5 / NVMe payloads modeled by the
 testbench as latency memories; not on our die.

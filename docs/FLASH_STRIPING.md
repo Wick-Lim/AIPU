@@ -1,30 +1,35 @@
-# Flash striping & placement strategy — turning N NAND dies into N× bandwidth
+# NVMe/PCIe striping & placement strategy — turning N NVMe drives / PCIe lanes into N× bandwidth
 
 **The one fact that drives everything:** single-user decode throughput is **linear in
-Flash read bandwidth** (`tok/s ≈ Flash_BW / [(1−h)·footprint] · K`), and a 1 TB on-module
-Flash is **not one fast device — it is many NAND dies**. Aggregate bandwidth is
-`N_CH × per-die BW`, but that N× is only *realized* if every token's reads spread evenly
-across the channels. **How weights are laid out across dies is therefore a first-class
-performance lever, not an afterthought.** This doc consolidates the two mechanisms that
-deliver it and lays out the striping design space.
+NVMe read bandwidth** (`tok/s ≈ NVMe_BW / [(1−h)·footprint] · K`), and a 1–4 TB on-board
+NVMe SSD is **not one fast lane — realized bandwidth scales with parallel NVMe drives / PCIe
+lanes**. Aggregate bandwidth is `N_CH × per-channel BW` (each channel = a striping endpoint
+backed by an NVMe drive / PCIe lane), but that N× is only *realized* if every token's reads
+spread evenly across the channels. **How weights are laid out across channels is therefore a
+first-class performance lever, not an afterthought.** This doc consolidates the two mechanisms
+that deliver it and lays out the striping design space.
 
 The workload (real GLM-5.2): **75 MoE layers × 256 experts, top-8 fetched per layer per
 token, ~37 MB/expert (FP8)**, plus the always-read shared expert, MLA/attention weights,
-embeddings and the DSA index. The 753 GB of weights live in Flash; DDR5 is the working
+embeddings and the DSA index. The 753 GB of weights live on the NVMe SSD; DDR5 is the working
 cache (hit rate `h`); the FP8 die computes.
 
 ---
 
 ## 1. Two layers of the solution (both already built + verified)
 
-Realizing N× aggregate BW takes **a fabric** (issue reads to N dies in parallel and hide
-NAND latency) **and a placement** (make a token's reads actually land on different dies).
+Realizing N× aggregate BW takes **a fabric** (issue reads to N channels in parallel and hide
+storage latency) **and a placement** (make a token's reads actually land on different channels).
 
 ### 1a. The fabric — `src/flash_xbar.v` (P1.1, ✅ built, BMC-verified)
 
 An `N_CH`-channel banked read fabric. `channel = req_addr[BANK_LSB +: log2(N_CH)]`, so
-block-granular addresses spray across dies. The hard part vs a DDR5 crossbar is **latency**:
-a NAND read returns in ~10–100 µs = **thousands of cycles** (`FLASH_LAT`), so by Little's law
+block-granular addresses spray across channels. (`flash_xbar` is a committed RTL name; in the
+product it is the storage-read fabric that fronts the **NVMe/PCIe backend** — a labeled
+placeholder host controller. The crossbar's read-request / latency-hiding abstraction is
+medium-agnostic: address → weight bytes, with the NAND-specific backend swapped for an
+NVMe/PCIe endpoint.) The hard part vs a DDR5 crossbar is **latency**: an NVMe read returns in
+~10–100 µs = **thousands of cycles** (`FLASH_LAT`), so by Little's law
 
 ```
 BW_channel ≈ min(1 read/cycle, QDEPTH / FLASH_LAT)
@@ -32,8 +37,9 @@ BW_channel ≈ min(1 read/cycle, QDEPTH / FLASH_LAT)
 
 one outstanding read per channel delivers a catastrophic `1/FLASH_LAT`. The fabric therefore
 gives **each channel a deep outstanding-request budget `QDEPTH`** (issue read N+1, N+2, … while
-read N is still in the die). `QDEPTH ~ FLASH_LAT` hides the entire NAND latency → ~1
-read/cycle/channel → **~N_CH reads/cycle aggregate**.
+read N is still in flight to the drive — NVMe natively supports deep command queues).
+`QDEPTH ~ FLASH_LAT` hides the entire storage latency → ~1 read/cycle/channel → **~N_CH
+reads/cycle aggregate**.
 
 - **Verified:** 2049 directed tests + **BMC K=12** — per-channel no-overflow
   (`cnt[c] ≤ QDEPTH`), `outstanding ≤ N_CH·QDEPTH`, `inflight ≤ outstanding`, no underflow
@@ -97,10 +103,11 @@ data-dependent selection.** The pigeonhole cap vanishes; there is no offline map
 ship (the channel is just `addr[BANK_LSB +: log2(N_CH)]` at fine granularity — the fabric of
 §1a already does this, only the *stripe unit* changes).
 
-**The one constraint — keep the stripe ≥ NAND read granularity.** A NAND page is ~16 KB;
-stripes finer than a page waste a full page-read per stripe. At `S ≥ 16 KB`: a 37 MB expert over
-`N_CH = 32` = ~1.15 MB/channel = ~72 pages/channel → efficient, no random-read penalty. So
-choose `page ≤ S ≤ 37 MB/N_CH`.
+**The one constraint — keep the stripe ≥ the NVMe/SSD efficient read granularity.** An NVMe
+read command carries fixed per-command overhead, and the SSD internally reads NAND pages
+(~16 KB); stripes finer than that waste bandwidth (per-command overhead + a full internal
+page-read per stripe). At `S ≥ 16 KB`: a 37 MB expert over `N_CH = 32` = ~1.15 MB/channel =
+~72 pages/channel → efficient, no random-read penalty. So choose `page ≤ S ≤ 37 MB/N_CH`.
 
 **Trade vs A:** B needs **more channels than top-k to *matter* (A) is false for B** — B is
 balanced at *any* `N_CH`, including `N_CH > 8`, because it doesn't rely on 8 experts hitting 8
@@ -150,34 +157,43 @@ striping keeps the single-user product (`B=1`) balanced — *that* is this box; 
 
 ## 5. Bandwidth → throughput (why this is the cheap lever)
 
-Baseline (measured `h`, [EST] BW): **Flash 50 GB/s, h=27%, K=1 → ~3 tok/s, ~8–10 J/token**
-([`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md)). Because tok/s is linear in realized Flash BW:
+Baseline (measured `h`, [EST] BW): **NVMe/storage 50 GB/s, h=27%, K=1 → ~3 tok/s, ~8–10 J/token**
+([`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md)). Because tok/s is linear in realized NVMe BW:
 
-| Realized Flash BW | approx single-user tok/s | how |
+| Realized NVMe/storage BW | approx single-user tok/s | how |
 |---|---|---|
-| 50 GB/s (1 effective die-worth) | ~3 | baseline |
-| ~4× (4ch, strategy A) | ~12 | flash_xbar P1.1 (measured linear) |
-| ~8× × 0.55 (8ch, strategy A) | ~13–14 | + flash_layout +40% (pigeonhole-capped) |
-| ~8× × ~1.0 (8ch, strategy B) | ~24 | sub-expert striping removes the cap |
-| ~16–32ch (strategy B) | ~24–40+ | push N_CH; B stays balanced |
+| 50 GB/s (baseline aggregate) | ~3 | baseline |
+| ~4× (4 channels, strategy A) | ~12 | flash_xbar P1.1 (measured linear) |
+| ~8× × 0.55 (8 channels, strategy A) | ~13–14 | + flash_layout +40% (pigeonhole-capped) |
+| ~8× × ~1.0 (8 channels, strategy B) | ~24 | sub-expert striping removes the cap |
+| ~16–32 channels (strategy B) | ~24–40+ | push N_CH; B stays balanced |
+
+**Honest BW anchor [EST]:** the absolute figures above are roofline numbers carried over from a
+NAND-multi-channel model, not per-device NVMe measurements — a single NVMe SSD is ~3.5 GB/s
+(PCIe Gen3 x4), ~7 GB/s (Gen4 x4), ~14 GB/s (Gen5 x4). So the 50 GB/s baseline and the N× rows
+are **aggregate across multiple NVMe drives / many PCIe lanes** — realizing them is the custom
+board's job (several M.2/PCIe endpoints), not a single-drive claim, and the specific 50 GB/s
+anchor does not cleanly re-derive to one NVMe. The tok/s stay [EST].
 
 The **~25–40 tok/s sweet spot** — a usable interactive rate on a box that runs the **full
 753 GB GLM-5.2 model fully offline / air-gapped** (nothing leaves because there is no path out;
 the model is provisioned once, itself doable offline) at a fraction of cloud cost/power — is
-reachable by **adding Flash channels + striping** —
-**not** by moving to HBM. Flash scales
-by `$/GB` commodity dies; HBM charges a `$/GB/s` premium. The knee is real but far above
-100 GB/s: each channel adds a controller + I/O power (a power/area/cost limit), so `N_CH` is
-bounded — but the scaling curve is dramatically cheaper per GB/s than HBM.
+reachable by **adding NVMe drives / PCIe lanes + striping** —
+**not** by moving to HBM. NVMe scales
+by `$/GB` commodity SSD; HBM charges a `$/GB/s` premium. Each channel adds an NVMe controller +
+PCIe I/O power (a power/area/cost limit), so `N_CH` is bounded — but the scaling curve is
+dramatically cheaper per GB/s than HBM.
 
 ---
 
 ## 6. Industry direction — HBF
 
 **High Bandwidth Flash (HBF)** — SanDisk / SK hynix (announced 2025) — stacks NAND like HBM to
-deliver HBM-class bandwidth from Flash. That is precisely this architecture's thesis
-(*high-capacity Flash resident + bandwidth by parallelism*) productized at the device level;
-the striping/placement strategy here is the on-module analogue and rides the same curve.
+deliver HBM-class bandwidth from flash storage. The product today streams weights from an
+**NVMe SSD** over PCIe; HBF is an emerging **device-level** storage backend that would slot in
+behind the same medium-agnostic `flash_xbar` read / striping abstraction (*high-capacity
+storage resident + bandwidth by parallelism*) for a future BW jump — the on-board striping /
+placement strategy here rides the same curve.
 
 ---
 
@@ -196,7 +212,8 @@ the striping/placement strategy here is the on-module analogue and rides the sam
 
 ## 8. Files
 
-- `src/flash_xbar.v` — the N_CH-channel banked read fabric (QDEPTH latency-hide).
+- `src/flash_xbar.v` — the N_CH-channel banked read fabric (QDEPTH latency-hide); fronts the
+  NVMe/PCIe storage backend (medium-agnostic; committed RTL name).
 - `tools/flash_layout.py` — offline expert→channel packer + balance measurement (`--nch N`,
   `--dump-map`). Extending it with a `--stripe` mode measures strategy B.
 - [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md) P1.1/P1.2 — the levers this consolidates.

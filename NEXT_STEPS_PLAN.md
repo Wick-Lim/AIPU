@@ -31,7 +31,7 @@
 >
 > **완료:** B1·B2·B3·B4·B6·B7·B8, C1·C2·C3·C4·C5·C9 (+ C8: LOOPBACK default-off & `make cdc`).
 > **부분/진행:** B5(구조·elaboration 계약은 `docs/P12_SCALEUP.md`로 확립 — 중간크기 **기능**
-> sim은 미확인) · C6(`kv_ecc_ring` lane-SECDED 유닛+`kv_cache_pager_ecc_fv` formal 완료; DDR5/Flash
+> sim은 미확인) · C6(`kv_ecc_ring` lane-SECDED 유닛+`kv_cache_pager_ecc_fv` formal 완료; DDR5/NVMe
 > payload ECC·BMC 재파라미터는 잔여) · C7(`clk_gate_cluster` ICG+clk_en 유닛검증 완료 — MBIST 래퍼 +
 > system-top scan stitch 잔여, `mbist_ctrl`/`icg_cell`은 아직 `glm_fp8_system*`에 미인스턴스) ·
 > C10(P2 클로저 잔여). **여전히 미완(설계상):** 리던던트 dense 드래프트(가중치 필요),
@@ -45,7 +45,7 @@
 1. **전체칩 synth 게이트가 없다.** `make synth`는 `hierarchy -top TPU`(레거시 스칼라 코어)만 검사한다(Makefile:505). GLM top `glm_fp8_system_cdc`는 **whole-chip 구조 게이트가 전무**. → **C1**
 2. **sparse-DSA 마스킹 버그.** `mla_attn_fp8.v:1068-1073`이 실제 키 인덱스 `sel_list[sf_feed_i]`가 아니라 **선택 슬롯 `sf_feed_i`로 마스크**한다. dense fallback에선 `sel_list[s]=s`라 no-op(그래서 테스트 통과)이지만, sparse+per-row extent에선 틀림. line 81이 sparse PE_M>1을 out-of-scope로 선언 중. → **B1 + B2**
 3. **P2 신뢰성 유닛 + weight_decomp가 어떤 product top에도 인스턴스화 안 됨.** `reset_sync`, `ecc_mem_wrap`, `mbist_ctrl`, `icg_cell`, `clk_en_ctrl`, `weight_decomp/2` 전부 유닛검증만 되고 배선된 곳 없음. → **C3, C9, C7**
-4. **`weight_decomp`은 tok/s를 실제로 움직이는 유일한 die-side 레버**(Flash-BW 바운드, 1.34×→~1.42× 실제 Flash 바이트 절감)인데 datapath에 안 붙어 있음. → **C9**
+4. **`weight_decomp`은 tok/s를 실제로 움직이는 유일한 die-side 레버**(NVMe/PCIe-BW 바운드, 1.34×→~1.42× 실제 NVMe 바이트 절감)인데 datapath에 안 붙어 있음. → **C9**
 5. **`spec_chain_top`은 "syntax-checked 스켈레톤"보다 더 미완성.** TB 없음, pull 포트 전부 hard-zero(spec_chain_top.v:217-345), `mtp_emb` placeholder-zero, FSM C_IDLE→C_DONE에 DRAIN 없음 + multi-pass 커서 깨짐. → **B3 + B8**
 6. **CI 전무** — `.github/` 없음. → quick win
 7. **P1.2 "파라미터만 올리면 됨"은 한 가지 구조 변경을 과소평가.** `mla_attn_fp8`이 `scores`/`probs`/`vstore`와 `glm_softmax` LEN을 `S_MAX`(=1M 캐시주소 범위)로 잡아서, 어텐션 스케일업은 SWIN-vs-S_MAX 디커플(B7)이 필요. 풀config 기능 sim은 비현실적(LM head ~238M cyc/token). → **B4/B5/B7 + 정직한 스코핑**
@@ -70,14 +70,14 @@
 | # | 작업 | 수락 기준 | 노력 |
 |---|------|-----------|------|
 | **C1** (완료) | `make synth-glm` 추가 — `glm_fp8_system_cdc` set을 `hierarchy -top glm_fp8_system_cdc -check; proc; opt; check -assert; stat`; `make all`에 편입 | **최초 전체칩 구조 게이트**(현재 synth는 `-top TPU`만); exit 0, `check -assert` clean, `stat`에 leaf cell 전부 resolved | S |
-| **C2** (완료) | `docs/P2_MEMORY_MAP.md` — 모든 비-TB `reg [] arr[]`(kv_cache_pager 768b ring, ddr5/flash_xbar 응답 FIFO, cdc_async_fifo mem, boot/weight 버퍼 vs `expert_cache_pf` directory)를 SECDED / parity-MBIST / off-die로 분류 | grep된 reg array 100% 커버 + 근거 | S |
+| **C2** (완료) | `docs/P2_MEMORY_MAP.md` — 모든 비-TB `reg [] arr[]`(kv_cache_pager 768b ring, ddr5/flash_xbar 응답 FIFO(`flash_xbar`=매체-불문 스토리지-리드 패브릭, 제품에선 NVMe/PCIe 호스트 컨트롤러 백엔드 앞단 — NAND-특화 백엔드만 스왑, 주소→가중치 바이트 추상화 불변·RTL명 유지), cdc_async_fifo mem, boot/weight 버퍼 vs `expert_cache_pf` directory)를 SECDED / parity-MBIST / off-die로 분류 | grep된 reg array 100% 커버 + 근거 | S |
 | **C3** (완료) | `reset_sync`를 `glm_fp8_system_cdc`의 host_clk/core_clk 양 경계에 배선(현재 `host_rst`/`core_rst`는 pre-synchronized 가정; reset_sync는 검증됐지만 어디에도 미인스턴스) | `glm_fp8_system_cdc_tb` 통과 유지; 도메인별 STAGES-edge 동기 deassert directed case | S |
 | **C4** (완료) | `ecc_mem_wrap` scrub-write-back + sticky `serr`/`derr` + ack(현재 read시 정정만 — 썩은 비트가 남아 double error로 누적 가능; P2.1은 retry/recovery 요구) | 새 `ecc_mem_wrap_tb`: `bd_we` 주입 → read(serr=1, 정정) → 재read ⇒ serr=0(scrub) | M |
 | **C5** (완료) | `ddr5_xbar` 응답-FIFO no-overflow/underflow를 **unbounded k-induction**으로 승격 — `cnt[0:N_CH-1]`(ddr5_xbar.v:159) connect-bind, `test/formal/flash_xbar_ind_fv.v` 템플릿 미러 | `make formal-ind`에 통과하는 ddr5 run(base+step, 비-vacuity 재보증); `docs/FORMAL.md` 행 BOUNDED→UNBOUNDED | M |
-| **C6** (부분: `kv_ecc_ring`+formal 완료·DDR5/Flash payload ECC 잔여) | DDR5/Flash payload 경로(weight 바이트 운반) + `kv_cache_pager` ring에 ECC; **위젠 워드에 대해 6개 committed BMC 증명 재파라미터/재검증** | fault-injection TB: single-bit 정정 / double-bit `derr`; 기존 유닛+formal 전부 green (ROW_BITS=768은 /64 아님 — lane 분할이 pager read latency 이동 가능) | L |
+| **C6** (부분: `kv_ecc_ring`+formal 완료·DDR5/NVMe payload ECC 잔여) | DDR5/NVMe payload 경로(weight 바이트 운반) + `kv_cache_pager` ring에 ECC; **위젠 워드에 대해 6개 committed BMC 증명 재파라미터/재검증** | fault-injection TB: single-bit 정정 / double-bit `derr`; 기존 유닛+formal 전부 green (ROW_BITS=768은 /64 아님 — lane 분할이 pager read latency 이동 가능) | L |
 | **C7** (부분: `clk_gate_cluster` 완료·MBIST+scan 잔여) | MBIST 래퍼(SRAM별 functional/BIST mux + daisy-chain + `bist_mode/done/fail`, `mbist_ctrl`용 registered-read 어댑터) + `clk_en_ctrl`/`icg_cell`을 실제 compute cluster에 + top `scan_enable`→모든 `icg_cell.test_en` | 주입 stuck-at에 MBIST `bist_fail=1`(macro id 정확), `bist_mode=0`서 bit-identical; gated-clock TB가 free-running과 bit-identical·runt 없음; `scan_enable`시 전 도메인 `gated_clk==clk` | L/XL |
 | **C8** (완료: LOOPBACK default-off + `make cdc`) | CDC 사인오프 — 모든 async crossing에 SDC `set_false_path`/`set_max_delay` + `make cdc` 구조 체커; **"returned bytes not fed into die" loopback 폐쇄**(glm_fp8_system.v:82-89) — `xbar_resp_data`를 die의 weight/KV 소비로 valid/stall 핸드셰이크 뒤 되먹임, default-off(검증된 combinational 경로 불변) | `make cdc` unguarded crossing 0; loopback 모드가 combinational-stub와 동일 next token, `synth-glm check -assert` clean | M/XL |
-| **C9** (완료) | `weight_decomp`(order-0)를 `glm_fp8_system.v` Flash→DDR5 refill 경로에 배선(`weight_decomp2` order-1은 빌드 옵션) + raw-vs-decompressed FP8 코드 byte-identical 증명 system TB | **tok/s를 움직이는 유일한 die-side 레버**(실제 Flash 바이트 1.34×→~1.42× 절감); 토큰 출력 불변, `make unittests` green | L |
+| **C9** (완료) | `weight_decomp`(order-0)를 `glm_fp8_system.v` NVMe→DDR5 refill 경로에 배선(`weight_decomp2` order-1은 빌드 옵션) + raw-vs-decompressed FP8 코드 byte-identical 증명 system TB | **tok/s를 움직이는 유일한 die-side 레버**(실제 NVMe 바이트 1.34×→~1.42× 절감); 토큰 출력 불변, `make unittests` green | L |
 | **C10** (부분: `synth-glm`은 `make all` 편입·MBIST system TB 잔여) | P2 클로저 — `make all`에 `synth-glm` + ECC/MBIST/gated-clock system TB; 각 PRODUCT_ROADMAP P2 항목을 증명 TB에 링크; unit-proven vs system-proven 문서화 | `make all`이 P2 system TB green; 각 `ALL N TESTS PASSED` | S |
 
 ## Quick wins — 이번 주 시작 (no GPU)
@@ -125,7 +125,7 @@ WEEKS 4-8 — XL 구조 작업 (오라클 게이트)
 3. **`make synth`는 product 계층을 게이트하지 않음.** `synth:`은 `hierarchy -top TPU`(레거시 스칼라). GLM top은 감사 시점엔 전체칩 구조 게이트 전무였으나 **C1로 폐쇄됨** — `make synth-glm`(Makefile:652, `glm_fp8_system_cdc` 전체칩 elaborate + `check -assert`)이 추가되고 `make all`에 편입됨.
 6. **`h_mtp`는 FP8 전용.** `src/mtp_head_fp8.v`만 포트 있음 — `src/mtp_head.v`(bf16)엔 없음. bf16 체인 레퍼런스는 추가 필요.
 8. **~~`spec_chain_top`은 스켈레톤보다 더 미완성~~ — B8로 폐쇄됨.** 감사 시점엔 TB 없음·pull 포트 hard-zero·`mtp_emb` zero·DRAIN 없음이었으나, 이후 pull 포트(m_/t_/v_ + em_) 전부 승격 + seed 규약 헤더 문서화 + `test/spec_chain_top_tb.v`(committed==greedy) 추가, `make spec-slow`에 편입.
-9. **~~`reset_sync`·P2 프리미티브·`weight_decomp/2`가 어떤 product top에도 미인스턴스~~ — 부분 폐쇄.** `reset_sync`는 CDC top에 배선(C3), `weight_decomp`는 Flash→loader refill 경로에 배선(C9, `glm_fp8_system` DECOMP=1). **남은 미인스턴스:** `mbist_ctrl`/`icg_cell`(system top에는 아직 미배선 — `clk_gate_cluster`는 유닛 레벨만; C7 잔여).
+9. **~~`reset_sync`·P2 프리미티브·`weight_decomp/2`가 어떤 product top에도 미인스턴스~~ — 부분 폐쇄.** `reset_sync`는 CDC top에 배선(C3), `weight_decomp`는 NVMe→loader refill 경로에 배선(C9, `glm_fp8_system` DECOMP=1). **남은 미인스턴스:** `mbist_ctrl`/`icg_cell`(system top에는 아직 미배선 — `clk_gate_cluster`는 유닛 레벨만; C7 잔여).
 10. **"모든 dim은 param bump"는 한 구조 변경 과소평가** — `mla_attn_fp8`이 scratch를 S_MAX(1M)로 사이징 → SWIN 디커플 필요(B7). RTL default(`Q_LORA=64`,`KV_LORA=32`,`POSW=20`,`S_MAX=8`)는 slice 값.
 11. **~~`ecc_mem_wrap`은 read시 정정만~~ — C4로 폐쇄됨.** scrub-write-back + sticky `serr`/`derr` + `err_ack` + back-door raw-codeword 주입이 구현되어 P2.1 "retry/recovery" 요구를 충족(read 후 재read에서 `serr=0`).
 12. **문서 불일치 — 해소됨:** single-user tok/s를 한 사다리로 통일(**~3 → ~16–27 built → ~25–40 [EST] ceiling**); README ~30+→~25–40, SSP ~3–6은 보수 subset으로 라벨. `make all` = **`test hazard unittests lint synth synth-glm formal`**(Makefile:58 — C1로 `synth-glm` 추가됨)이고 `bitacc`/`cache-study`/`bcov`/`formal-ind`/`coverage`/`spec-slow`/`cdc`는 별도.

@@ -127,7 +127,7 @@ The pitch is **not** "cheaper tokens" (the cloud API is cheaper if you're *allow
 **"the only way to give this specific professional frontier-model leverage on data they cannot put in
 the cloud, at a desk price."** The buyer is paying for **access under a constraint**, not for throughput.
 
-> Honest gate: the box's BOM (data-center-class FPGA + 1 TB Flash + 64 GB DDR5 + board) must land at a
+> Honest gate: the box's BOM (data-center-class FPGA + 1 TB NVMe SSD (M.2/PCIe) + 64 GB DDR5 + board) must land at a
 > *per-seat-defensible* price. That number is exactly what the **FPGA-fit measurement**
 > ([`../fpga/`](../fpga/README.md), the parallel track) decides — it sets the FPGA class, which sets the
 > BOM. **The ICP is only real once that BOM lands in the low-$k's per seat.**
