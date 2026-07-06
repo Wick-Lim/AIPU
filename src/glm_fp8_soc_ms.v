@@ -56,6 +56,7 @@ module glm_fp8_soc_ms #(
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 2,
     parameter integer PE_M       = 2,      // batch rows == sequences decoded together
+    parameter integer N_STEPS    = 1,      // decode steps per start (>1 = multi-token loop)
     // KV pager
     parameter integer KV_CTX     = 1024,   // logical KV context capacity (positions)
     parameter integer KV_RESIDENT= 16,     // KV ring capacity per sequence (POWER OF TWO)
@@ -68,6 +69,7 @@ module glm_fp8_soc_ms #(
     parameter integer EFIFO_DEPTH = 16,
     // ---- derived (do NOT override) ----
     parameter integer NSEQ       = PE_M,
+    parameter integer STPW       = (N_STEPS <= 1) ? 1 : $clog2(N_STEPS),  // decode-step counter width
     parameter integer WINW       = (L*PE_M <= 1) ? 1 : $clog2(L*PE_M),  // KV window id = layer*NSEQ+seq
     parameter integer SWIN       = PE_M*TOPK_ATTN,               // multi-seq attention scratch
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -200,17 +202,27 @@ module glm_fp8_soc_ms #(
     reg                       mdl_start;
     wire                      mdl_busy, mdl_done;
     wire [PE_M*TOKW-1:0]      mdl_argmax;
-    // per-row query position = that sequence's decode position (= s_len_r); the
-    // scalar pos/s_len feed row 0 (PER_ROW_* replicate to rows 1.. from the vecs).
-    wire [POSW-1:0]           pos0   = {{(POSW-(IDXW+1)){1'b0}}, s_len_vec[0 +: (IDXW+1)]};
-    wire [IDXW:0]             slen0  = s_len_vec[0 +: (IDXW+1)];
-    // per-row position vector: row r position = s_len_vec[r] (its decode pos)
-    wire [POSW*PE_M-1:0]      pos_vec;
+    // per-row DYNAMIC causal extent / query position = prompt length + decode step.
+    //   The loop appends one decode-token KV per step, so at step k row r attends
+    //   keys 0..(s_len_r + k) and queries at position s_len_r + k.  N_STEPS=1 ->
+    //   dec_step is always 0 -> slen_cur_vec == s_len_vec (byte-identical single step).
+    reg [STPW-1:0]            dec_step;               // current decode step (0..N_STEPS-1)
+    reg [PE_M*TOKW-1:0]       cur_tok;                // tokens fed to THIS step's forward
+    wire [(IDXW+1)*PE_M-1:0]  slen_cur_vec;
     genvar r;
+    generate
+        for (r = 0; r < PE_M; r = r + 1) begin : g_slencur
+            assign slen_cur_vec[(IDXW+1)*r +: (IDXW+1)] =
+                s_len_vec[(IDXW+1)*r +: (IDXW+1)] + dec_step;
+        end
+    endgenerate
+    wire [POSW-1:0]           pos0   = {{(POSW-(IDXW+1)){1'b0}}, slen_cur_vec[0 +: (IDXW+1)]};
+    wire [IDXW:0]             slen0  = slen_cur_vec[0 +: (IDXW+1)];
+    wire [POSW*PE_M-1:0]      pos_vec;
     generate
         for (r = 0; r < PE_M; r = r + 1) begin : g_posvec
             assign pos_vec[POSW*r +: POSW] =
-                {{(POSW-(IDXW+1)){1'b0}}, s_len_vec[(IDXW+1)*r +: (IDXW+1)]};
+                {{(POSW-(IDXW+1)){1'b0}}, slen_cur_vec[(IDXW+1)*r +: (IDXW+1)]};
         end
     endgenerate
     // per-row sequence id: row r -> sequence r
@@ -240,8 +252,8 @@ module glm_fp8_soc_ms #(
         .PER_ROW_POS(1), .PER_ROW_SLEN(1), .PER_ROW_SEQ(1)
     ) u_model (
         .clk(clk), .rst(rst), .start(mdl_start), .busy(mdl_busy), .done(mdl_done),
-        .token_id(prompt_tok), .pos(pos0), .s_len(slen0),
-        .pos_vec(pos_vec), .s_len_vec(s_len_vec), .seq_vec(seq_vec),
+        .token_id(cur_tok), .pos(pos0), .s_len(slen0),
+        .pos_vec(pos_vec), .s_len_vec(slen_cur_vec), .seq_vec(seq_vec),
         .logits(logits), .argmax(mdl_argmax),
         .em_req(em_req), .em_tok(em_tok), .em_idx(em_idx), .em_val(em_val),
         .db_layer(db_layer), .idx_fresh(idx_fresh), .idx_win(idx_win),
@@ -292,6 +304,8 @@ module glm_fp8_soc_ms #(
             cur_seq   <= {SEQW{1'b0}};
             cur_pos   <= {(IDXW+1){1'b0}};
             cur_layer <= {LAYW{1'b0}};
+            dec_step  <= {STPW{1'b0}};
+            cur_tok   <= {PE_M*TOKW{1'b0}};
             ap_valid  <= 1'b0;
             ap_seq    <= {SEQW{1'b0}};
             ap_layer  <= {LAYW{1'b0}};
@@ -309,6 +323,8 @@ module glm_fp8_soc_ms #(
                         cur_seq   <= {SEQW{1'b0}};
                         cur_pos   <= {(IDXW+1){1'b0}};
                         cur_layer <= {LAYW{1'b0}};
+                        dec_step  <= {STPW{1'b0}};        // step 0
+                        cur_tok   <= prompt_tok;          // first step decodes the prompt tokens
                         // empty prompts -> straight to RUN
                         if (s_len_vec[0 +: (IDXW+1)] == {(IDXW+1){1'b0}} && PE_M == 1)
                             hstate <= H_RUN;
@@ -347,29 +363,41 @@ module glm_fp8_soc_ms #(
                 H_RUNW: begin
                     if (mdl_done) begin
                         next_tok  <= mdl_argmax;       // capture B argmax tokens
+                        tok_valid <= 1'b1;             // STREAM this step's B tokens
                         cur_seq   <= {SEQW{1'b0}};
                         cur_layer <= {LAYW{1'b0}};
                         hstate    <= H_DECAP;
                     end
                 end
                 H_DECAP: begin
-                    // write each sequence's decode-token latent at position s_len_r[seq]
-                    //   into EACH LAYER's window (layer inner, then sequence).
+                    // write each sequence's decode-token latent at its CURRENT decode
+                    //   position s_len_r + dec_step, into EACH LAYER's window (layer
+                    //   inner, then sequence).  On the last (seq,layer): if more decode
+                    //   steps remain, feed this step's tokens back as the next input and
+                    //   loop to RUN (position advances via dec_step); else finish.
                     ap_valid <= 1'b1;
                     ap_seq   <= cur_seq;
                     ap_layer <= cur_layer;
                     ap_pos   <= {{(KVPOSW-(IDXW+1)){1'b0}},
-                                 s_len_vec[(IDXW+1)*cur_seq +: (IDXW+1)]};
+                                 slen_cur_vec[(IDXW+1)*cur_seq +: (IDXW+1)]};
                     if (cur_layer == (L-1)) begin
                         cur_layer <= {LAYW{1'b0}};
-                        if (cur_seq == (NSEQ-1)) hstate <= H_DONE;
-                        else                     cur_seq <= cur_seq + 1'b1;
+                        if (cur_seq == (NSEQ-1)) begin
+                            if (dec_step == (N_STEPS-1)) begin
+                                hstate <= H_DONE;
+                            end else begin
+                                dec_step <= dec_step + 1'b1;   // advance the decode step
+                                cur_tok  <= next_tok;          // this step's tokens -> next input
+                                hstate   <= H_RUN;
+                            end
+                        end else begin
+                            cur_seq <= cur_seq + 1'b1;
+                        end
                     end else
                         cur_layer <= cur_layer + 1'b1;
                 end
                 H_DONE: begin
-                    done      <= 1'b1;
-                    tok_valid <= 1'b1;
+                    done      <= 1'b1;                 // batched decode of N_STEPS tokens/seq done
                     busy      <= 1'b0;
                     hstate    <= H_IDLE;
                 end
