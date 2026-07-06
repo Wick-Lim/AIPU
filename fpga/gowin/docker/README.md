@@ -27,16 +27,21 @@ Save it as:
 fpga/gowin/docker/gowin_linux.tar.gz
 ```
 
-### 2. License (node-locked to the container's MAC)
-GW5A Education needs a license tied to a MAC address. We **pin the container MAC**
-so it stays valid (`LOCK_MAC` in `run_docker.sh`, default `02:42:ac:11:00:99` — any
-locally-administered MAC works). Request a GW5A Education license for **exactly that
-MAC** from Gowin, and save it as:
-```
-fpga/gowin/docker/gwlicense.lic
-```
-> To use a different MAC, set `LOCK_MAC=xx:xx:xx:xx:xx:xx` when running and license
-> that one instead. The container MAC (not the Mac's en0) is what matters.
+### 2. License — this install uses a FLOATING license SERVER (not a .lic file)
+The Mac's `gwlicense.ini` reads `lic="192.168.30.16:10559"` — a **network/floating
+license**, `PORT@HOST`. So there's **no `.lic` file to provide**; instead `gw_sh`
+must **reach that server**. `run_docker.sh` passes `GOWIN_LICENSE_FILE=10559@192.168.30.16`
+into the container and checks reachability first.
+
+> **You must be on the license server's network.** `192.168.30.16` is a LAN address;
+> if this Mac is on a different subnet (e.g. `192.168.0.x`), the container can't reach
+> it and `gw_sh` fails with a license error. **Connect to that office LAN / VPN**, then
+> run. Override with `LIC_HOST=... LIC_PORT=...` if your server differs; the container
+> MAC (`LOCK_MAC`) only matters for a *node-locked* `.lic`, which this install does not use.
+
+> **138K Pro needs the *Commercial* IDE** (per Sipeed's wiki, the Education edition does
+> not support GW5AST-138 — download V1.9.9+ Commercial). Your floating server must carry
+> a seat that covers GW5A.
 
 ### 3. Build the image
 ```sh

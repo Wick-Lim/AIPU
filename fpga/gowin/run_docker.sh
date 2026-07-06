@@ -39,16 +39,33 @@ if ! docker image inspect "$IMG" >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- LICENSE: this install uses a FLOATING license server (from the Mac's
+#     gwlicense.ini: lic="192.168.30.16:10559").  The container must REACH it.
+LIC_HOST="${LIC_HOST:-192.168.30.16}"
+LIC_PORT="${LIC_PORT:-10559}"
+echo "=== license server reachability check ($LIC_HOST:$LIC_PORT) ==="
+if nc -z -G 4 "$LIC_HOST" "$LIC_PORT" 2>/dev/null; then
+    echo "  ✅ reachable from this host -> the container will reach it too."
+else
+    echo "  ⚠️  NOT reachable from this host (this Mac is $(ipconfig getifaddr en0 2>/dev/null || echo '?'))."
+    echo "     The Gowin floating license lives at $LIC_HOST:$LIC_PORT -- you must be on"
+    echo "     that LAN / VPN for gw_sh to get a license.  The flow will otherwise fail"
+    echo "     with a license error.  Connect to that network, then re-run."
+fi
+
 echo "=================================================================="
 echo " Gowin vendor flow in Docker  (GW5AST-138 / Tang Mega 138K Pro)"
-echo "   image=$IMG  mac=$LOCK_MAC  COMPACT=$COMPACT  FLOW=$FLOW"
+echo "   image=$IMG  mac=$LOCK_MAC  license=$LIC_PORT@$LIC_HOST  COMPACT=$COMPACT  FLOW=$FLOW"
 echo "   part = GW5AST-LV138PG484AC1/I0  (confirmed via apycula pinout)"
 echo "=================================================================="
 
 # Run the tcl flow inside the container; mount the repo at /work.
+#   --mac-address matches the node-locked license IF you use one; harmless with a
+#   floating server.  GOWIN_LICENSE_FILE = PORT@HOST points gw_sh at the server.
 docker run --rm \
     --platform linux/amd64 \
     --mac-address "$LOCK_MAC" \
+    -e GOWIN_LICENSE_FILE="${LIC_PORT}@${LIC_HOST}" \
     -e COMPACT="$COMPACT" -e FLOW="$FLOW" \
     -v "$ROOT":/work \
     -w /work \
