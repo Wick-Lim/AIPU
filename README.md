@@ -13,8 +13,17 @@ single-module memory system (multi-channel DDR5 + Flash expert cache + weight/bo
 multi-clock CDC) that streams the real 753B model — with the memory controllers
 bounded-model-checked.
 
-> **The product is a LOCAL, single-user box.** One box, one user, running the full 753B model
-> **locally** — private, offline, no per-token API fees. The number that matters is **single-user
+> **The product is a LOCAL, single-user box that runs with the ethernet unplugged.** One box, one
+> user, running the full 753B model **fully offline / air-gapped** — a frontier model finally usable
+> *on the work, and in the disconnected places (SCIFs, OT/critical-infra, field/edge), you're currently
+> locked out of* — and you own it outright. Nothing leaves because there is **no path out**: the audit
+> is literally *"does it still work with the ethernet cable unplugged?" — yes.* That non-egress is the
+> **proof, not the pitch**, and it ends the "secured cloud" debate — in-VPC, zero-retention, and TEE
+> deployments all still need a connection and fail the unplugged test. Offline *alone* is table-stakes
+> for any local box; the moat is the **combination — offline + full frontier (753B) + appliance/seat
+> price**. (Provisioned once with the 753 GB weights — itself doable offline — then fully disconnected;
+> model updates are physical re-provisioning.) No per-token API fees, and no vendor that can rate-limit,
+> deprecate, or cut you off. The number that matters is **single-user
 > interactive throughput (~3 → ~25–40 tok/s [EST]** after stacking the faithful levers); the design
 > is deliberately Flash-bandwidth-bound to keep it cheap. Where these docs mention *aggregate /
 > datacenter batching* (per-user ~0.14 tok/s at B≈256), that is a **secondary analysis of a

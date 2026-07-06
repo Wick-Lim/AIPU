@@ -1,8 +1,11 @@
 # AIPU host software (D2 scaffold)
 
 The host-side software that turns the AIPU device into **a local, single-user
-OpenAI-compatible endpoint** (one box, one user — binds `127.0.0.1` by default, a
-personal appliance's front door, not a multi-tenant service) — point any existing
+OpenAI-compatible endpoint** (one box, one user — binds `127.0.0.1` by default, so the
+whole thing runs fully offline / air-gapped: no external network, no cloud ever, and
+nothing leaves because there's no path out — the endpoint still answers with the
+ethernet unplugged, which is also the audit. A personal appliance's front door, not a
+multi-tenant service) — point any existing
 client (a chat UI, a VS Code extension, the `openai` SDK with
 `base_url=http://localhost:8000/v1`) at it and it drives the device through the exact
 RTL host protocol. This is the **software track's first deliverable**

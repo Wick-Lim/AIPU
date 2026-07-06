@@ -16,23 +16,30 @@ single goal is **Gate 3**: one signed design-partner LOI. Companion to the custo
 
 ## 0. This kit runs for **any** can't-cloud wedge (legal is the worked example)
 
-The ICP is a **constraint** (frontier quality on data that can't touch a cloud), not a sector
-([`ICP.md`](ICP.md)). This kit is written out for **legal** because you close by instantiating *one*
+The ICP is a **constraint** (frontier quality that runs **offline / air-gapped** — on data that can't
+touch a cloud, and in places a connection can't reach), not a sector ([`ICP.md`](ICP.md)). The sharpest
+form of that constraint is binary and testable: *does it still work with the ethernet cable unplugged?*
+That bar categorically excludes **every** cloud option — including "secured cloud" (in-VPC / tenant
+deployment, zero-retention APIs, TEE / confidential-computing enclaves), which all need a live
+connection and fail it. This kit is written out for **legal** because you close by instantiating *one*
 concrete motion — but the structure (pain script, discovery flow, LOI, objection logic) is identical
 for every wedge. To run a second wedge in parallel (recommended: **quant/prop-trading**, the co-lead),
 swap only the **buyer persona + vocabulary**:
 
-| | Legal (worked example) | Quant / prop-trading (parallel swap) |
-|---|---|---|
-| Champion | Director of Innovation / KM / Practice Tech | Head of Research Eng / CTO / a PM running an internal LLM |
-| Sponsor | practice-group partner | a portfolio manager / desk head |
-| Approver | CISO / GC / risk | CISO / Head of Infosec (already FPGA/colo-savvy) |
-| The pain line | "privileged & client-confidential matters can't touch cloud AI" | "your signals, positions, and research can't leak to any cloud" |
-| Cold-email subject | "on-prem frontier AI for [Firm] — nothing leaves your network" | "frontier AI on your research — nothing leaves your infra" |
-| Reference value | sells the next law firm | sells the next fund |
+| | Legal (worked example) | Quant / prop-trading (parallel swap) | Defense / OT / field-edge (offline swap) |
+|---|---|---|---|
+| Champion | Director of Innovation / KM / Practice Tech | Head of Research Eng / CTO / a PM running an internal LLM | Program / mission-systems lead; OT or ICS architect |
+| Sponsor | practice-group partner | a portfolio manager / desk head | program office / ops commander / plant manager |
+| Approver | CISO / GC / risk | CISO / Head of Infosec (already FPGA/colo-savvy) | accreditation / ATO authority (ISSM); OT security lead |
+| The pain line | "privileged & client-confidential matters can't touch cloud AI" | "your signals, positions, and research can't leak to any cloud" | "the network is air-gapped by mandate — there is no cloud path, and the site may have no link at all" |
+| Cold-email subject | "on-prem frontier AI for [Firm] — nothing leaves your network" | "frontier AI on your research — nothing leaves your infra" | "frontier AI that runs air-gapped — works with the ethernet unplugged" |
+| Reference value | sells the next law firm | sells the next fund | sells the next program / site |
 
-Everything below reads as legal; mentally substitute the row above to fire the quant motion at the same
-time. **Test both for ~2 weeks; let the reply rate pick the beachhead.**
+Everything below reads as legal; mentally substitute a column above to fire the quant (or
+defense/OT/edge) motion at the same time. **Test legal + quant in parallel for ~2 weeks; let
+speed-to-LOI pick the beachhead.** Defense / OT / field-edge is a first-class, high-value third where
+air-gap is *mandatory* — but procurement runs slower, so work it as an expansion track, not the 2-week
+speed test.
 
 ## 1. Target — the account and the three people
 
@@ -40,7 +47,9 @@ time. **Test both for ~2 weeks; let the reply rate pick the beachhead.**
 - **Frontier quality genuinely needed** — the work is hard (M&A, litigation, complex drafting), not
   form-filling a 70B model already handles.
 - **A real can't-cloud constraint** — a firm/practice with clients who contractually forbid cloud AI,
-  or a GC/risk posture that already blocked ChatGPT/Copilot for client matters.
+  or a GC/risk posture that already blocked ChatGPT/Copilot for client matters. The bar is *runs
+  disconnected*: "secured cloud" (in-VPC / zero-retention / TEE) doesn't clear it, because it still
+  needs a connection.
 - **AI-forward enough to move** — they've *tried* private AI (Harvey, Copilot, an internal pilot) and
   hit the data-boundary wall. A firm that's never thought about AI is too early.
 
@@ -54,23 +63,36 @@ Practice Technology" on LinkedIn; boutiques in IP / M&A / regulated-industry pra
 |---|---|---|---|
 | **Champion** | Director of Innovation / KM / Practice Technology; "Legal AI" lead | Being first to a defensible AI edge without a data-breach headline | **Entry point** — start here |
 | **Sponsor** | A practice-group partner (litigation / M&A / IP) | Leverage on the confidential work they can't currently use AI on | **Pain owner** — makes it real |
-| **Approver** | CISO / Head of IT Security / GC / risk | "Nothing leaves the building," auditability | **Unblocker** — loves "provably local" |
+| **Approver** | CISO / Head of IT Security / GC / risk | "Nothing leaves the building," auditability | **Unblocker** — loves "provably no path out — it works with the ethernet unplugged" |
 
 ---
 
 ## 2. The message (positioning, translated for legal — not the investor story)
 
-Lead with *their* pain, not FP8/RTL. Three lines you can say in an elevator:
+Lead with *their* pain and the *capability* it unlocks, not FP8/RTL. Three lines you can say in an
+elevator:
 
-> **"The AI your attorneys actually want is off-limits on your most sensitive matters, because the good
-> models are all cloud. We're building an appliance that runs a full frontier-scale model **entirely
-> inside your network** — nothing ever leaves the building — so privileged and client-confidential
-> work finally gets frontier AI. And because it's provably the same computation as the real model,
-> your security team and GC can audit it."**
+> **"Your attorneys are locked out of the best AI on exactly their most valuable work — the privileged,
+> client-confidential matters — because every frontier model lives in the cloud. We're building an
+> appliance that runs a full frontier-scale model **completely offline**: it works with the ethernet
+> cable unplugged. That's the whole promise — your data *can't* leave because there is no path out, and
+> the audit is literally 'does it still work disconnected?' It does. So the work you can't put in the
+> cloud finally gets frontier AI — and you own the box outright."**
+
+Note the frame: **lead with the capability** (frontier AI on the matters you're locked out of, owned
+outright), and let non-egress be the *proof* — the unplugged-ethernet test — not a defensive "avoid the
+breach" pitch (that just competes with "don't use AI at all").
+
+**Don't oversell "offline" alone** — a 70B laptop model is offline too. The moat is the *combination*:
+offline + a **full frontier (753B)** model + an **appliance / per-seat** price. (A laptop model fails on
+quality; an 8×H100 rack fails on price and form factor; "secured cloud" fails the unplugged test.) Be
+honest on provisioning, too: the 753 GB of weights load **once** (itself doable offline, in a secure
+facility), and model updates are a **physical re-provision** — expected and fine for air-gap buyers, but
+say so.
 
 Keep two proof-points in your back pocket for the technical/security persona (these are *measured*, not
 marketing): the datapath is **bit-exact to the published model** and the memory controllers are
-**formally verified** — i.e. "provably local **and** provably correct." Don't lead with them; deploy
+**formally verified** — i.e. "provably offline **and** provably correct." Don't lead with them; deploy
 them when the approver asks "how do I trust it."
 
 ---
@@ -78,13 +100,14 @@ them when the approver asks "how do I trust it."
 ## 3. Cold outreach
 
 ### Email A — to the Champion (primary)
-> **Subject: on-prem frontier AI for [Firm] — nothing leaves your network**
+> **Subject: frontier AI for [Firm] that runs offline — nothing leaves your network**
 >
 > Hi [Name],
 >
-> I'm building AIPU — an appliance that runs a full **frontier-scale** AI model **entirely on your own
-> network**: no data leaves the building, no cloud API, no per-use fees. It's aimed squarely at the work
-> your attorneys *can't* put into ChatGPT or Copilot today — privileged and client-confidential matters.
+> I'm building AIPU — an appliance that runs a full **frontier-scale** AI model **completely offline**:
+> it works with the ethernet cable unplugged, so no data can leave the building — no cloud API, no
+> per-use fees. It's aimed squarely at the work your attorneys *can't* put into ChatGPT or Copilot
+> today — privileged and client-confidential matters.
 >
 > We're selecting a small number of **design partners** in legal to shape it before release. No cost and
 > no commitment beyond a few conversations — you'd get early access and direct input into what we build;
@@ -144,8 +167,9 @@ already asked for this · a security lead who says "on-prem changes everything" 
 budget. **Red flags** (deprioritize): "we just use ChatGPT, it's fine" · no confidential-data constraint
 · "call us in two years" · wants a finished product now.
 
-**Then — and only then — the vision (2 min):** the one-box/one-seat appliance, full 753B locally,
-nothing leaves the network, provably the same answers as the real model (auditable). Show the 1-page
+**Then — and only then — the vision (2 min):** the one-box/one-seat appliance, full 753B locally and
+**fully offline / air-gapped** (it works with the ethernet unplugged — nothing leaves because there's no
+path out), provably the same answers as the real model (auditable). Show the 1-page
 brief / evidence. Be explicit about stage: *"here's what's proven today, here's the two gates left, and
 here's why I want a design partner **now** — so we build the thing your firm would actually deploy."*
 
@@ -158,9 +182,10 @@ No cost. In return you get first access and you shape the product around your co
 | They say | You say (honest) |
 |---|---|
 | "You don't even have a product." | "Correct — that's *why* I want you now. Design partners shape it and get first access; the tech risk is unusually retired (verified datapath, real-checkpoint bit-accuracy, FPGA fit de-risked). I'm asking for input + an LOI, not a purchase." |
-| "How is this different from Harvey / Copilot?" | "Those still send your text to a cloud. This runs the whole model **inside your network** — nothing leaves. That's the exact line your confidential matters can't cross." |
-| "Our GC will never approve cloud AI." | "Right — that's the point. There's no cloud. Your security team can audit that nothing egresses, and that the output matches the real model bit-for-bit." |
-| "Is a local model good enough?" | "The small models that fit a laptop aren't — that's the gap. This runs the *full* 753B frontier model locally, not a shrunk one." |
+| "How is this different from Harvey / Copilot?" | "Those still send your text to a cloud. This runs the whole model **offline, inside your network** — it works with the ethernet unplugged, so nothing can leave. That's the exact line your confidential matters can't cross." |
+| "Our GC will never approve cloud AI." | "Right — that's the point. There's no cloud, and no connection: the box runs with the ethernet unplugged. Your security team can audit that nothing egresses — because there's no path out — and that the output matches the real model bit-for-bit." |
+| "Why not a private cloud — in-VPC / tenant deployment, a zero-retention API, or a TEE / confidential-computing enclave?" | "Those are all still the cloud: they need a live connection, so they can't pass the test your constraint actually sets — *does it work with the ethernet unplugged?* A VPC, a zero-retention promise, and a TEE each fail it (no link, no service). This is the only option that runs disconnected, which is what ends the 'secured cloud' debate for good." |
+| "Is a local model good enough?" | "The small models that fit a laptop aren't — that's the gap. This runs the *full* 753B frontier model locally and offline, not a shrunk one. Offline alone is table-stakes (a laptop model is offline too); the moat is the combination — offline **and** full-frontier, at a per-seat price." |
 | "What will it cost?" | "TBD until the FPGA fit closes — we're targeting a **per-seat** price, in the range of the premium tools you already buy, not a datacenter build. Design partners get preferential terms." |
 | "When is it real?" | "Two gates: real-model fidelity (a GPU run) and a measured FPGA demo. I'll show you the demo the moment it exists — the LOI just means you're first in line, non-binding." |
 
@@ -171,8 +196,8 @@ No cost. In return you get first access and you shape the product around your co
 Make it a clear, low-friction, mutual deal:
 
 **They give:** 3–4 working sessions (pain, workflow, security requirements) · a signed non-binding LOI ·
-a named security/IT contact to define the "nothing-leaves-the-network" audit · willingness to pilot when
-the demo lands. **They get:** direct product influence · first access / priority allocation ·
+a named security/IT contact to define the "works-unplugged / nothing-leaves-the-network" audit ·
+willingness to pilot when the demo lands. **They get:** direct product influence · first access / priority allocation ·
 design-partner pricing · a demonstrable head-start on defensible, compliant AI. **No cost** at this
 stage. **Timeline:** LOI now → design sessions over the next weeks → pilot when Gate 2 (demo) closes.
 
@@ -183,7 +208,7 @@ stage. **Timeline:** LOI now → design sessions over the next weeks → pilot w
 > **Letter of Intent — AIPU legal design partnership**
 >
 > This non-binding letter records the mutual intent of **[Firm]** and **AIPU** to collaborate on an
-> on-premise, single-user frontier-AI appliance for confidential legal work.
+> on-premise, **offline / air-gapped**, single-user frontier-AI appliance for confidential legal work.
 >
 > **[Firm] intends to:** (1) participate as a design partner through a small number of working sessions;
 > (2) provide input on requirements, workflow, and the "no data leaves the network" security posture;

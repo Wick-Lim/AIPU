@@ -7,9 +7,18 @@ accumulator, fmax fixes, predictor-prefetch [measured no-op]). Numbers marked **
 not measured. Compute is bit-exact to real GLM-5.2-FP8 (docs/BIT_ACCURACY.md); levers that change outputs are
 flagged **NOT bit-exact**.
 
-> **Product identity — a LOCAL, single-user personal box (read this first).** This accelerator is a
-> **personal appliance: one box, one user, running the full 753 B model locally** (private, offline,
-> no API fees — see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The performance number that
+> **Product identity — a LOCAL, single-user box that works fully offline / air-gapped (read this
+> first).** The headline is **frontier AI with the ethernet unplugged**: this accelerator is a
+> **personal appliance — one box, one user, running the full 753 B GLM-5.2-FP8 model locally, no
+> internet and no cloud, ever**. Lead with the *capability* that unlocks — run a frontier model in the
+> classified / regulated / disconnected places you're locked out of today, and own it outright — not the
+> defense. **Nothing leaves because there is no path out**; non-egress is the *proof*, not the pitch, and
+> the audit is literally *"does it still work with the ethernet cable unplugged?"* (yes). That bar is one
+> **no cloud can clear — including "secured cloud" (in-VPC / zero-retention / TEE enclaves), which all
+> still need a connection**. Honest caveats: the 753 GB of weights are provisioned **once** (itself
+> doable offline) and model updates are **physical** re-provisioning; and offline *alone* is table-stakes
+> for any local box — the moat is the **combination of offline + full frontier (753 B) + appliance/seat
+> price** (see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The performance number that
 > matters is therefore **single-user interactive throughput (~25–40 tok/s [EST]** with the faithful
 > levers stacked — the "Single-user" roofline row in §4). Any **aggregate-serving / datacenter-batch**
 > figures below (B≈256, ~50 tok/s *aggregate*, **per-user ~0.14 tok/s**) describe a **DIFFERENT,

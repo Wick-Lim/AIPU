@@ -161,8 +161,11 @@ Baseline (measured `h`, [EST] BW): **Flash 50 GB/s, h=27%, K=1 → ~3 tok/s, ~8�
 | ~8× × ~1.0 (8ch, strategy B) | ~24 | sub-expert striping removes the cap |
 | ~16–32ch (strategy B) | ~24–40+ | push N_CH; B stays balanced |
 
-The **~20–40 tok/s sweet spot** (a usable interactive rate at a fraction of cloud cost/power)
-is reachable by **adding Flash channels + striping** — **not** by moving to HBM. Flash scales
+The **~25–40 tok/s sweet spot** — a usable interactive rate on a box that runs the **full
+753 GB GLM-5.2 model fully offline / air-gapped** (nothing leaves because there is no path out;
+the model is provisioned once, itself doable offline) at a fraction of cloud cost/power — is
+reachable by **adding Flash channels + striping** —
+**not** by moving to HBM. Flash scales
 by `$/GB` commodity dies; HBM charges a `$/GB/s` premium. The knee is real but far above
 100 GB/s: each channel adds a controller + I/O power (a power/area/cost limit), so `N_CH` is
 bounded — but the scaling curve is dramatically cheaper per GB/s than HBM.

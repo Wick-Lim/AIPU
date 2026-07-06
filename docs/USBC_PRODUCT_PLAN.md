@@ -2,8 +2,8 @@
 
 **What this is.** The concrete plan to turn the verified accelerator into a **shippable USB-C
 external device**: a small, self-powered, active-cooled box that runs the real
-`zai-org/GLM-5.2-FP8` (753 GB) locally and streams tokens to a host computer over a single USB-C
-cable.
+`zai-org/GLM-5.2-FP8` (753 GB) locally — **fully offline / air-gapped, no internet ever** — and
+streams tokens to a host computer over a single USB-C cable.
 
 **Relationship to the other roadmaps (read together):**
 - [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) — the **RTL / silicon track** (P1–P4: real-model
@@ -24,18 +24,21 @@ cable.
 
 ## 1. Product definition
 
-**One-liner:** *plug a USB-C box into the computer you already own and run a frontier 753 B model
-fully local, private, and subscription-free.*
+**One-liner:** *frontier AI that works with the ethernet unplugged* — plug a USB-C box into the
+computer you already own and run the full 753 B model **fully offline / air-gapped**. Nothing
+leaves because there's no path out (the audit is literally *"does it still work with the ethernet
+unplugged?"* — yes), and no vendor can rate-limit, deprecate, or cut you off — so private and
+subscription-free come as the *result*.
 
 | | |
 |---|---|
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
 | **What it runs** | the real `zai-org/GLM-5.2-FP8` (753 GB), **bit-exact** to the published model (not a quantized approximation) |
-| **Throughput** | ~20–40 tok/s single-user interactive [EST] |
+| **Throughput** | ~25–40 tok/s single-user interactive [EST] |
 | **Power** | ~80–110 W at interactive throughput (self-powered; ~30 W throttled) [EST] |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
 | **Host** | thin driver + a local OpenAI-compatible endpoint → existing chat UIs / editors point at it |
-| **Target user** | privacy-critical individuals, local-AI enthusiasts, cost-heavy power users |
+| **Target user** | air-gap / offline-mandated users (SCIF, defense-forward, isolated OT/critical-infra, field/edge), privacy-critical individuals, local-AI enthusiasts, cost-heavy power users |
 | **What it is NOT** | not a bus-powered dongle, not a multi-user server, not a general computer, not multi-modal |
 
 **Why the form factor fits the architecture.** The heavy traffic (Flash↔DDR5↔die, ~22 GB/token)
@@ -48,7 +51,14 @@ async clocks) — the device interface was designed in from the start.
 753 GB at all), this is an **accessory that adds frontier-model capability to the machine you
 already have** — closer in spirit to an eGPU, but sipping desktop-PC power and running a far bigger
 model. It creates a new category: an **external frontier-LLM accelerator** (vs. edge-AI USB sticks
-like Coral/Hailo, which only run tiny models).
+like Coral/Hailo, which only run tiny models). And unlike **any** cloud option — including
+"secured cloud" (in-VPC/tenant deployment, zero-retention APIs, confidential-computing/TEE
+enclaves) — it runs **with the ethernet unplugged**; every cloud variant still needs connectivity
+and fails that test, which is what unlocks the air-gap / offline environments others can't serve
+(SCIFs, defense-forward ops, isolated OT/critical-infra, field/edge). The moat is the
+**combination — offline + full frontier (753 B) + appliance price** — since offline *alone* is
+table-stakes (a 70 B laptop model is offline too): the 70 B laptop fails frontier quality, 8×H100
+fails price/form-factor, and secured cloud fails the unplugged test.
 
 ---
 
@@ -117,7 +127,7 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 | Spec | Target | Notes |
 |---|---|---|
 | Model | GLM-5.2-FP8, bit-exact | the differentiator vs quantized boxes |
-| Throughput | ≥ 20 tok/s (goal 30–40) single-user | comfortable interactive |
+| Throughput | ≥ 25 tok/s (goal 30–40) single-user | comfortable interactive |
 | Power (peak) | ≤ 110 W self-powered; stretch ≤ 100 W USB-PD | see §7 power decision |
 | Idle power | ≤ 10 W | clock-gating + DVFS |
 | Size | ≤ ~1 L enclosure | external-SSD → small-mini-PC |
@@ -250,7 +260,9 @@ D0.2) is the pivotal BOM lever. Algorithmic levers (spec ÷K, compression, DVFS)
 power/throughput **without** touching BOM.
 
 **vs the alternative:** an 8×H200 cloud/cluster is ~$250–300 k capital + ~6–10 kW; this box is
-~50–100× cheaper capital and ~50–70× lower power — the trade is single-user throughput.
+~50–100× cheaper capital and ~50–70× lower power — the trade is single-user throughput. And for an
+air-gap / offline buyer the cloud isn't on the menu at any price: even a "secured cloud" (VPC /
+zero-retention / TEE) needs connectivity and fails the unplugged test.
 
 ---
 

@@ -94,8 +94,10 @@ injection by `kv_cache_pager_ecc_tb` and `kv_ecc_ring_tb`. The same partitioning
 applies to `glm_fp8_soc_ms.kv_mem` (identical row width).
 
 **Product-scope note (single-user box).** The product is the LOCAL, SINGLE-USER
-personal box — one box, one user, running the full GLM-5.2-FP8 model locally (see
-`docs/USBC_PRODUCT_PLAN.md`). It decodes **one sequence (NSEQ=1 / B=1)**, so its
+personal box — one box, one user, running the full GLM-5.2-FP8 model **fully
+offline / air-gapped** (nothing leaves because there is no path out — it runs with
+the ethernet unplugged; the 753 GB model is provisioned once, then never needs a
+connection; see `docs/USBC_PRODUCT_PLAN.md`). It decodes **one sequence (NSEQ=1 / B=1)**, so its
 resident KV here is just the single user's hot set + that one user's KV. The
 **batched multi-seq path** (`glm_fp8_soc_ms`, the `kv_cache_pager` `NSEQ>1` mode,
 and the `NSEQ`-scaled `kv_mem`) is the SAME silicon run as continuous batching for

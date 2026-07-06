@@ -185,10 +185,18 @@ async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
   slice; `cyc_per_tok` 7947→8607 @FLASH_LAT=256), the roofline *mechanism* measured on real RTL
   cycles ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)).
 - **Projected (roofline, `[EST]`):** **single-user ~6–16 tok/s** (→ ~25–40 with all levers), ~3 J/token
-  — **this is the product** (local, single-user box). The *batched aggregate* ~40–85 tok/s figure is a
-  **non-target datacenter regime** (per-user floors at ~0.14 tok/s there), kept only as analysis. All
-  `[EST]` — see [`ULTRA_PERF.md`](ULTRA_PERF.md); real silicon lands below the roofline (achievable-vs-peak
-  BW, second-order walls).
+  — **this is the product: a fully offline / air-gapped local box** that runs the whole 753B frontier
+  model with the ethernet unplugged. The capability it unlocks is frontier AI where the cloud can't
+  reach — SCIFs, isolated OT / critical-infra, field/edge, or anywhere a vendor connection is itself the
+  liability; the proof is binary — **nothing leaves because there's no path out** (the host link carries
+  only token IDs + position, §1), so it passes the unplugged-ethernet test that every cloud option fails,
+  "secured cloud" included (in-VPC / zero-retention / TEE all need connectivity). Offline alone is
+  table-stakes (a 70B laptop is offline too); the moat is the **combination** — offline + full-frontier
+  (753B) + appliance price. Honest caveat: the 753 GB model is written to Flash once (one-time
+  provisioning, §1) and model updates are physical re-provisioning. The *batched aggregate* ~40–85 tok/s
+  figure is a **non-target datacenter regime** (per-user floors at ~0.14 tok/s there), kept only as
+  analysis. All `[EST]` — see [`ULTRA_PERF.md`](ULTRA_PERF.md); real silicon lands below the roofline
+  (achievable-vs-peak BW, second-order walls).
 
 ## 7. Per-token bottleneck (the honest critical path)
 

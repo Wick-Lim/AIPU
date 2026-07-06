@@ -9,8 +9,19 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 `zai-org/GLM-5.2-FP8` reliably**. The mindset shifts from *demonstrate + measure a mechanism* to
 *run the real model correctly, at full scale, robustly, and ship it.*
 
-> **What the product IS: a LOCAL, single-user personal box.** One box, one user, running the full
-> 753 B model **locally** — private, offline, no per-token API fees. The performance metric that
+> **What the product IS: a LOCAL, single-user personal box that works with the ethernet unplugged.**
+> One box, one user, running the full 753 B model **locally** — it **works fully offline / air-gapped:
+> nothing leaves because there's no path out**. The audit is literally *"does it still answer with the
+> ethernet cable unplugged?"* — **yes**, the strongest, binary form of 'non-egress'; it categorically
+> excludes *every* cloud option (in-VPC / zero-retention / confidential-computing TEE all still need a
+> connection and fail the unplugged test). Lead with the **capability** that unlocks, not the defense:
+> finally run a **full frontier** model in the disconnected places you're locked out of today (SCIF /
+> classified, isolated OT & critical-infra, field/edge, denied-connectivity), and **own it outright** —
+> no per-token API fees, no vendor that can rate-limit, deprecate, or cut you off. *Offline alone is
+> table-stakes (a 70 B laptop model is offline too); the moat is the **combination** — offline + full
+> frontier (753 B) + appliance/seat price.* (Honest: the 753 GB checkpoint is loaded **once** — itself
+> doable offline — and model updates are physical re-provisioning; after that, fully disconnected.) The
+> performance metric that
 > matters is **single-user interactive throughput (~25–40 tok/s [EST]** with the faithful levers
 > stacked). The design is deliberately **Flash-bandwidth-bound to be cheap** (Flash holds the whole
 > model; DDR5 caches the hot working set). Any **aggregate / datacenter-batch** numbers in these docs

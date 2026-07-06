@@ -3,7 +3,9 @@
 > **Scope.** A system design for running the *published* `zai-org/GLM-5.2-FP8`
 > checkpoint on **one module** — a custom FP8 compute die + **64 GB DDR5** (the fast working
 > memory) + **1 TB Flash** (the whole model) — instead of a multi-chip HBM cluster. It targets
-> "the real 753B model runs, at interactive-ish speed," e.g. as a **local, single-user** USB-C external accelerator (a private, offline personal box),
+> "the real 753B model runs, at interactive-ish speed," e.g. as a **local, single-user** USB-C
+> external accelerator — a **fully offline / air-gapped** box that runs the full 753B frontier model
+> **with the ethernet unplugged** (nothing leaves because there is **no path out** — see §3),
 > not datacenter-scale real-time serving.
 >
 > **Fast-memory choice: multi-channel DDR5, not HBM/GDDR6.** This workload is **Flash-bandwidth-
@@ -74,6 +76,20 @@ So the design problem is a **memory hierarchy + streaming** problem.
                  └──────────────────────────────────────────────────────────────┘
    (USB-C to a host PC carries only token IDs in/out — the model never crosses it.)
 ```
+
+**Why this is an offline / air-gapped appliance.** Because every byte of weights and KV lives
+on-module and the host link carries **only token IDs**, the box runs the full 753B frontier model
+**with the ethernet unplugged** — the crispest, binary form of "nothing leaves": your data *cannot*
+leave because there is **no path out**. Lead with that capability (finally running a frontier model
+where the cloud is barred — SCIFs, isolated OT / critical-infra, field/edge, or simply data you won't
+hand to a vendor); strongest-possible non-egress is its *proof* (the audit is literally "does it still
+work with the cable unplugged?" — yes). It also ends the "secured cloud" debate: in-VPC /
+zero-retention / TEE deployments all still require connectivity and fail the unplugged test. Honest
+caveats — the 753 GB model is **provisioned once** (itself doable offline / in a secure facility) and
+model/weight updates are **physical re-provisioning**; and "offline" *alone* is table-stakes for any
+local box, so the moat is the **combination: offline + full-frontier (753B) + appliance price** (§11) —
+a 70B laptop model fails frontier quality, an 8×H100 rig fails price/form-factor, and secured cloud
+fails the unplugged test.
 
 Three components, three roles:
 - **FP8 compute die** — the verified RTL (MLA attention, MoE, SwiGLU, RoPE, RMSNorm, LM head,

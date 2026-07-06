@@ -2,8 +2,9 @@
 
 *The ideal customer profile for the product defined in [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) /
 [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md): a **local, single-user appliance** running a full
-frontier open-weight model (GLM-5.2-FP8, 753B) on-premise — private, offline, no per-token fees,
-~25–40 tok/s [EST] interactive, **one box / one seat** (B=1).*
+frontier open-weight model (GLM-5.2-FP8, 753B) that **works fully offline / air-gapped — nothing leaves
+because there is no path out** — no per-token fees, ~25–40 tok/s [EST] interactive, **one box / one
+seat** (B=1).*
 
 ---
 
@@ -12,11 +13,15 @@ frontier open-weight model (GLM-5.2-FP8, 753B) on-premise — private, offline, 
 The box only wins for someone who needs **all three** at once:
 
 1. **Frontier-scale quality** — a 7–70 B model that fits a laptop/Mac is *not good enough* for their task.
-2. **Data cannot leave the premises** — a legal / regulatory / contractual / sovereignty bar on cloud LLM APIs.
+2. **Must run offline / air-gapped** — a legal / regulatory / contractual / sovereignty bar, an isolated
+   or disconnected environment, or a no-vendor-dependency mandate means it has to run with the ethernet
+   unplugged. Even a *secured cloud* (in-VPC, zero-retention API, confidential-computing/TEE enclave)
+   isn't enough — it still needs connectivity and **fails the unplugged test**.
 3. **Appliance, not infrastructure** — they want to *buy/plug a box*, not build and run a GPU cluster + MLOps.
 
 Miss **any one** and a cheaper option dominates: drop (1) → a Mac/GPU running Llama/Qwen 70 B; drop
-(2) → the cloud API (cheaper, faster, zero capex); drop (3) → a private GPU build. **The ICP lives only
+(2) → the cloud API — *including* "secured cloud" (VPC / zero-retention / TEE), all of which fail the
+unplugged test; drop (3) → a private GPU build. **The ICP lives only
 in the triple intersection.** Everything below is about finding the segment where that intersection is
 *acute, reachable, and funded.*
 
@@ -24,12 +29,36 @@ in the triple intersection.** Everything below is about finding the segment wher
 
 ## The ICP — defined by the **constraint**, not the vertical
 
-> **A confidentiality-bound team that needs frontier-model quality on data it legally or contractually
-> cannot send to a cloud LLM — in *any* industry.** That constraint, not a job title or a sector, is the
-> ICP. The **product is horizontal**; what must be narrow is the **first go-to-market wedge**.
+> **A team that needs frontier-model quality but must run it offline / air-gapped — because the data
+> legally or contractually cannot leave, the environment is disconnected, or they cannot depend on a
+> vendor/connection — such that even a "secured cloud" (in-VPC, zero-retention, TEE) isn't enough — in
+> *any* industry.** That constraint, not a job title or a sector, is the ICP. The **product is
+> horizontal**; what must be narrow is the **first go-to-market wedge**.
+
+**Sell the capability, not the fear.** The pitch isn't "avoid the cloud breach" (that competes with
+"just don't use AI") — it's *"finally run a frontier model on the work, and in the places, you're
+currently locked out of — and own it outright."* Offline is the **enabler**; its **proof** is the literal
+audit — *does it work with the ethernet cable unplugged? Yes.* That one property opens three value axes
+(use whichever the buyer feels):
+
+1. **Air-gap confidentiality** — the strongest possible non-egress: data *cannot* leave because there is
+   no path out. Clears the privilege / compliance / classified blockers.
+2. **Offline / disconnected-environment capability** (a *new* market, not risk-avoidance) — SCIFs,
+   defense forward ops, isolated OT / critical-infra networks, field/edge (ships, subs, aircraft, rigs,
+   mines, remote sites), and denied/poor/censored connectivity.
+3. **Resilience / independence** — no vendor dependency: can't be rate-limited, deprecated, price-hiked,
+   or cut off; the model can't be taken from you. This axis lands with *connected* buyers too.
+
+**Honest caveats (don't oversell "magically offline"):** the 753 GB model is loaded **once** (a one-time
+provisioning, itself doable offline / in a secure facility); thereafter it is fully offline. Updates
+(new weights) are **physical** re-provisioning — fine for air-gap buyers, who expect it, but state it.
+And *offline alone is table-stakes* — a 70 B laptop model is offline too. The moat is the
+**combination**: **offline + full frontier (753B) + appliance / per-seat price** (70 B fails frontier
+quality; 8×H100 fails price/form-factor; secured cloud fails the unplugged test).
 
 **Don't confuse the market with the wedge.** The need is horizontal — legal, quant/finance, IP-heavy
-R&D, government, healthcare all share the exact triple intersection above. Constraining the *product* or
+R&D, government/defense, healthcare, and **offline/disconnected environments** (SCIFs, isolated OT /
+critical-infra networks, field/edge sites) all share the exact triple intersection above. Constraining the *product* or
 the *pitch* to one sector would be a mistake. But a pre-seed team can only build **one** message, learn
 **one** buyer, and produce **one** reference at a time, so the *first sales motion* must be narrow —
 otherwise you get five half-run motions and zero references. **Pick the first wedge empirically**, by
@@ -71,8 +100,10 @@ building").
 
 ## Why they can't solve it today
 
-- **Cloud API (GPT/Claude/Gemini):** *banned or restricted* for privileged/client-confidential matters —
-  data leaves the premises; many client engagement letters forbid it outright.
+- **Cloud API (GPT/Claude/Gemini) — including "secured cloud" (in-VPC, zero-retention, TEE enclaves):**
+  *banned or restricted* for privileged/client-confidential matters — data leaves the premises, and even
+  the secured variants still require connectivity, so they **fail the unplugged-ethernet test**; many
+  client engagement letters forbid cloud AI outright.
 - **A smaller on-prem model (Llama/Qwen 70 B on a workstation GPU):** *quality gap* on hard legal
   reasoning, **and** it's still a GPU box someone has to stand up, quantize, patch, and babysit.
 - **Self-host the real 753 B on GPUs:** **8×H100 ≈ $250–400 k capex** + kW-scale power + an MLOps team —
@@ -87,7 +118,7 @@ building").
 
 | Option | Frontier quality? | Data stays local? | ~Cost to put on one confidential desk |
 |---|---|---|---|
-| Cloud frontier API | ✅ | ❌ (disqualifies) | ~$20–200/mo — *but not allowed* |
+| Cloud frontier API *(incl. secured cloud: VPC / zero-retention / TEE)* | ✅ | ❌ (disqualifies — still connected) | ~$20–200/mo — *but not allowed* |
 | Mac/GPU + 70 B local | ❌ (quality gap) | ✅ | ~$3–6 k one-time |
 | 8×H100 private 753 B | ✅ | ✅ | ~$250–400 k + power + MLOps (shared, not per-seat) |
 | **This box (target)** | **✅ (753 B)** | **✅** | **target BOM in the low-$k's + a per-seat SW/support subscription** |
@@ -109,10 +140,10 @@ the cloud, at a desk price."** The buyer is paying for **access under a constrai
    matter they'd otherwise never touch with cloud AI.
 3. **Success metric = "would you pay per-seat for this?"** measured on *quality on confidential work +
    the confidentiality guarantee*, not on tok/s. (25–40 tok/s is comfortably interactive; speed is not
-   the sale — *provable locality* is.)
+   the sale — *provable air-gap / locality — it works unplugged* — is.)
 4. **Deliverable that unlocks the pilot:** a working box (or even the compact FPGA config) that (a) runs
-   real GLM-5.2 weights locally and (b) can be **audited to prove no network egress** — security's
-   checkbox is the close.
+   real GLM-5.2 weights locally and (b) passes the **literal unplugged-ethernet test** — it keeps working
+   with the network cable pulled, so there is provably **no path out**. Security's checkbox is the close.
 
 ## Wedge menu & expansion ladder
 
@@ -123,13 +154,17 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
 |---|---|---|
 | **Quant / prop-trading / hedge funds** | Fastest-moving buyers, **FPGA-native culture**, deep pockets, extreme data secrecy (won't leak signals/positions), love any edge | **Co-lead — test in parallel with legal from day one.** Fewer seats/account, but the fastest path to a first LOI. |
 | **IP-sensitive R&D** (pharma, semiconductor, defense-adjacent, proprietary-code shops) | Genuinely un-cloudable secrets (molecules, chip designs, source); real budgets | Second wave — longer eval cycles; more heterogeneous use cases to support. |
+| **Offline / disconnected environments** (defense/SCIF, isolated OT / critical-infra, field/edge — ships, subs, aircraft, rigs, mines, remote sites, denied/censored connectivity) | **First-class, high-value:** air-gap is *mandatory*, not a preference — no cloud (secured or not) can ever serve them; they pay for capability they cannot get any other way | Procurement speed **varies** — commercial OT / industrial / edge can move fast; classified gov is slow. Where it's US-federal classified, the Chinese-origin gate below still applies. |
 | **Government / defense / intelligence** | Highest willingness to pay; air-gap is *mandatory*; sovereignty tailwind | **Slow procurement (12–24 mo)** + a **GLM = Chinese-origin model** problem for US federal (needs an RTL retarget to a Western model first). High-value, wrong *first* customer. |
 | **Healthcare / clinical** (PHI/HIPAA) | Huge market, absolute privacy mandate | Very risk-averse, long procurement, heavy validation burden. |
 | **Sovereign-AI / non-US-aligned orgs** | GLM's Chinese origin is an *advantage*; model-sovereignty tailwind | Fragmented, relationship-driven, geopolitically complex. |
 
 ## Disqualifiers (who is **NOT** the ICP — stay focused)
 
-- **Anyone fine with the cloud API** — that's most of the market; the API is cheaper/faster. Don't chase.
+- **Anyone fine with the cloud API — including a "secured cloud" (in-VPC, zero-retention, TEE)** — that's
+  most of the market; connected options are cheaper/faster. If a secured cloud clears their bar, they
+  don't need the unplugged box (that's the objection-handling line: VPC / zero-retention / TEE still
+  fail the unplugged test, so they only matter to buyers who don't actually need air-gap). Don't chase.
 - **Anyone happy with a 70 B local model** — a Mac/GPU serves them cheaper; we only win when frontier
   quality is required.
 - **Multi-user / high-QPS serving** — that's the **non-target datacenter regime** (per-user ~0.14 tok/s
