@@ -14,9 +14,10 @@
 //
 //   NOTE ON q_lora / kv_lora: GLM-5.2 is DeepSeek-MLA-derived.  The DeepSeek-MLA
 //   *standard* low-rank sizes are kv_lora_rank=512, q_lora_rank=2048 (docs
-//   ACCEL_GLM52.md §2 L42-43).  These two are marked PENDING safetensors
-//   confirmation against the published checkpoint tensor shapes; every other
-//   value below is a hard config.json / doc citation.
+//   ACCEL_GLM52.md §2 L42-43).  q_lora_rank=2048 is now CONFIRMED against the real
+//   safetensors (q_a_proj.weight shape [2048,6144]); kv_lora_rank=512 remains the
+//   standard assumption, PENDING safetensors confirmation.  Every other value below
+//   is a hard config.json / doc citation.
 //
 //   USAGE (integration, NOT the committed slice TBs):
 //     `include "full_glm52.vh"

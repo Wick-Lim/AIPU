@@ -1,5 +1,13 @@
 # Chip miniaturization — plan
 
+> **Scope note (FPGA fit, not ASIC; deprioritized).** The committed product path is an **FPGA
+> card**, not an ASIC ([`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2), so "shrink the die" here
+> means **fit a smaller / cheaper FPGA** (fewer LUT/DSP/BSRAM), *not* an ASIC shrink or tapeout.
+> The analysis stays valid — every lever is correctness-invariant (byte-identical token) — but the
+> study is **deprioritized behind a green P1** (real-model fidelity + full-scale correctness):
+> compute is Flash-starved and already cheap, so shrinking it buys cost/power headroom, not
+> throughput. Revisit once P1 is green and the vendor flow (E1) can measure the real LUT delta.
+
 How to make the FP8 compute die dramatically smaller (for a smaller FPGA / lower cost / lower
 power), ranked and phased. Grounded in the architecture's defining property.
 
@@ -50,7 +58,7 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
   L1; L4 (shared fold) is subsumed (one fold per engine); L5 (fabric trim) was already spent. The
   **only remaining lever is the cross-module 3-way hoist** (mla+router+swiglu → one engine) — invasive
   (PE_N=8 + top-level ports + arbiter), **deferred to after E1** so the LUT payoff can justify the risk.
-- **Phase D — validate & tape-target.** E1 measure the real LUT/DSP/BSRAM on the vendor flow
+- **Phase D — validate & FPGA-fit.** E1 measure the real LUT/DSP/BSRAM on the vendor flow
   (Gowin EDA / nextpnr) to confirm the fit on the target FPGA (e.g. GW5AT-138), and E2 pin the
   exact serialization budget. **This is where the estimates become numbers.**
 - **Out of scope / caution.** L6 (bit-serial — overshoots the budget), L7 (precision trade — not

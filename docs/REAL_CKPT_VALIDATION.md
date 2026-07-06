@@ -233,3 +233,18 @@ MoE seam (`N=4`) argmax-identical + top-8 preserved, DSA threaded, real 256-expe
 (**A−→A-ish, much firmer**). Remaining to full A: deeper depth (`N` up the 78-layer stack) and
 ultimately the full 753 B run (multi-GPU) — the DSA-plumbing **and** fused-expert blockers are both
 **retired**.
+
+### Real-weight multi-seq batching cross-check (A2 on the real checkpoint) — wired into `mode=model`
+
+The same `modal_partial_f1.py --mode model` run also cross-checks the **multi-sequence batching**
+claim (the RTL's `PER_ROW_SEQ` / `glm_fp8_soc_ms` hardware path) on the REAL checkpoint. It tokenizes
+**two different real prompts** (default `"The capital of France is"` and `"Water boils at a temperature
+of about"`), runs them (a) **BATCHED** as a `[2, L]` batch and (b) **SEPARATELY** as two `[1, L]`
+forwards through the SAME real-weight truncated `GlmMoeDsa` model, then compares **each row's
+next-token argmax and `max_abs`** batched-vs-separate (equal length ⇒ no padding ⇒ clean). This
+validates that batching B sequences is **per-row consistent on the real model's actual computation** —
+real MoE routing (different experts per prompt), real DSA index, real fp8 weights — i.e. the A2
+batching win the RTL proves on the synthetic slice holds on the trained checkpoint, not just the toy
+config. (The RTL-side per-row bit-exactness is separately pinned by `glm_model_fp8_multiseq_tb` /
+`glm_model_fp8_multiseq4_tb` and the `glm_fp8_soc_ms` tops.) The **full 753 B end-to-end** run (P1.1)
+still needs a multi-GPU host and is out of scope here.

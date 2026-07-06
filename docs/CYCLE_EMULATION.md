@@ -13,10 +13,11 @@ it validates the *mechanism and scaling* the roofline rests on.
 ## Harness
 
 - `test/glm_fp8_system_perf_tb.v` — the functional system TB (`token == standalone glm_model_fp8`,
-  X-aware) extended with three overridable params (`FLASH_LAT_CFG`, `DDR_NCH_CFG`,
-  `CACHE_SLOTS_CFG`, wired into both the DUT and the TB Flash-PHY responder), a free-running cycle
-  counter (`cyc_per_tok` = start → `tok_valid`), and a machine-readable `PERF …` line reading the
-  DUT's exposed counters `ec_demand_stall_cycles` / `ec_hit_count` / `ec_miss_count`.
+  X-aware) extended with overridable params (`FLASH_LAT_CFG`, `DDR_NCH_CFG`, `CACHE_SLOTS_CFG`,
+  plus `L_CFG` / `N_EXPERT_CFG` to size a larger cache-thrashing config and `EXPERT_STALL_CFG` —
+  see §Faithful integration —, wired into both the DUT and the TB Flash-PHY responder), a
+  free-running cycle counter (`cyc_per_tok` = start → `tok_valid`), and a machine-readable `PERF …`
+  line reading the DUT's exposed counters `ec_demand_stall_cycles` / `ec_hit_count` / `ec_miss_count`.
 - `tools/perf_sweep.sh` — compiles once per config via `iverilog -P glm_fp8_system_perf_tb.<P>=<v>`,
   runs, and tabulates.
 
@@ -119,7 +120,8 @@ absolute magnitude — see the extrapolation for how it maps to the real regime.
 ## Reproduce
 
 ```sh
-bash tools/perf_sweep.sh      # FLASH_LAT / DDR_NCH / CACHE_SLOTS sweep -> the table above
+bash tools/perf_sweep.sh             # faithful (EXPERT_STALL=1) SLICE + SCALE(thrashing cache) + decoupled BASELINE
+SWEEP=full bash tools/perf_sweep.sh  # additionally sweeps DDR_NCH and CACHE_SLOTS
 # single point:
 iverilog -g2012 -I src -P glm_fp8_system_perf_tb.FLASH_LAT_CFG=1024 \
     -o build/perf test/glm_fp8_system_perf_tb.v <glm_fp8_system_sim source list from the Makefile>

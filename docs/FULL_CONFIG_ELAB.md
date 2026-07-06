@@ -148,6 +148,11 @@ bug. yosys hierarchy is therefore not a usable elaboration path for this hierarc
 
 ## 5. The one real finding — S_MAX ≪ TOPK_ATTN width-lint family (benign, tied to B7)
 
+> **RESOLVED — SELRANGE now 0.** The width-lint family below is the finding *as originally
+> discovered* (SWIN sized by TOPK_ATTN); it has since been **cleared** by the
+> `SWIN = min(S_MAX, TOPK)` clamp — see the §4 UPDATE and the two `fix(lint)` commits. The
+> mechanism is retained here as the rationale for that fix.
+
 The DSA union scratch in `mla_attn_fp8` is sized by `SWIN = TOPK` (the module's TOPK is
 `TOPK_ATTN`, wired at `glm_decoder_block_fp8.v:304` `.TOPK(TOPK_ATTN)`), so at full config
 `SWIN = 2048` → `SWINW = $clog2(2048) = 11`. But the per-row union index `ksel` is
@@ -167,10 +172,11 @@ MODEL_DIM/heads/experts multiply the flagged index expressions).
 holds values 0..S_MAX-1 (fits in 4 bits) and the extra slice bits read as 0. But it **is** a
 genuine, documentable width inconsistency, surfaced *only* because we set S_MAX=8 while the
 real DSA budget TOPK_ATTN=2048 sizes SWIN. It is a direct manifestation of the flagged
-**B7 caveat** (decouple the attention window from S_MAX). A real full-config integration
-would resolve it by raising S_MAX to the DSA window or making SWIN independent of TOPK_ATTN
-(B7); as a small cleanup, `ksel` / the union-slot registers could be sized by
-`min(S_MAX, TOPK_ATTN)` so the slice widths agree.
+**B7 caveat** (decouple the attention window from S_MAX). **This has since been done:**
+`mla_attn_fp8` now sizes its scratch window and union-slot indices by `SWIN = min(S_MAX, TOPK)`
+(`src/mla_attn_fp8.v:121`), so the slice widths agree and **SELRANGE is now 0** (byte-identical).
+A fuller integration could alternatively raise S_MAX to the DSA window or make SWIN independent
+of TOPK_ATTN (B7).
 
 The remaining warnings are config-independent (present identically at slice):
 `WIDTHTRUNC`×6 (the `VSTORE_RAM` integer mode-flag used as a 1-bit condition) and
@@ -187,7 +193,7 @@ every module passes structurally; iverilog independently passes each at every re
 |---|---|---|
 | `glm_model_fp8` (top) | **PASS** | true VOCAB=154880 LM-head/argmax/logits threads; wide reset fills only |
 | `glm_decoder_block_fp8` | **PASS** | dense/MoE mode mux clean; INTER_DENSE≥INTER_MOE holds (no neg. replication) |
-| `mla_attn_fp8` | **PASS** (with §5 lints) | true 64-head / NOPE192 / ROPE64 / V256 / KVL512 geometry threads; carries the benign S_MAX≪TOPK_ATTN width-lints |
+| `mla_attn_fp8` | **PASS** | true 64-head / NOPE192 / ROPE64 / V256 / KVL512 geometry threads; the §5 S_MAX≪TOPK_ATTN width-lints are now cleared (`SWIN=min(S_MAX,TOPK)`, SELRANGE=0) |
 | `moe_router_fp8` | **PASS** | 256-expert router + topk_select clean |
 | `swiglu_expert_fp8` | **PASS** | INTER_MOE=2048 / INTER_DENSE=12288 gate/up/down clean |
 | `glm_matmul_fp8` | **PASS** | ragged [128,128] block-scale K threads at real dims (also `glm_matmul_fp8_tb` TEST 6) |
@@ -199,7 +205,8 @@ Q_LORA=2048, …) by verilator, and per-dimension by iverilog. Two **tool** limi
 RTL bugs, were characterized (iverilog's MODEL_DIM=6144 unroll wall; yosys-0.66 `-sv`-loss
 on derived modules). The single genuine RTL observation is the **benign S_MAX≪TOPK_ATTN
 width-lint family** in `mla_attn_fp8`, a documented consequence of the flagged S_MAX choice
-(B7) — functionally harmless, worth a small width-clamp cleanup.
+(B7) — functionally harmless, and since **cleared by a small width-clamp cleanup**
+(`SWIN=min(S_MAX,TOPK)`; SELRANGE now 0).
 
 ## 7. What is explicitly OUT of scope
 

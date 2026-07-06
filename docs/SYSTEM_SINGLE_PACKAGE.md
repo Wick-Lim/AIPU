@@ -21,6 +21,14 @@
 > RTL results. The compute datapath this wraps is the verified RTL in this repo (see
 > [`ACCEL_GLM52.md`](ACCEL_GLM52.md) and the `*_fp8` units); the memory/streaming system here
 > is **designed, not built**.
+>
+> **Compute die → FPGA card (current roadmap).** The committed product realizes this "compute
+> die" on a **data-center-class FPGA** (FPGA + on-board DDR5 + NVMe/Flash on one card), **not a
+> custom ASIC** — because the workload is Flash-bandwidth-bound the die already sits ~75–80% idle
+> behind Flash, so an ASIC's compute-density edge is largely wasted against multi-million NRE (see
+> [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2). The single-package memory-hierarchy analysis
+> below is agnostic to that choice — read "the die" as "the FPGA fabric"; a custom ASIC is only
+> revisited if volume/power economics ever justify it.
 
 ---
 
@@ -297,11 +305,18 @@ Flash-bound.
   union: `T_ESCAN` scan + `any_has` skip), the batch-axis footprint-reduction lever (ULTRA_PERF #1).
 - A small-scale DMA append/gather streaming datapath (`tpu_soc`/`axi_master_dma`/
   `scatter_gather`/`cdc_async_fifo`) exercising the control logic.
+- The **MoE expert-cache controller** in RTL — `expert_cache_ctrl` (tag/LRU; hit/miss bit-exact
+  vs a python LRU model) and the prefetching **`expert_cache_pf`** (prefetch-hint port +
+  demand-priority background Flash fetch + a `demand_stall_cycles` counter). The DDR5/Flash it
+  caches from is still a model/stub.
+- The **KV-cache pager** `kv_cache_pager` (append + DSA-gather window, `NSEQ` independent ring
+  windows, optional SECDED-ECC); its backing memory is still a model/stub. A batched
+  multi-sequence SoC top (`glm_fp8_soc` / `glm_fp8_soc_ms`) wires the model + pager + expert
+  cache + a host prefill/decode FSM together.
 
 **What this design adds (not built — the system layer):**
-- DDR5 + Flash controllers / PHYs (+ a USB-C device controller for the host link).
-- The **MoE expert-cache controller** (tag/LRU, miss → Flash DMA → refill/evict, prefetch).
-- The KV-cache pager (append + DSA-gather of the 2048-row window; overflow to Flash).
+- DDR5 + Flash **PHYs** and USB-C device controller (the licensed vendor IP + real backing store,
+  vs the stubbed `ddr5_xbar`/`flash_xbar` crossbars and cache/pager models above).
 - The runtime/scheduler (batching, prefetch, speculative-decode loop) — largely software.
 
 ## 13. Open questions / honest limits

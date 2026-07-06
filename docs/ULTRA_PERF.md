@@ -19,11 +19,11 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind F
 
 | # | Opportunity | Mechanism (1-line) | Quantified impact **[EST]** | Where | Effort | Ceiling? |
 |---|-------------|--------------------|------------------------------|-------|--------|----------|
-| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **INTEGRATED in `glm_decoder_block_fp8`** | Fetch the per-layer expert *union* once from Flash, reuse across B token-rows (the PE_M>1 grouped MoE now scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; union-fetch realized (multi-distinct-token dispatcher + paged KV remain) | rtl-here | high | ✅ |
+| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **INTEGRATED in `glm_decoder_block_fp8`** | Fetch the per-layer expert *union* once from Flash, reuse across B token-rows (the PE_M>1 grouped MoE now scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; union-fetch + multi-seq batched top (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) + paged KV realized at small B (datacenter B≈256 scheduler remains) | rtl-here | high | ✅ |
 | 2 | **PE_M batch-widening of FP8 wrappers** — ✅ **DONE (4/4), verified** | **All four** FP8 wrappers (swiglu/router/mla/**mtp**) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Verified bit-exact in the regression: **swiglu 513, router 192, mla 6, mtp 44** (+ mla `ppos`/`pslen`/`sparse-perrow`); the weight-share check confirms *"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"* — e.g. mtp `{cn/pw/gn/aw/kc/fw/lw}` beats identical at PE_M=3 (0 extra weight BW) | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW | **rtl-here** | **✅ done** | (enabler) |
-| 3 | **Stronger weight decompressor (context-rANS)** | Spend idle die on context-modeled rANS in Flash→DDR5 refill path | 1.34×→**1.5–1.7×** fewer Flash bytes → ~16→18–20 tok/s, ~3.8→3.0 J/tok | **rtl-here** | high | ✅ |
+| 3 | **Stronger weight decompressor (context-modeled)** — ✅ **BUILT (`weight_decomp2`), measured ~1.4–1.5×** | Spend idle die on an order-1 context-modeled Huffman decoder in the Flash→DDR5 refill path | 1.34×→**~1.4–1.5×** (measured, `weight_decomp2(ctx)`) fewer Flash bytes → ~16→~18 tok/s, ~3.8→~3.4 J/tok | **rtl-here** | **✅ done** | ✅ |
 | 4 | **Resident dense draft model → high-K spec decode** | ~1–3B DDR5-resident draft proposes K=4–8; target verifies in one pass | K_eff 1.7→**3–5** → ~2–3× single-user, **bit-exact** | rtl-here* | high | ✅ |
-| 5 | **Batched single-pass verification** | Make the main forward process {base + D draft} positions *together* | The gate for ANY spec Flash gain (today's ÷K on Flash = **0**) | **rtl-here** | high | ✅ |
+| 5 | **Batched single-pass verification** — ✅ **BUILT (`spec_batched_top`/`spec_chain_top`), verified** | Forward {base + D draft} positions *together* as a PE_M=K+1 batch in ONE weight-load (spec Flash ÷(K+1)) | The gate for spec Flash gain, now **realized**; spec==greedy (bit-exact). Remaining lift is draft α (#4) | **rtl-here** | **✅ done** | ✅ |
 | 6 | **Contextual activation sparsity in SwiGLU** | Low-rank predictor → fetch only active W_up cols / W_down rows | ~1.5–3× fewer routed bytes (22→8–14 GB); **NOT bit-exact** | **rtl-here** | high | ✅ |
 | 7 | **Dynamic top-k expert pruning (k_eff<8)** | Threshold-mask tiny renormalized gates in the router FSM | ~1.3–1.6× fewer routed bytes; cheapest big lever; **NOT bit-exact** | **rtl-here** | low | ✅ |
 | 8 | **Exact router-driven prefetch + K-token union** | Run cheap router GEMV for K spec tokens → exact union prefetch | Demand-stall 81%→~99% + ~1.5–2× byte-dedup; **bit-exact** | **rtl-here** | med | ✅ |
@@ -33,7 +33,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind F
 | 12 | **MLA weight absorption (attend in 512-dim latent)** | Fold W_uk into q, W_uv into W_o; drop per-key up-projection | Removes ~3.2e5 per-key GEMMs/tok; **bit-exact** (matmul reassoc) | **rtl-here** | high | ✅ |
 | 13 | **Near-Flash / computational-storage expert compute** | Move FP8 MACs to NAND; stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling. **No J/tok win** | out-of-scope | high | ✅ |
 | 14 | **Batch × MTP multiply** | Run all B streams' MTP drafts in the same grouped pass | ~1.7× *on top of* batch → ~60–85 tok/s aggregate @B≈256 | **rtl-here** | low | (compose) |
-| 15 | **Paged multi-sequence KV cache** | vLLM-style block table for B independent contexts | Enabler: without it B>1 *distinct users* impossible | **rtl-here** | high | (enabler) |
+| 15 | **Paged multi-sequence KV cache** — ✅ **BUILT (`kv_cache_pager` NSEQ windows + `glm_fp8_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler now **realized**: B>1 *distinct users* decode in one forward, per-row bit-exact (proven B=2/4) | **rtl-here** | **✅ done** | (enabler) |
 
 \* #4 RTL substrate (g_kn verifier) exists; the draft *weights* are a training task.
 
@@ -52,16 +52,19 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
 - **Aggregate batching (#1/#2/#3-knee)** — the datacenter regime. Reframes batching from the doc's "~1.5×"
   (a B=32, LRU-hit-rate artifact) to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch
   half is now integrated + verified in `glm_decoder_block_fp8`** (PE_M>1 fetches only the selected-expert
-  union). New knee at **B≈256**
+  union), and a real **multi-sequence batched top** (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) now decodes B distinct
+  users in one forward with paged per-seq KV — proven per-row bit-exact at B=2/4. New knee at **B≈256**
   (all 256 experts active: `E[distinct]=256·(1−0.96875^B)`), new ceiling = the compute roofline
   **~50 tok/s aggregate @100 GB/s Flash**, reached near B≈355. Per-user latency floors at ~0.14 tok/s → an
   **offline/throughput product, not chat**.
-- **Stronger weight decomp (#3)** — only thing that uses the 75%-idle die to cut the *actual* wall.
-  1.34→1.5–1.7× is a direct multiplier on **both** single-user tok/s **and** J/token (Flash bytes ≈ 80% of
+- **Stronger weight decomp (#3)** — only thing that uses the 75%-idle die to cut the *actual* wall. **Now
+  built** (`weight_decomp2`, order-1 context-modeled Huffman, measured ~1.4–1.5× lossless): 1.34→~1.5× is a
+  direct multiplier on **both** single-user tok/s **and** J/token (Flash bytes ≈ 80% of
   per-token energy). **rtl-here**, faithful, stacks multiplicatively.
-- **Higher speculative K (#4 + #5 + #8)** — the faithful single-user lever. Today the ÷K on Flash is **0**
-  (glm_model_fp8 is strictly one-position; the g_kn counter is harness-fed). #5 batched-verify is the *gate*;
-  #4 a resident dense draft raises α (K_eff 1.7→3–5); #8 exact-router-union dedups the K-token expert set.
+- **Higher speculative K (#4 + #5 + #8)** — the faithful single-user lever. #5 batched-verify is now **BUILT**
+  (`spec_batched_top`/`spec_chain_top`: PE_M=K+1 verify in one weight-load → Flash ÷(K+1), spec==greedy) — the
+  self-draft MTP chain reaches K_eff ~1.7–2.2; #4 a resident dense draft (needs trained weights) would raise α
+  (K_eff → 3–5); #8 exact-router-union dedups the K-token expert set.
   **All bit-exact** (target verifies every token). Honest cap: the MoE union penalty (#22 below) keeps
   K_eff_flash well below the dense-model ×K.
 - **Activation sparsity (#6) + dynamic top-k (#7)** — shrink `footprint` directly (~1.5–3× and ~1.3–1.6×).
@@ -124,21 +127,28 @@ The only thing that needs to be *invented*; the math die is ready.
    `glm_decoder_block_fp8_union_tb` ALL 4 (*"PE_M=2 evaluated 3 experts == distinct-selected, skipped 5 of 8,
    bit-exact"*), `glm_model_fp8_pem` ALL 3, decoder TB ALL 9. Effect: up to **~32×** fewer Flash expert
    fetches at small batch (real 256-expert config), realizing this lever's aggregate footprint reduction
-   **in the model**; ~no benefit at B≈256 (union≈all). What still needs inventing is the *multi-distinct-token*
-   scatter/gather dispatcher (a)/(c) across B independent tokens and the paged KV (#15) below.
-3. **Paged KV (#15).** Extend kv_cache_pager from single-ring to a block table `(seq_id, logical_pos)→page`
-   + per-seq append_count + shared pool + per-seq DSA gather. MLA latent KV ~1 KB/tok/layer → B=256 at few-K
-   ctx fits the DDR5 freed by the shrunken (one-layer-union) expert cache.
+   **in the model**; ~no benefit at B≈256 (union≈all). The *multi-distinct-token* path is now proven at small
+   batch — `glm_fp8_soc_ms` decodes B DIFFERENT sequences in one forward (`PER_ROW_SEQ`, per-row bit-exact,
+   B=2/4) with the union fetched once (`batched_moe` full B-coverage, `make bcov`, B∈{1,2,3,5,8}), and the
+   paged KV (#15) below is built. What still needs inventing is scaling the dispatcher/scheduler (a)/(c) to
+   the datacenter B≈256 regime.
+3. **Paged KV (#15) — ✅ substrate BUILT.** `kv_cache_pager` now carries `NSEQ` independent ring windows
+   (per-seq counter/window/eviction) and `glm_fp8_soc_ms` OWNS a real per-(layer,seq) KV store (`kv_mem`) the
+   multi-seq model reads combinationally; `PER_ROW_SEQ`/`kc_seq` route each row to its own sequence's window.
+   MLA latent KV ~1 KB/tok/layer → B=256 at few-K ctx fits the DDR5 freed by the shrunken (one-layer-union)
+   expert cache. Remaining: scale the window count to datacenter B and a vLLM-style shared-pool block table.
 
 **Payoff [EST]:** per-token routed footprint `75·256·(1−0.96875^B)·37MB/B` → B=256 ≈ 2.8 GB/tok (7.9×) →
 ~36 tok/s aggregate @100 GB/s; ~50 tok/s compute-roofline cap near B≈355; ×1.7 more with MTP (#14).
 
 ### Build B — Faithful high-K speculation (#5+#4+#8) — the single-user ceiling
-1. **Batched verify (#5).** Restructure glm_model_fp8 / spec_decode_top to forward {base + D draft} positions
-   in one main pass; per-layer expert streaming serves all; commit the accepted prefix (g_kn already computes
-   longest-accepted = greedy = bit-exact).
-2. **Resident dense draft (#4).** Hold a ~1–3B DDR5-resident draft (attention + shared expert + heads only →
-   **zero Flash**) proposing K=4–8; or Medusa heads (no chain decay). Output stays bit-exact (target verifies).
+1. **Batched verify (#5) — ✅ BUILT.** `spec_batched_top` / `spec_chain_top` forward {base + D draft} positions
+   as a PE_M=K+1 batch through ONE glm_model_fp8 weight-load; per-layer expert streaming serves all rows;
+   `spec_decode_seq` commits the accepted prefix (longest-accepted = greedy = bit-exact). spec==greedy verified.
+2. **Resident dense draft (#4) — still PENDING (needs trained weights).** The self-draft path exists today
+   (`spec_chain_top` chains the MTP head, K_eff ~1.7–2.2); a ~1–3B DDR5-resident draft (attention + shared
+   expert + heads only → **zero Flash**) proposing K=4–8, or Medusa heads (no chain decay), would raise α to
+   K_eff 3–5. Output stays bit-exact (target verifies).
 3. **Exact union prefetch (#8).** Run the cheap router GEMV for all K spec tokens during draft compute →
    exact top-8 union → prefetch before needed. Hides Flash latency (81%→~99%) and dedups the K-token set.
 4. **Geometry rule (#22):** on a Flash-bound MoE, prefer **deep-narrow chains** over wide trees — each branch
@@ -155,7 +165,7 @@ The only thing that needs to be *invented*; the math die is ready.
 | **Aggregate-serving** | datacenter batch, offline | Flash union then compute roofline | ~6 (B=1) → **~36–50** (×1.7 MTP → 60–85) | batched MoE #1, PE_M #2, paged KV #15, B≈256 knee, scheduler |
 | **Compute-bound** | hypothetical full-resident HBM | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-Flash #13 or HBM); array-scale for prefill |
 
-**Reading it.** Single-user stacking the faithful RTL levers (flash_xbar N× + decomp 1.34→~1.6× +
+**Reading it.** Single-user stacking the faithful RTL levers (flash_xbar N× + decomp 1.34→~1.5× +
 activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~25–40 tok/s @100 GB/s**, approaching the
 ~50 tok/s compute ceiling — at which point the answer is a bigger/cheaper compute die (compute is **not** the
 BOM cost). Aggregate batching reaches the **same** ~50 tok/s ceiling but as throughput (per-user latency

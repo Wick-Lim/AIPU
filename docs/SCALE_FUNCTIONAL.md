@@ -31,6 +31,21 @@ TOPK=4, H_HEADS=8** — 2×+ the committed slice on every axis — **ALL 3 PASSE
 0.0068, 77 s). The whole embed → 8 FP8 layers → norm → LM head → argmax pass composes
 correctly at larger scale.
 
+**Batched multi-sequence + decode loop:** the full `glm_model_fp8` also composes correctly on
+the *batch / sequence* axis. With `PER_ROW_SEQ=1` each `PE_M` row is a **different** sequence
+attending its own KV window, while the query-side weight/projection fetch is **shared** across
+sequences (the batching bandwidth win) — `glm_model_fp8_multiseq_tb` (2 seqs) and
+`glm_model_fp8_multiseq4_tb` (B=4) prove per-row argmax/logits **BIT-EXACT** vs the per-seq
+`PE_M=1` goldens across dense + sparse cases (~41% / ~52% fewer attn-weight beats than B
+separate runs), byte-identical at `PER_ROW_SEQ=0`. A batched multi-seq top `glm_fp8_soc_ms`
+wraps this with a real `NSEQ`-window `kv_cache_pager`, `expert_cache_pf`, and a REAL per-layer
+KV store (`kv_mem`); its **multi-step continuous-batching decode loop** (`N_STEPS>1`,
+`glm_fp8_soc_ms_loop_tb`) decodes N tokens/seq in one start — argmax fed back, extent/pos grown,
+each decode token's KV written to `kv_mem` and attended — with each row's step-k token
+**BIT-EXACT** vs a standalone `PE_M=1` model decoding that sequence alone N steps (`N_STEPS=1`
+byte-identical). These run at a small faithful slice (batch-axis correctness), not the real
+operator dims of the table above.
+
 ## The `mla_attn_fp8` fix — a TB-golden/stimulus bug, not an RTL bug
 
 At real MLA dims every weight projection has K > 128 (so NB > 1 [128]-K-blocks), but the
@@ -51,7 +66,8 @@ Scale confidence now rests on three legs, all satisfied:
 2. **Operator-functional at REAL dims** — all 4 FP8 operators bit-exact to their fp64 goldens
    at real magnitudes (GEMM K=6144, router 256/8, MLA real head/LoRA, SwiGLU real INTER_MOE).
 3. **Full-forward-pass functional** — proven at the committed slice AND at an intermediate
-   size 2×+ the slice on every axis (this doc).
+   size 2×+ the slice on every axis, and across multiple batched sequences + a multi-step
+   decode loop (per-row bit-exact vs per-seq `PE_M=1`) (this doc).
 
 Honestly capped: MODEL_DIM held at ≤256 (real 6144) and SwiGLU INTER_DENSE=12288 full run did
 not complete under verilator (per-cycle cost grows with the widest dim → a single operator run

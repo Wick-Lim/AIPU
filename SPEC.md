@@ -124,8 +124,8 @@ Latencies (deterministic, `localparam`-derived; cycle counts are the committed R
 | DMA(len=L) | L (+2) | one DMEM word/cycle |
 | GEMM 4×4 | `2*GEMM_N - 1 + GEMM_N` = 11 | systolic fill+drain (see §5.1) |
 | CONV2D 8×8∗3×3 | `(CONV_H+CONV_K) + CONV_OH*CONV_OW + 1` = **48** | 11-cycle TM load stream (8 image rows + 3 kernel rows) + 36 compute (one output pixel/cycle, MAC over the 3×3 window) + 1 done |
-| SOFTMAX len=8 | **23** | start→done, inclusive of the start edge.  FSM stages `S_RD0, S_RD1, S_MAX, S_EXP(×8), S_RECIP, S_NORM(×8), S_WR1, S_DONE` (the `softmax_unit.v` header counts 22 exclusive of the start edge; the unit TB measures 23 inclusive — both describe the same waveform) |
-| ATTENTION seq=4 | **123** | `SETUP(13) + SEQ_LEN*PER_ROW(4*27) + TAIL(2)` = 13 + 108 + 2 = 123.  The unit serially reuses the len-8 `softmax_unit` once per row (four invocations), so the cost is dominated by four serial softmaxes, not a single fused length-4 softmax |
+| SOFTMAX len=8 | **71** | start→done, inclusive of the start edge.  FSM stages `S_RD(×2), S_MAX, S_EXP(×8), S_RECIP, S_DIV(×48), S_NORM(×8), S_WR1, S_DONE` — the reciprocal `1/Σ` is now a multi-cycle radix-2 restoring sequential divide (`DIV_CYCLES=48`, a PPA critical-path fix) rather than the former single-cycle combinational divide; probabilities/argmax/sat are bit-identical, only the cycle count grew.  Closed form `LAT = 53 + NLINES + 2*LEN = 71` at LEN=8/NLINES=2 (the unit TB measures 71 inclusive of the start edge; was 23) |
+| ATTENTION seq=4 | **279** | `SETUP(13) + SEQ_LEN*PER_ROW(4*66) + TAIL(2)` = 13 + 264 + 2 = 279.  The unit serially reuses the len-SEQ (=4) `softmax_unit` once per row (four invocations, no padding), so the cost is dominated by four serial softmaxes — each now carrying the pipelined `DIV_CYCLES=48` reciprocal divide — not a single fused length-4 softmax |
 
 All are bounded constants, so the system TB has fully predictable timing.  Each latency is asserted bit-exactly by the unit's TB (`conv2d_unit_tb.v`, `softmax_unit_tb.v`, `attention_unit_tb.v`).
 
@@ -177,10 +177,10 @@ Each unit: synchronous reset on all state; `start`/`busy`/`done` handshake; read
 - **Algorithm:** true softmax `p_i = exp(x_i - max)/Σexp(x_j - max)`.
   1. Pass 1: find `max` over 8 logits (numerical stability).
   2. Pass 2: `e_i = EXP(x_i - max)` computed as a **64-entry `exp(-k·0.25)` LUT** (`Q15.16` outputs; the argument `x_i-max ≤ 0` is split into an integer multiple of `0.25` selecting a LUT entry, times a **divide-free degree-4 Maclaurin polynomial** correcting the sub-quantum residual `exp(-r)`) — NOT linear interpolation between entries. LUT entries `k ≥ 48` (i.e. `exp(≤ -12)`) are 0. Accumulate `Σ e_i` in 48-bit.
-  3. Reciprocal `1/Σ` via an **exact rounded integer hardware divide** `recip = (2^46 + (S>>1)) / S` in `Q1.30` — NOT Newton-Raphson and NOT a reciprocal LUT.
+  3. Reciprocal `1/Σ` via an **exact rounded integer hardware divide** `recip = (2^46 + (S>>1)) / S` in `Q1.30`, implemented as a multi-cycle radix-2 restoring sequential divider (`DIV_CYCLES=48`, one quotient bit/cycle — bit-identical to the former single-cycle combinational divide but off the critical path) — NOT Newton-Raphson and NOT a reciprocal LUT.
   4. Pass 3: `p_i = e_i * recip`, round to `Q0.16`, write 2 `TM` lines.
 - **Interface:** `start, x_base[4:0], p_base[4:0] → busy, done, sat, argmax[2:0]`. `argmax` is a **3-bit** index (0..7) of the largest logit.
-- **Sizes:** 64-entry exp LUT (`Q15.16`, top 16 entries zero), one 48-bit accumulator, one `Q1.30` exact-divide reciprocal. Latency = 23 (see §3.3).
+- **Sizes:** 64-entry exp LUT (`Q15.16`, top 16 entries zero), one 48-bit accumulator, one `Q1.30` exact-divide reciprocal (multi-cycle sequential). Latency = 71 (see §3.3).
 - **Keep/rebuild:** REBUILD (v1.5 was linear normalization, not exponential).
 - **Unit test:** independent golden = `real` `exp()` from the C math library via `$exp`/`real` in the TB (iverilog supports `real` `$exp`-like via `$ln`/`$pow`; use `exp(x)=$pow(2.71828…,x)` or a TB `real` exp helper), normalized in `real`, compared against the DUT to a tolerance (±1–2 LSB of `Q0.16`) to account for LUT interpolation error. Directed (all-equal → uniform 1/8, one-hot → ≈1.0, large spread → saturation behavior) + random logits. The reference uses true floating exp; the DUT uses a LUT — the tolerance bounds the documented approximation error and the two share no code.
 
@@ -191,7 +191,7 @@ Each unit: synchronous reset on all state; `start`/`busy`/`done` handshake; read
   2. Row-wise softmax (reuse `softmax_unit` over each length-4 row) → attention weights `W` 4×4 in `Q0.16`.
   3. Context `O[i][d] = Σ_j W[i][j]*V[j][d]` in 48-bit, round+saturate to `Q7.8` → `O` 4×4, write 4 `TM` lines.
 - **Interface:** `start, q_base, k_base, v_base, o_base (each [4:0]) → busy, done, sat`.
-- **Sizes:** reuses GEMM-style MAC for Q·Kᵀ and W·V; reuses `softmax_unit` (invoked once per row → four serial len-8 softmaxes). Latency = 123 = `SETUP(13) + SEQ_LEN*PER_ROW(4*27) + TAIL(2)` (see §3.3).
+- **Sizes:** reuses GEMM-style MAC for Q·Kᵀ and W·V; reuses `softmax_unit` (invoked once per row → four serial len-SEQ=4 softmaxes, run over exactly the SEQ real logits with no padding). Latency = 279 = `SETUP(13) + SEQ_LEN*PER_ROW(4*66) + TAIL(2)` (see §3.3).
 - **Keep/rebuild:** REBUILD. This is the unit that carried the v1.5 truncation bug; v2.0 has explicit 48-bit scores, an explicit documented `>>1` scale, and a full softmax — the bug class is structurally eliminated.
 - **Unit test:** independent golden = full `real` attention in the TB (real matmul, real softmax via real exp, real matmul), quantized at the end; compare all 16 context elements to ±tolerance. Directed (V·identity-weights, one dominant key → that value passes through) + random Q/K/V. Reference is pure `real`; DUT is fixed-point + LUT — independent.
 
@@ -274,7 +274,7 @@ of two.
 | `gemm_systolic.v` | `N` | `GEMM_N` = 4 | `2 ≤ N ≤ LINE_LANES` (= 4) | upper: one row = one TM line of 4 lanes; lower: keep `$clog2(N) ≥ 1` |
 | `conv2d_unit.v` | `IMG_H`, `IMG_W`, `K` | 8, 8, 3 | `IMG_W ≤ 8`, `K ≤ 8`, `K ≤ IMG_H` and `K ≤ IMG_W` | one image/kernel row packs dense-16 into one 128-bit line (8 cols); valid output dims ≥ 1 |
 | `softmax_unit.v` | `LEN` | `SM_LEN` = 8 | `2 ≤ LEN ≤ 8·LINE_LANES` (= 32) | 1-D reduction over `ceil(LEN/4)` lines; lower: len-1 is degenerate |
-| `attention_unit.v` | `SEQ`, `D` | 4, 4 | `D ≤ LINE_LANES` (= 4), `SEQ ≤ SM_LEN` (= 8), `SEQ,D ≥ 1` | one Q/K/V/O row = one TM line (4 lanes); a score row runs through the softmax submodule padded to `SM_PAD = max(SEQ, SM_LEN)` |
+| `attention_unit.v` | `SEQ`, `D` | 4, 4 | `D ≤ LINE_LANES` (= 4), `SEQ ≤ SM_LEN` (= 8), `SEQ,D ≥ 1` | one Q/K/V/O row = one TM line (4 lanes); a score row runs through the softmax submodule instantiated at `LEN = SEQ` (no padding — the former pad-collision corner is resolved) |
 
 **The architectural bound.** All upper bounds trace to **`LINE_LANES = 4`** (§1.2):
 the architecture packs one matrix/feature/Q-K-V row into **one 128-bit TM line of 4

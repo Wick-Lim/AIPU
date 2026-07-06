@@ -199,6 +199,9 @@ free disk, `pip install transformers accelerate safetensors torch` (and optional
      ops in plain bf16), wiring the layers per `docs/ACCEL_GLM52.md` /
      `src/glm_model_fp8.v`’s structure, to produce last-position logits
      `rtl_logits`. This is bit-exact to the RTL by construction (Section A).
+     (`tools/glm_fp8_contract.py` is a vectorized torch/numpy companion — bit-exact
+     to `glm_fp8_ref` but GPU-scale-fast, wired as the `glm_fp8_contract` make target;
+     use it as the software model at full config when the scalar reference is too slow.)
    - **RTL-in-sim (scaled):** load `weight_mem.hex` into a `glm_model_fp8`
      elaboration sized to the real dims and capture the logit vector from the
      `mtp_head`/`lm_head` tap.

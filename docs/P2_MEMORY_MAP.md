@@ -27,7 +27,7 @@ the table as a target (it *is* the mechanism):
 
 - `src/ecc_secded.v` — parameterized extended-Hamming SECDED codec, `DATA_W`
   default **64** → `CODE_W = DATA_W + P + 1` (for 64b: 64+7+1 = **72**).
-- `src/ecc_mem_wrap.v:125` `mem [0:DEPTH-1]` — a `DATA_W×DEPTH` RAM that stores
+- `src/ecc_mem_wrap.v:149` `mem [0:DEPTH-1]` — a `DATA_W×DEPTH` RAM that stores
   the **codeword** (never raw payload), correcting SBUs / detecting DBUs on read.
   This is the drop-in wrapper C6 instantiates in front of every SECDED-class array.
 
@@ -44,7 +44,7 @@ greps appears here or in the §5 exclusion list.
 
 | Module | Array (signal) | Width × Depth | Holds | Class | Rationale |
 |--------|----------------|---------------|-------|-------|-----------|
-| kv_cache_pager.v:109 | `ring [0:RESIDENT-1]` | `ROW_BITS`(768) × `RESIDENT`(32) | Resident-window **latent KV rows** `[c_kv \| k_rope]` (opaque bf16 vectors) | **SECDED** | This *is* model KV. A flip returns a corrupt latent to `mla_attn_fp8`'s `kc_*` read → wrong attention, silently. **ECC lane note below.** |
+| kv_cache_pager.v:172 | `ring [0:NSEQ*RESIDENT-1]` | `RING_W`(=`ROW_BITS` 768, unenc.) × `NSEQ·RESIDENT`(32/seq) | Resident-window **latent KV rows** `[c_kv \| k_rope]` (opaque bf16 vectors), now **NSEQ independent per-sequence windows** | **SECDED** | This *is* model KV. A flip returns a corrupt latent to `mla_attn_fp8`'s `kc_*` read → wrong attention, silently. **Now has a built-in `ECC` param** (`ECC!=0` → `ring` stores lane-partitioned SECDED codewords `RING_W = NLANES·CODE_W`, `ecc_secded #(64)` per lane, sticky `ecc_serr`/`ecc_derr`; `kv_cache_pager_ecc_tb`). **ECC lane note below.** |
 | weight_decomp.v:123 | `count_table [0:MAXLEN]` | `COUNTW` × `MAXLEN+1` | Canonical-Huffman length→count table | **SECDED** | Weight-*defining*: a flip shifts codeword boundaries → mis-decodes the entire FP8 weight stream. Corrupts model data as surely as flipping a weight. |
 | weight_decomp.v:124 | `symbol_table [0:NSYMMAX-1]` | `SYMW` × `2^SYMW` | Canonical-order FP8 weight symbols | **SECDED** | A flip emits the *wrong FP8 weight byte* on decode. Model data. |
 | weight_decomp2.v:113 | `count_table [0:CTDEP-1]` | `COUNTW` × `NCTX<<CTADW` | Per-context Huffman count table | **SECDED** | Same as above, context-indexed. |
@@ -70,6 +70,8 @@ greps appears here or in the §5 exclusion list.
 | glm_fp8_soc.v:422 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO to the cache | **PARITY+MBIST** | Queue of expert **ids** (control), not weights; flip → wrong expert fetched → parity-detect. |
 | glm_fp8_system.v:453 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO (system-level dup) | **PARITY+MBIST** | Same role as `glm_fp8_soc` efifo. |
 | clk_en_ctrl.v:110–112 | `en_reg`,`hold_cnt`,`gcnt [0:N_CLUSTER-1]` | 1/`HOLD_W`/`CNT_W` × `N_CLUSTER` | Clock-gate enable + hold/grace counters | **PARITY+MBIST** | Clock-gating control; flip → spurious gate/ungate (no data corruption) → MBIST the cells, parity optional. |
+| glm_fp8_soc_ms.v:445 | `kv_mem [0:L*NSEQ*KV_RESIDENT-1]` | `ROW_BITS` × `L·NSEQ·KV_RESIDENT` | Batched multi-seq TOP's **owned per-(layer,seq) resident KV store** (host writes per (seq,layer,pos); model reads combinationally) | **SECDED** | Same latent-KV **model data** as the pager `ring`, but the store the top actually OWNS. A flip returns a corrupt latent → wrong attention, silently. Overflow beyond `KV_RESIDENT` is off-die (future work). Apply the §2.1 lane-partitioned SECDED. |
+| glm_fp8_soc_ms.v:478 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO to the routed-expert cache (multi-seq top) | **PARITY+MBIST** | Same role as `glm_fp8_soc`/`glm_fp8_system` efifo — queue of expert **ids** (control), not weights. |
 
 **ECC lane-partition note (kv_cache_pager `ring`).** `ROW_BITS` defaults to
 **768** = (KV_LORA 32 + ROPE 16) × 16b. 768 = **12 × 64**, so with the 64-bit
@@ -82,6 +84,15 @@ lane** to 64 before encode (do not assume 64-alignment), and decide whether a DB
 in any lane poisons the whole row. This is the one SECDED target whose width is
 not natively code-aligned across configurations — flag it in the C6 wrapper.
 
+**This lane-partition is now implemented in-tree** (ROADMAP P2 / C6): the pager's
+own `ECC` parameter (`kv_cache_pager.v:100`) and the standalone `kv_ecc_ring.v`
+both split each `ROW_BITS` row into `NLANES = ceil(ROW_BITS/64)` 64-bit
+`ecc_secded` lanes, **zero-pad the ragged final lane**, store only the codewords,
+and OR every lane's error into row-level `serr`/`derr` (a DBU in **any** lane
+poisons the whole row — the conservative choice). Proven with back-door fault
+injection by `kv_cache_pager_ecc_tb` and `kv_ecc_ring_tb`. The same partitioning
+applies to `glm_fp8_soc_ms.kv_mem` (identical row width).
+
 ### 2.2 Active FP8 datapath — activation / KV / accumulator scratch (SECDED-class model data, single-token scope)
 
 These hold live numeric intermediates (bf16 activations, FP8-block accumulators,
@@ -93,13 +104,13 @@ persistent stores in §2.1. All are on-die → **MBIST-testable** regardless.
 | Module | Array (signal) | Width × Depth | Holds | Class | Rationale |
 |--------|----------------|---------------|-------|-------|-----------|
 | glm_matmul_fp8.v:328 | `accx [0:NB-1][0:PE_M-1][0:PE_N-1]` | `ACC_W`(48) signed × NB·PE_M·PE_N | **GEMM accumulator banks** (per-block fixed-point partial sums) | **SECDED** | Partial-sum bank; a flip directly corrupts the output activation of every matmul. Highest-leverage scratch — one flip → wrong row of the GEMM result. |
-| mla_attn_fp8.v:250 | `scores [0:PE_M-1][0:H_HEADS-1][0:S_MAX-1]` | 16 × PE_M·H_HEADS·S_MAX | Per-row attention **scores** scratch | **SECDED** | Activation; flip → wrong softmax → wrong context. |
-| mla_attn_fp8.v:251 | `vstore [0:H_HEADS-1][0:S_MAX-1][0:V_DIM-1]` | 16 × H_HEADS·S_MAX·V_DIM | Cached **V** rows (shared key value store) | **SECDED** | Holds V (model KV/activation); flip → corrupt attention output. |
-| mla_attn_fp8.v:252 | `probs [0:PE_M-1][0:H_HEADS-1][0:S_MAX-1]` | 16 × PE_M·H_HEADS·S_MAX | Softmax **probabilities** scratch | **SECDED** | Activation. |
+| mla_attn_fp8.v:357 | `scores [0:PE_M-1][0:H_HEADS-1][0:SWIN-1]` | 16 × PE_M·H_HEADS·SWIN | Per-row attention **scores** scratch (multi-seq union-slot indexed) | **SECDED** | Activation; flip → wrong softmax → wrong context. |
+| mla_attn_fp8.v:358 | `vstore [0:H_HEADS-1][0:SWIN-1][0:V_DIM-1]` | 16 × H_HEADS·SWIN·V_DIM | Cached **V** rows (shared key value store, union-slot indexed) | **SECDED** | Holds V (model KV/activation); flip → corrupt attention output. |
+| mla_attn_fp8.v:359 | `probs [0:PE_M-1][0:H_HEADS-1][0:SWIN-1]` | 16 × PE_M·H_HEADS·SWIN | Softmax **probabilities** scratch | **SECDED** | Activation. |
 | mla_attn_fp8.v:227–254 | `xbuf,qlora,qlora_n,qfull,qrot,ckv_cur,krope_cur,ckv_key,ckv_n,knope_j,v_j,krope_j,ctx,outbuf` | 16 × (per-row / shared) | Q/KV projection + RoPE + context bf16 activation scratch | **SECDED** | Live activations/KV latents of the MLA datapath. |
 | mla_attn_fp8.v:445 | `ctx_acc [0:PE_M-1]` | 32 × PE_M | Per-row context fp32 accumulator | **SECDED** | Activation partial sum. |
 | mla_attn_fp8.v:548 / :568 | `a_emax [0:PE_M-1]`, `a_emax_q [0:PE_M-1]` | 8 × PE_M | Per-row bf16 **exponent-max (block scale)** | **SECDED** | Shared FP8 block scale for a whole row — a flip mis-scales every element in the row → high-leverage magnitude corruption. |
-| mla_attn_fp8.v:257 | `sel_list [0:TOPK-1]` | `IDXW` × TOPK | DSA-selected row indices | **PARITY+MBIST** | Index list (control), not data. |
+| mla_attn_fp8.v:384 | `sel_list_r [0:PE_M-1][0:TOPK-1]` | `IDXW` × PE_M·TOPK | Per-row DSA-selected key indices (multi-seq) | **PARITY+MBIST** | Index list (control), not data. |
 | mtp_head_fp8.v:262–268 | `hbuf,ebuf,cbuf,hprime,xcur,xn,lbuf` | 16 × (MODEL_DIM / CK / VOCAB) | MTP RMSNorm/proj/decoder activation + **logits** scratch | **SECDED** | Activations and LM-head logits. |
 | moe_router_fp8.v:303/378/402 | `tk_score_in`,`s_reg`,`rs_reg [0:PE_M-1]` | 32 × PE_M | Per-row router **scores** + fold factor | **SECDED** | Gating scores (data); flip → wrong expert weighting. |
 | glm_decoder_block_fp8.v:446/476/477 | `cur_gate_f`,`sh_add_a`,`sh_add_b [0:PE_M-1]` | 32 × PE_M | Per-row gate value + adder operands | **SECDED** | Activation/gate data. |
@@ -164,7 +175,8 @@ modules above; the testbench models them as latency memories.
 ### 3.1 SECDED (C6 — wrap in `ecc_mem_wrap` / lane-partitioned SECDED)
 
 **Persistent (do these first):**
-- `kv_cache_pager.ring` (768b latent KV) — **lane-partition, ragged-lane aware** (§2.1 note).
+- `kv_cache_pager.ring` (768b latent KV) — **lane-partition, ragged-lane aware** (§2.1 note); **now realized in-tree** via the pager's `ECC` param / `kv_ecc_ring.v`.
+- `glm_fp8_soc_ms.kv_mem` — the batched multi-seq top's **owned per-(layer,seq) resident KV store** (same latent-KV data as the pager ring; apply the same lane-partitioned SECDED).
 - `weight_decomp.{count_table,symbol_table}`, `weight_decomp2.{count_table,symbol_table}` — weight-defining decode tables.
 - (legacy, iff taped out) `tile_memory.lines`, `memory.sram`.
 
@@ -195,7 +207,8 @@ modules above; the testbench models them as latency memories.
 ## 4. Reference mechanism (already in tree — not a target)
 
 - `ecc_secded.v` — SECDED codec (`DATA_W`=64 default; combinational encode+decode).
-- `ecc_mem_wrap.v:125` `mem [0:DEPTH-1]` — SECDED RAM wrapper (stores codewords; corrects SBU / flags DBU; back-door port for fault injection & scrub). **This array is already protected** — it is the wrapper C6 instantiates, not a memory to protect.
+- `ecc_mem_wrap.v:149` `mem [0:DEPTH-1]` — SECDED RAM wrapper (stores codewords; corrects SBU / flags DBU; back-door port for fault injection & scrub). **This array is already protected** — it is the wrapper C6 instantiates, not a memory to protect.
+- `kv_ecc_ring.v` — **lane-partitioned SECDED wide-row KV ring** (ROADMAP P2 / C6): the concrete realization of the §2.1 lane note for rows not natively 64-aligned. Splits each `ROW_BITS` row into `NLANES=ceil(ROW_BITS/64)` 64-bit `ecc_secded` lanes, zero-pads the ragged final lane, stores only codewords, aggregates lane `serr`/`derr` (DBU-in-any-lane poisons the row), with a back-door fault-injection port. Also available as the `kv_cache_pager` `ECC` mode. **Already protected** — a mechanism, not a target.
 - `mbist_ctrl.v` — MBIST controller (March-style; registered RAM-facing strobes) that C7 wires to every PARITY+MBIST (and every SECDED) array.
 
 ---

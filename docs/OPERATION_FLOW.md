@@ -147,6 +147,20 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
 - **Batching (PE_M = B):** B independent token rows decode in lockstep, sharing one weight fetch
   per GEMM. With **union-skip**, the per-token routed-expert footprint shrinks with B toward the
   union (`E[distinct]=256·(1−0.96875^B)`), realizing the aggregate-throughput regime.
+- **Multi-sequence batching (`PER_ROW_SEQ`):** the B rows need not be one prompt — each PE_M row
+  can be a **different sequence**, attending its OWN sequence's KV window (`kc_seq` routes each KV
+  fetch to that sequence's `kv_cache_pager` window / `kv_mem` slot) while the query-side weight
+  fetch stays SHARED across rows (the batching-bandwidth win, ~41–52 % fewer attn-weight beats than
+  B separate runs). Per-row argmax/logits proven bit-exact vs per-seq PE_M=1, dense + sparse;
+  byte-identical at `PER_ROW_SEQ=0`. `glm_fp8_soc_ms` is the batched multi-seq SoC top
+  (`glm_model_fp8` at PE_M=B + `NSEQ`-window pager + a REAL per-layer KV store `kv_mem` owned by
+  the top + host FSM: prefill B seqs → 1 forward → commit B tokens).
+- **Continuous-batching decode loop (`glm_fp8_soc_ms`, `N_STEPS>1`):** one host `start` decodes
+  **N tokens per sequence** — a `RUN→DECAP→RUN` loop that runs one PE_M=B forward, streams the B
+  argmax out (`tok_valid`), writes each decode token's latent into `kv_mem` at the growing position
+  (`s_len + dec_step`) for every layer, feeds the argmax back as the next step's input, and advances
+  position/extent. Each row's step-k token is bit-exact vs a standalone PE_M=1 model decoding that
+  sequence alone N steps; `N_STEPS=1` is byte-identical to the single-step top.
 - **Speculative decode (`spec_batched_top`):** the MTP head drafts K tokens; the main model
   **verifies all K+1 positions in ONE PE_M=K+1 weight-load** (Flash traffic ÷ up to K+1), and the
   committed stream is proven **== greedy** (spec==greedy safety). `spec_chain_top` chains the
@@ -186,6 +200,7 @@ batching, striping) exists to shrink that second term.
 |---|---|---|
 | chip top / CDC | `glm_fp8_system_cdc`, `cdc_async_fifo`, `reset_sync` | token == standalone across async clks (31) |
 | system core | `glm_fp8_system` | token == standalone (3) |
+| batched multi-seq SoC | `glm_fp8_soc_ms` (PE_M=B model + `NSEQ` pager + `kv_mem` + host FSM; `N_STEPS` decode loop) | per-row token == per-seq PE_M=1 (dense/sparse); decode-loop step-k bit-exact |
 | compute die | `glm_model_fp8` → `glm_decoder_block_fp8` | full FP8 fwd, next-token argmax == golden |
 | attention | `mla_attn_fp8`, `dsa_indexer`, `kv_cache_pager` | ops bit-exact; real-dim rel 5.48e-4 |
 | MoE | `moe_router_fp8`, `swiglu_expert_fp8`, grouped union-skip, `batched_moe` | union==per-row bit-exact (union_tb 4) |

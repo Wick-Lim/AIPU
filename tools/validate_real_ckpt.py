@@ -60,8 +60,8 @@ BLK = 128
 ASSUMED_DIMS = {
     "hidden_size":        (6144,   False),
     "num_hidden_layers":  (78,     False),
-    "q_lora_rank":        (1536,   True),   # PENDING guess (DeepSeek-MLA standard)
-    "kv_lora_rank":       (512,    True),   # PENDING guess
+    "q_lora_rank":        (2048,   False),  # CONFIRMED vs real safetensors (q_a_proj.weight [2048,6144]); full_glm52.vh Q_LORA=2048
+    "kv_lora_rank":       (512,    True),   # DeepSeek-MLA standard; safetensors-pending (full_glm52.vh KV_LORA PENDING)
     "n_routed_experts":   (256,    False),
     "num_experts_per_tok":(8,      False),
     "n_shared_experts":   (1,      False),

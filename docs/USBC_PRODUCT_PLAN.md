@@ -94,12 +94,19 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 - Power/area levers: BFP accumulator (−87.6 % cells), clock-gating (73.75 % idle), die-shrink
   L0/L1, DVFS budget (4–5×, measured), compression 1.34×.
 - Energy + BOM **models** ([`LOW_POWER.md`](LOW_POWER.md), [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md)).
+- **Host software scaffold** ([`host/`](../host/README.md)) — a local **OpenAI-compatible server**
+  (`/v1/chat/completions`, streaming SSE), the exact RTL host protocol (`aipu_device.py`, mirrors
+  `glm_fp8_system_cdc` + the boot-loader-done readiness gate), the **real GLM-5.2 BPE tokenizer** +
+  a port of GLM's chat template, and host-side sampling — buildable/testable with **zero hardware**
+  against a mock backend (the Phase D2 first deliverable).
 
 **Not done (the gaps to a product):**
 - **Real-model full-scale fidelity** (PRODUCT_ROADMAP P1 — *the* gate: the real 753 GB weights must
   produce the real model's tokens end-to-end). **Blocking for everything.**
 - **FPGA fit / bitstream** — unmeasured (yosys wall); no placed-and-routed design, no real board.
-- **Host software stack** — no driver, no local API server, no tokenizer/runtime integration.
+- **Host software — the real backend + driver** — the API/protocol/tokenizer layer is scaffolded
+  (above); what remains is a signed cross-OS **USB-C driver** and a **real backend** (simulator- then
+  hardware-backed) + production runtime/scheduler behind the swappable mock.
 - **Physical device** — no PCB, no power architecture, no thermal design, no enclosure, no
   certification.
 
@@ -168,7 +175,9 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 ### Phase D2 — Host software stack *(parallel with D1 once tokens flow)*
 - D2.1 USB-C device driver (macOS/Windows/Linux), signed; robust enumeration / hot-plug / recovery.
 - D2.2 **Local OpenAI-compatible server** — so existing clients (chat UIs, VS Code, Claude Code,
-  etc.) point at `localhost` and just work. Tokenizer + sampling params + streaming.
+  etc.) point at `localhost` and just work. Tokenizer + sampling params + streaming. *(API surface +
+  protocol + real GLM BPE tokenizer + chat template + streaming already scaffolded in
+  [`host/`](../host/README.md) against a mock backend; remaining is the real backend + driver.)*
 - D2.3 Management app: model load/update, health, thermal/power telemetry, firmware update.
 - **GATE D2:** a user installs the app, points their editor at the box, and chats — no CLI.
 
@@ -281,8 +290,9 @@ RTL. D0 is cheap and decisive — **do it before committing to the rest.**
 1. **D0.1** — run the real-checkpoint full-model fidelity check on a GPU host (PRODUCT_ROADMAP P1.1).
 2. **D0.2** — get the design through a vendor FPGA flow for a real utilization number → FPGA class.
 3. **D0.3** — pick the power point (~90 W self-powered recommended) and draft the thermal envelope.
-4. Prototype the **host-side local OpenAI-compatible server** against the simulator now (no hardware
-   needed) so the software is ready when D1 tokens flow.
+4. Wire the **host-side local OpenAI-compatible server** ([`host/`](../host/README.md), already
+   scaffolded against a mock backend) to a simulator-backed backend now (no hardware needed) so the
+   software is ready when D1 tokens flow.
 
 ---
 

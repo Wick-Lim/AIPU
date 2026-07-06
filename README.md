@@ -43,6 +43,7 @@ exhaustive enumeration, a real PDK, or a formal solver).
 | **Memory-system controllers** | z3 | **BMC** (6 controllers) + **unbounded k-induction** ([`FORMAL.md`](docs/FORMAL.md)) |
 | **Cycle-accurate memory-stall mechanism** | assembled system, **real RTL cycles** | exposed stall is exactly **`3·FLASH_LAT + 9`**; faithful `cyc_per_tok` **grows** with Flash latency (flat 7947 → **8607** @ FLASH_LAT=256) ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)) |
 | **PE_M batch path** (0 extra weight BW) — **4/4 wrappers** | per-row single-token refs | swiglu **513** / router **192** / mla **6** / mtp **44** — bit-exact + weight-share, *"B rows == 1 fetch stream"* |
+| **Multi-sequence batched attention** — each PE_M row a *different* sequence, real end-to-end through the full model | per-seq PE_M=1 goldens | per-row argmax/logits **bit-exact** at B=2 (~41% fewer attn-weight beats than 2 runs) and **B=4** (~52%), dense + sparse; `PER_ROW_SEQ=0` byte-identical ([`PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)) |
 | **Truncated full-model token chain** (real weights, DSA threaded, incl. the dense→MoE seam) | fp32-accumulate ref, real GLM prompt | **argmax match** (real 256-expert route; "The capital of France is" → **20259 == 20259**), top-8 preserved — the DSA-IndexShare + fused-expert blockers **retired** ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)) |
 | **Full 753B config elaboration** | verilator, true dims (6144/78/154880/256-expert) | **0 errors** — parameterization threads clean at real scale; full-config lints cleared (SELRANGE 4122→0, byte-identical) ([`FULL_CONFIG_ELAB.md`](docs/FULL_CONFIG_ELAB.md)) |
 
@@ -139,12 +140,28 @@ buffers, verified bit-exact and weight-sharing (*"B rows == 1 fetch stream"*). O
 scan + combinational `any_has`), byte-identical to the all-expert path — up to **~32× fewer Flash expert
 fetches** at small batch on the real 256-expert config (≈ no benefit at B≈256, where the union ≈ all).
 
+**Multi-sequence batching is real end-to-end** (beyond same-sequence decode-batching). Each PE_M row can now
+be a **different sequence**: `mla_attn_fp8` carries a `PER_ROW_SEQ` mode (per-row-slot union + `kc_seq`
+routing — each row attends its *own* sequence's KV while the query-side weight/projection fetch stays shared,
+the batching bandwidth win), threaded model→decoder→mla via `seq_vec`/`kc_seq`. Proven full-model:
+`glm_model_fp8` batches 2 different sequences (per-row argmax/logits bit-exact vs per-seq PE_M=1, ~41% fewer
+attn-weight beats), scaled to **B=4** (~52% fewer beats), both dense **and** sparse; byte-identical at
+`PER_ROW_SEQ=0`. A batched multi-seq **SoC top `glm_fp8_soc_ms`** wraps the PE_M=B model with a real
+`NSEQ`-window `kv_cache_pager` + `expert_cache_pf` + a host FSM (prefill B seqs → 1 forward → commit B
+tokens), holding the per-layer KV in a **real store `kv_mem`** owned by the top. It runs a **multi-step
+continuous-batching decode loop** (`N_STEPS>1`: one `start` decodes N tokens/seq, argmax fed back, each
+decode token's KV written to `kv_mem` at the growing position and attended — each row's step-k token
+bit-exact vs a standalone PE_M=1 model; `N_STEPS=1` byte-identical). `DSA_REAL_IDX=1` (query-dependent
+IndexShare) works under multi-seq via a per-sequence `kidx_buf` pre-fetch, and `batched_moe` has full
+B-coverage (`make bcov`, B∈{1,2,3,5,8} × routing patterns, each re-proving batched == B independent PE_M=1
+runs bit-exact with every union expert fetched once).
+
 ### Single-module system (real-753B memory/streaming hardware) — BUILT
 
 | Unit | Role | Verification |
 |---|---|---|
 | `expert_cache_pf.v` | DDR5 routed-expert cache: LRU + freq + prefetch | 623 tests; **BMC-proven** |
-| `kv_cache_pager.v` | MLA latent-KV ring + DSA-gather + Flash overflow | 73 tests; **BMC-proven** |
+| `kv_cache_pager.v` | MLA latent-KV ring + DSA-gather + Flash overflow; **`NSEQ` independent per-seq ring windows** | 73 tests (+ NSEQ>1 multi-seq); **BMC-proven** |
 | `ddr5_xbar.v` | N-channel banked DDR5 read fabric (~N× BW) | 3073 tests (7.93× @8ch); **BMC + k-induction** |
 | `flash_xbar.v` | N-channel banked **Flash** read fabric (deep queue hides NAND latency) | 2049 tests (7.99× latency-hide); **BMC-proven** |
 | `weight_loader.v` | checkpoint FP8 + block-scale → matmul pull DMA | 240 tests (loader-fed == direct-fed) |
@@ -167,7 +184,7 @@ C8 loopback closed; 2-domain `reset_sync` + CDC sign-off; full-config elaboratio
 |---|---|---|
 | `flash_xbar.v` | parallel Flash channels + deep outstanding queue | **7.99× latency-hide + N× banking** |
 | `tools/flash_layout.py` | offline expert→channel placement (kill hotspots) | **39% → 55% of 8× peak (~+40%)** |
-| `weight_decomp.v` | on-chip lossless FP8 decompress | **1.34×** bit-exact |
+| `weight_decomp.v` | on-chip lossless FP8 decompress | **1.34×** bit-exact (order-0; optional order-1 `weight_decomp2` ~1.42× on a distinct intra-stream axis, not the ~1.34× cross-expert cap) |
 | `spec_decode_seq.v` K>1 | multi-token speculative draft | **K=2 ≈ +23%** (spec == greedy) |
 | `clk_en_ctrl.v` | gate the ~75%-idle die | **73.75% of idle dynamic power gated** (formally safe, 13 064 checks) |
 | `clk_throttle.v` | DVFS/eco frequency prescaler — run the die **f/div** in the ~4–5× slack | **peak-power/thermal cap** (USB-C "eco mode"), byte-identical, **BMC-proven** (`make formal`) |

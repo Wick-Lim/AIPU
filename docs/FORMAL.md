@@ -10,12 +10,13 @@ the legal protocol, and states the safety properties as `assert()`. Run with `ma
 
 | Controller | Properties proven | Bound K |
 |---|---|---|
-| `expert_cache_pf` | P1 HIT returns the slot holding the requested expert; P2a no duplicate install; P2b directory uniqueness (no id in two valid slots); **P3 bounded response liveness / no deadlock** (worst-case demand latency = 2·FLAT+1, proven with prefetch enabled + adversarial) | 55 (P1/P2), 40 (P3) |
-| `kv_cache_pager` | append/gather indices in-bounds (window never inverts, resident window ≤ ring capacity, read slot < RESIDENT, cold index < append_count); resident gather returns the row appended at that position; cold (Flash-spilled) gather returns the right row | 22–24 |
-| `kv_cache_pager` **(ECC=1)** | the lane-SECDED ring preserves correctness: a gathered row equals the appended row (forcing z3 through the `(72,64)` SECDED `decode(encode(x))==x` identity over the ring-of-codewords memory) + the in-bounds/window invariants + **no false alarm** (sticky `serr`/`derr` never rise on the no-fault path) + cold-gather correctness. Single-lane (ragged-pad path); multi-lane is N structural copies + exhaustively fault-tested by `kv_cache_pager_ecc_tb.v` | 12–16 |
-| `spec_decode_seq` | committed-token count monotonic non-decreasing (never loses a token); main_passes/accepts/rejects monotonic; per-cycle commit ≤ 2 (1 verified + ≤1 bonus) | 40 |
-| `ddr5_xbar` | no spurious response (no resp without an accepted req); per-channel response FIFO never overflows (no dropped/lost response); `resp_tag` was always a tag that was issued | 16 |
-| `boot_loader` | `done` is a stable level once raised; `done` never asserts early (only after every resident word is written) | 20 |
+| `expert_cache_pf` | P1 HIT returns the slot holding the requested expert; P2a no duplicate install; P2b directory uniqueness (no id in two valid slots); **P3 bounded response liveness / no deadlock** (worst-case demand latency = 2·FLAT+1, proven at `PF_ENABLE=0` — the committed `make formal` run) | 20 |
+| `kv_cache_pager` | append/gather indices in-bounds (window never inverts, resident window ≤ ring capacity, read slot < RESIDENT, cold index < append_count); resident gather returns the row appended at that position; cold (Flash-spilled) gather returns the right row | 16 |
+| `kv_cache_pager` **(ECC=1)** | the lane-SECDED ring preserves correctness: a gathered row equals the appended row (forcing z3 through the `(72,64)` SECDED `decode(encode(x))==x` identity over the ring-of-codewords memory) + the in-bounds/window invariants + **no false alarm** (sticky `serr`/`derr` never rise on the no-fault path) + cold-gather correctness. Single-lane (ragged-pad path); multi-lane is N structural copies + exhaustively fault-tested by `kv_cache_pager_ecc_tb.v` | 12 |
+| `spec_decode_seq` | committed-token count monotonic non-decreasing (never loses a token); main_passes/accepts/rejects monotonic; per-cycle commit ≤ 2 (1 verified + ≤1 bonus) | 20 |
+| `ddr5_xbar` | no spurious response (no resp without an accepted req); per-channel response FIFO never overflows (no dropped/lost response); `resp_tag` was always a tag that was issued | 12 |
+| `boot_loader` | `done` is a stable level once raised; `done` never asserts early (only after every resident word is written) | 16 |
+| `clk_throttle` | P1 `div<=1 => throttle=0` (no-throttle / byte-identical guarantee); P2 `hold => throttle=0` (never throttle an already-idle die); **P3 no-starvation / no-deadlock** (`throttle` high for at most `div-1` consecutive cycles, so an active slot recurs at least once every `div` cycles) | 16 |
 
 ## Method (the load-bearing tooling note)
 
@@ -85,16 +86,17 @@ memory-content invariant from a read-only harness. It therefore remains a bounde
   sequences over the first
   K cycles from reset — no k-induction was run, so this is not an unbounded proof. The small
   instances wrap/overflow/evict multiple times within K (e.g. `kv_cache_pager` RESIDENT=4 overflows
-  by ~cycle 5; `expert_cache_pf` K=55 ≈ 15 fill/evict/hit transactions), so steady-state behaviour
+  by ~cycle 5; `expert_cache_pf` K=20 covers multiple fill/evict/hit transactions), so steady-state behaviour
   is exercised — but a bug needing > K cycles to manifest would not be caught.
 - **Parameter scope.** Proven on small tractable instances (e.g. `expert_cache_pf` SLOTS=2/
   N_EXPERT=4, `kv_cache_pager` RESIDENT=4/ROW_BITS=4, `ddr5_xbar` N_CH=2). The RTL is parametric;
   the proof is for the instantiated sizes, with full-width correctness argued by parametricity.
-- **One known gap:** `expert_cache_pf` P1/P2 are proven with prefetch **disabled** (prefetch
-  installs are silent — no response carries the victim slot — so an external shadow directory can't
-  track them, and this yosys build cannot observe DUT internals / `bind` is dropped). P3 liveness
-  **is** proven with prefetch enabled. Full prefetch-active directory checking would need internal
-  observability (SymbiYosys with working `bind`, or in-RTL assertions).
+- **One known gap:** `expert_cache_pf` P1/P2/P3 are all proven with prefetch **disabled**
+  (`PF_ENABLE=0` — the committed `make formal` run: prefetch installs are silent, no response
+  carries the victim slot, so an external shadow directory can't track them, and this yosys build
+  cannot observe DUT internals / `bind` is dropped). A prefetch-**enabled** (`PF_ENABLE=1`) mode
+  exists in the harness but is not yet wired into `make formal`; full prefetch-active directory
+  checking would need internal observability (SymbiYosys with working `bind`, or in-RTL assertions).
 
 All numbers are BMC results, not a substitute for the directed/random simulation suites
 (`make unittests`) — they are complementary: the TBs check end-to-end function, the BMC proves

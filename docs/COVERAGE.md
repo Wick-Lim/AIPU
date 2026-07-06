@@ -134,9 +134,11 @@ configuration** — the small parameterization the unit TBs instantiate (e.g.
   measured slice. The slice→full-config equivalence is proven separately
   (`make sim-glm-compact` byte-identical token; `docs/FULL_CONFIG_ELAB.md`).
 - **Whole-datapath / capstone coverage** — the large integration TBs
-  (`glm_model_fp8`, `glm_decoder_block_fp8`, `mla_attn_fp8`, `glm_fp8_system*`,
-  `spec_*`) are intentionally out of this run (minutes-long; several depend on
-  the FP goldens noted below). Coverage here targets the fast leaf/unit modules.
+  (`glm_model_fp8` incl. the multi-seq batched runs, `glm_decoder_block_fp8`,
+  `mla_attn_fp8`, `glm_fp8_system*`, `glm_fp8_soc_ms` incl. the N-step
+  decode loop, `batched_moe` `bcov`, `spec_*`) are intentionally out of this
+  run (minutes-long; several depend on the FP goldens noted below). Coverage
+  here targets the fast leaf/unit modules.
 
 ### Testbenches that do NOT verilate/run (skipped, with reason)
 

@@ -42,7 +42,8 @@ Stacking on the ~9 J/token baseline (numbers are modeled `bytes × energy/bit`, 
 |---|---|---|---|
 | baseline | — | ~9 | — |
 | `flash_xbar` ×N + deep queue | N× Flash BW + latency-hide | ~9 | ✅ built (7.99× hide + N× bank) |
-| `weight_decomp` (lossless) | 1.34× fewer Flash bytes | ~6.7 | ✅ built, bit-exact (Huffman, 5.97 b/sym) |
+| `weight_decomp` (lossless, order-0) | 1.34× fewer Flash bytes | ~6.7 | ✅ built, bit-exact (Huffman, 5.97 b/sym) |
+| `weight_decomp2` (lossless, order-1) | ~1.4–1.5× fewer Flash bytes | ~6.3 | ✅ built, bit-exact (context-modeled, ~1.13× over order-0; optional — default datapath wires order-0) |
 | MTP/spec **K=2** | verify 2 tokens per weight-load (K_eff 1.7) | ~4.5 | ✅ built, spec==greedy exact |
 | grouped MoE **union-skip** batch | B rows share 1 expert fetch (÷ up to B) | ↓ at B>1 | ✅ built, byte-identical |
 | **DVFS freq** (`clk_throttle`) | run die f/div in the 4–5× slack (§4) | **peak-power only** (not J/token) | ✅ **RTL built + byte-identical** — the eco/thermal knob |
@@ -58,7 +59,8 @@ Stacking on the ~9 J/token baseline (numbers are modeled `bytes × energy/bit`, 
 ### What is measured vs modeled (firming the [EST])
 The J/token numbers are a product of two kinds of input — be clear which is which:
 - **Measured (defensible) multipliers:** `weight_decomp` **1.34×** fewer Flash bytes (5.97 bits/sym,
-  8 tests); clock-gating **73.75 %** of idle-dynamic gated (`clk_en_ctrl_tb`); the BFP accumulator
+  8 tests) — order-0; the optional order-1 `weight_decomp2` reaches **~1.4–1.5×** (context-modeled,
+  ~1.13× over order-0); clock-gating **73.75 %** of idle-dynamic gated (`clk_en_ctrl_tb`); the BFP accumulator
   **−87.6 %** cells; die 75–80 % Flash-bound + the ~4–5× compute-slowdown budget from the
   cycle-emulation (`compute_cyc` vs exposed `stall`, `glm_fp8_system_perf_tb`); MTP K=2 **spec==greedy
   exact** (1379 tests) → K_eff≈1.7 (self-draft, α decays past K=2). These are RTL-verified factors.

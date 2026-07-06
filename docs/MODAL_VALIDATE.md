@@ -31,7 +31,8 @@ The arithmetic contract itself is **already proven in this repo, no GPU**:
 3. **GPU capacity.** The reference + full-model tiers request `gpu="H200:8"`
    (8×H200 ≈ 1128 GB HBM, enough to hold the ~753 GB FP8 weights resident;
    transformers `device_map="auto"` will offload if a tier runs on less). The
-   operator tier (`tier1_operator`) needs only a single `H100`.
+   operator tier (`tier1_operator`) needs only a single `T4` (the cheapest GPU —
+   it only does a weight-GEMM compare, no full model).
 4. **The weight cache.** A Modal Volume named `glm52-weights` (auto-created)
    caches the ~753 GB download so it is fetched **once** and reused by every run.
 
@@ -69,7 +70,7 @@ P1.1 next-token argmax match: 8/8 = 100.0%  (PASS)
 | Tier | Function | GPU | Proves |
 |---|---|---|---|
 | Reference | `reference()` | `H200:8` | The **golden**: the UNMODIFIED engine's greedy next-token argmax (+ top-8 logit ids) over the prompt corpus. Tries **vLLM** tensor-parallel (`tensor_parallel_size=8`, `quantization="fp8"`) first; falls back to **transformers** `device_map="auto"`. |
-| 1 — operator | `tier1_operator()` | `H100` | **`docs/BIT_ACCURACY.md`, synthetic → REAL.** Pulls a sample of REAL FP8 Linear weights (`*.weight` F8_E4M3 + `*.weight_scale_inv`) straight from the cached safetensors, builds realistic bf16 activations, and compares **our contract** (`glm_fp8_contract.block_fp8_gemm`) against a **reference fp32-accumulate FP8 GEMM** (the real-GPU scheme). Reports per weight: bf16-exact rate, max/RMS abs error, max rel error, and **argmax match**. This tier is **solid** — it only reads tensors, so it does not depend on the loader being able to *run* the arch. |
+| 1 — operator | `tier1_operator()` | `T4` | **`docs/BIT_ACCURACY.md`, synthetic → REAL.** Pulls a sample of REAL FP8 Linear weights (`*.weight` F8_E4M3 + `*.weight_scale_inv`) straight from the cached safetensors, builds realistic bf16 activations, and compares **our contract** (`glm_fp8_contract.block_fp8_gemm`) against a **reference fp32-accumulate FP8 GEMM** (the real-GPU scheme). Reports per weight: bf16-exact rate, max/RMS abs error, max rel error, and **argmax match**. This tier is **solid** — it only reads tensors, so it does not depend on the loader being able to *run* the arch. |
 | 2 — full model | `tier2_fullmodel()` | `H200:8` | **The binding gate.** Loads the real model, **monkeypatches every FP8 Linear's `forward`** to route its matmul through **our contract**, and compares the patched model's next-token argmax to the unmodified `reference()` golden over the corpus. A 100% match validates the **plumbing** (layer wiring, scale orientation, bf16-tail routing, KV/RoPE/MoE) on top of the already-proven arithmetic. |
 
 The accumulator isolation is identical to `BIT_ACCURACY.md` §A: tier 1's
@@ -101,6 +102,19 @@ the same per-token `a_shift`, covering the **dense→MoE transition**.
   need top-k indices threaded from a full-indexer layer, so standalone layers are **not
   independent** (an architectural dependency of `GlmMoeDsa`, not a kwarg);
   `position_embeddings` + float32 blockers were fixed first.
+- **`--mode model` (truncated full-model token chain — the DSA wall RESOLVED):** instead
+  of running layers standalone, it builds a **truncated `GlmMoeDsa` model**
+  (`num_hidden_layers=N`, real weights) and runs its **own `forward`** twice — `gold`
+  fp32-accumulate vs `ours` exact-BFP, same fp8 weights — so the model **threads the DSA
+  IndexShare top-k across its layers itself** (retiring the standalone-layer blocker). The
+  256 fused routed experts (`GlmMoeDsaNaiveMoe`) are routed through our `_gemm` per expert
+  (`_patch_naive_moe`), covering the **dense→MoE seam** at `N=4`. Measured: next-token
+  argmax **1/1 identical**, top-8 overlap **1.0** (both dense `N=3` and MoE-inclusive `N=4`).
+- **Multi-seq batching on REAL weights (A2 real-checkpoint):** `--mode model` also runs two
+  different real prompts **BATCHED `[2,L]`** vs **SEPARATELY `[1,L]`** through the same
+  real-weight model and compares **per-row argmax** — validating that batching B sequences
+  (what `glm_fp8_soc_ms` does in hardware) is per-row consistent on the real model's actual
+  MoE routing, DSA index, and fp8 weights, not just the synthetic RTL slice.
 
 Full write-up + numbers: [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md)
 ("Partial-F1" section). Fidelity standing: operator-level → assembled multi-layer FFN →

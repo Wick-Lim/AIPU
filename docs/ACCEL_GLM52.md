@@ -245,6 +245,22 @@ over tile memory, and owns the latent cache.
     not all `N_EXPERT`) — **byte-identical** to per-row routing. On the real 256-expert config
     this is up to **~32× fewer Flash expert fetches** at small batch (union of ≤8 vs 256), with
     the benefit tending to 1× as `B→256` where the union approaches the full expert set.
+  - **Multi-sequence batching (`PER_ROW_SEQ`) [BUILT].** The batch rows need not belong to one
+    sequence. With `PER_ROW_SEQ=1` each `PE_M` row is a **DIFFERENT sequence**: `mla_attn_fp8`
+    builds a per-row-slot union (tagged by `union_seq`) and emits `kc_seq` to route every KV
+    fetch to that sequence's own cache window, so **each row attends its OWN sequence's KV**
+    while the **query-side weight/projection fetch stays SHARED** across sequences (the batching
+    bandwidth win). `PER_ROW_SEQ`/`seq_vec`/`kc_seq`/`SWIN` thread model→decoder→mla; proven
+    end-to-end (`glm_model_fp8_multiseq_tb`: 2 sequences, per-row argmax/logits **bit-exact** vs
+    per-seq `PE_M=1`, ~41% fewer attn-weight beats than two runs) and scaled to B=4
+    (`glm_model_fp8_multiseq4_tb`, ~52% fewer), **dense + sparse**; **byte-identical** at
+    `PER_ROW_SEQ=0`. A batched multi-seq SoC top (`glm_fp8_soc_ms`) drives it with a real
+    `NSEQ`-window `kv_cache_pager` + `expert_cache_pf` + host FSM (prefill B seqs → 1 forward →
+    commit B tokens) over a top-owned per-layer KV store (`kv_mem`); at `N_STEPS>1` it becomes a
+    continuous-batching decode loop that writes each decode token's latent into `kv_mem` at its
+    growing position and feeds the argmax back, each row's step-k token bit-exact vs a standalone
+    `PE_M=1` decode. `DSA_REAL_IDX=1` (query-dependent IndexShare) also works under multi-seq via
+    a per-sequence `kidx_buf` pre-fetch.
 
 ---
 

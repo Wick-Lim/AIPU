@@ -154,7 +154,9 @@ one thing the slice cannot.
 
 ## Immediate next step (product)
 
-**P1.1 + P1.3a**: run the real-checkpoint validation procedure (needs a GPU host) and, in parallel
-on `main`, start closing the per-position causal-KV gap (the prototype's PE_M shared-pos
-limitation) so batched decode is position-accurate for product. Everything else (P2–P4) sequences
-behind a green P1.
+**P1.1**: run the real-checkpoint validation procedure (needs a GPU host) — the standing gate. The
+per-position causal-KV gap (the prototype's PE_M shared-pos limitation) is now **largely closed** on
+`main`: per-row position/extent, multi-sequence batched attention (`PER_ROW_SEQ`), and the
+multi-step continuous-batching decode loop (`glm_fp8_soc_ms` `N_STEPS>1`) make batched decode
+position-accurate and per-row bit-exact; the remaining P1.3 item is a resident dense DRAFT model
+(needs weights). Everything else (P2–P4) sequences behind a green P1.
