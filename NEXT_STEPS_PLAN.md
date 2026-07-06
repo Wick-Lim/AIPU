@@ -12,8 +12,11 @@
 > '시큐어 클라우드'도 연결이 필요해 이 테스트를 통과 못 한다 → 시큐어 클라우드 논쟁 종결). **해자는
 > 오프라인 하나가 아니라 조합**이다: 오프라인 + 풀 프런티어(753B) + 어플라이언스/좌석 가격(753 GB
 > 가중치는 **한 번** 오프라인 프로비저닝 후 완전 오프라인; 모델 갱신은 물리 재프로비저닝. 토큰당 API
-> 요금 0; 개인 어플라이언스; `docs/USBC_PRODUCT_PLAN.md`). 제품이 보는 **유일한** 속도 지표는 **싱글유저 대화형 처리량
-> ~3–12 → ~25–40 tok/s [EST]**(B=1, 채팅 가능). 아래 완료 목록의 **배치 멀티시퀀스 트랙**
+> 요금 0; 개인 어플라이언스; `docs/USBC_PRODUCT_PLAN.md`). 제품 속도는 **하드웨어 사다리**로 단계화된다
+> (`docs/HARDWARE_LADDER.md`): 성능은 **메모리 대역폭 = 칩 IO/PHY = 자금**이 정한다 — **① 저가 FPGA(KU3P급)+DDR4로
+> ~5–8 tok/s [EST](지금, 동작 증명), ② 시드 후 커스텀보드(DDR5/HBM)로 ~15–40 [EST], ③ 볼륨 ASIC ~40+** (모두 B=1
+> 싱글유저, 동일 bit-exact RTL). 이전의 평평한 ~25–40은 ②(자금 조달 후) 수치이지 지금 저가 하드웨어로 되는 게 아니다.
+> 아래 완료 목록의 **배치 멀티시퀀스 트랙**
 > (`glm_fp8_soc_ms`, N_STEPS 연속배치 디코드, `make bcov` B∈{1,2,3,5,8})은 *같은 실리콘*을
 > 배치했을 때 무엇이 되는지에 대한 **비대상(non-target) 데이터센터 배치 분석**이지 제품 타깃이
 > 아니다 — 개인 박스는 B=1로 돈다(집계 상한을 배치수로 나눈 per-user 수치를 제품 속도로 제시하지
@@ -89,7 +92,7 @@
 - [x] **ECC/MBIST 작업 언블록:** 모든 reg-array 분류 → *docs/P2_MEMORY_MAP.md* (**C2**)
 - [x] **unbounded ddr5 증명:** connect-bind lift(`make formal-ind`에 편입) → *test/formal/ddr5_xbar_ind_fv.v*, *docs/FORMAL.md* (**C5**)
 - [x] **CI 부트스트랩:** `.github/workflows/ci.yml` 존재
-- [x] **문서 정합화:** single-user tok/s 사다리 통일 — **~3 baseline → ~16–27 built today → ~25–40 [EST] ceiling**(전체 레버); README/SSP를 이 사다리에 정렬(README ~30+→~25–40, SSP ~3–6은 보수 subset으로 명시하고 full-stack ~25–40 지시). `q_lora/kv_lora` = 실 checkpoint **2048/512**(q_lora CONFIRMED, kv_lora standard-assumed). `make all` = `test hazard unittests lint synth synth-glm formal`(Makefile:58).
+- [x] **문서 정합화:** single-user tok/s 사다리 통일 — **~3 baseline → ~16–27 built today → ~25–40 [EST] ceiling**(전체 레버). *(그 후 하드웨어 현실 반영으로 이 평평한 수치는 `docs/HARDWARE_LADDER.md`의 3단계 사다리로 대체됨: 저가 FPGA ~5–8[EST] / 커스텀보드 ~15–40[EST] / 볼륨 ASIC ~40+. 위 ~25–40은 자금-조달-후 단계(②) 수치.)* `q_lora/kv_lora` = 실 checkpoint **2048/512**(q_lora CONFIRMED, kv_lora standard-assumed). `make all` = `test hazard unittests lint synth synth-glm formal`(Makefile:58).
 
 ## 재조준 타임라인 (P1.1 제거)
 
@@ -118,7 +121,7 @@ WEEKS 4-8 — XL 구조 작업 (오라클 게이트)
 - **B7 SWIN 디커플이 메모리 재구조화를 과소평가.** `vstore`가 SWIN=2048서 ~4.3 Gbit — flop으로 비현실적. "elaborate clean" ≠ "스케일서 realizable". 풀config **기능** sim은 불가(LM head ~238M cyc/token) — P1.2를 "param 올리고 TB 돌리기"로 잡으면 조용히 안 끝남.
 - **C6 formal 결합.** ECC check bit로 워드 확장 시 6개 committed BMC가 도는 datapath가 바뀜 → 재파라미터/재검증. ROW_BITS=768(/64 아님)이 pager read latency 이동 가능.
 - **B8 spec_chain seed 규약은 배선이 아니라 설계 결정.** single-MTP-layer 자기회귀 체이닝은 1-layer 체크포인트 밖 외삽 — "정답"을 문서화된 수치 레퍼런스로 고정해야. K_eff에 영향(spec==greedy 안전성은 무관).
-- **툴링 상한(정직한 경계).** CI yosys/iverilog는 로컬 **0.66** 베이스라인과 일치해야(connect-bind formal 트릭 의존). 실제 scan stitching·JTAG TAP·ATPG·static CDC 사인오프·풀config STA/power는 이 OSS 플로에 없는 상용툴 필요 — **P2는 hooks+harness+문서화된 hand-off를 제공하지, 측정된 coverage가 아님.** P3(PHY/FPGA-vs-ASIC/STA/power)·P4(PCB/driver/tokenizer/qual)는 설계상 out-of-scope.
+- **툴링 상한(정직한 경계).** CI yosys/iverilog는 로컬 **0.66** 베이스라인과 일치해야(connect-bind formal 트릭 의존). 실제 scan stitching·JTAG TAP·ATPG·static CDC 사인오프·풀config STA/power는 이 OSS 플로에 없는 상용툴 필요 — **P2는 hooks+harness+문서화된 hand-off를 제공하지, 측정된 coverage가 아님.** P3(PHY/STA/power)·P4(PCB/driver/tokenizer/qual)는 이 OSS 플로 밖(상용툴·벤더IP·물리 작업). **ASIC은 out-of-scope가 아니라 하드웨어 사다리의 ③단계(볼륨 엔드게임)** — 메모리 대역폭 병목을 뚫는 HBM/다채널 PHY를 위해 볼륨/자금이 정당화될 때 착수(`docs/HARDWARE_LADDER.md`).
 
 ## 브리핑 정정 (RTL/시스템 관련 — 코드로 검증됨)
 
@@ -128,4 +131,4 @@ WEEKS 4-8 — XL 구조 작업 (오라클 게이트)
 9. **~~`reset_sync`·P2 프리미티브·`weight_decomp/2`가 어떤 product top에도 미인스턴스~~ — 부분 폐쇄.** `reset_sync`는 CDC top에 배선(C3), `weight_decomp`는 NVMe→loader refill 경로에 배선(C9, `glm_fp8_system` DECOMP=1). **남은 미인스턴스:** `mbist_ctrl`/`icg_cell`(system top에는 아직 미배선 — `clk_gate_cluster`는 유닛 레벨만; C7 잔여).
 10. **"모든 dim은 param bump"는 한 구조 변경 과소평가** — `mla_attn_fp8`이 scratch를 S_MAX(1M)로 사이징 → SWIN 디커플 필요(B7). RTL default(`Q_LORA=64`,`KV_LORA=32`,`POSW=20`,`S_MAX=8`)는 slice 값.
 11. **~~`ecc_mem_wrap`은 read시 정정만~~ — C4로 폐쇄됨.** scrub-write-back + sticky `serr`/`derr` + `err_ack` + back-door raw-codeword 주입이 구현되어 P2.1 "retry/recovery" 요구를 충족(read 후 재read에서 `serr=0`).
-12. **문서 불일치 — 해소됨:** single-user tok/s를 한 사다리로 통일(**~3 → ~16–27 built → ~25–40 [EST] ceiling**); README ~30+→~25–40, SSP ~3–6은 보수 subset으로 라벨. `make all` = **`test hazard unittests lint synth synth-glm formal`**(Makefile:58 — C1로 `synth-glm` 추가됨)이고 `bitacc`/`cache-study`/`bcov`/`formal-ind`/`coverage`/`spec-slow`/`cdc`는 별도.
+12. **문서 불일치 — 해소됨:** single-user tok/s를 한 사다리로 통일(**~3 → ~16–27 built → ~25–40 [EST] ceiling**); README ~30+→~25–40, SSP ~3–6은 보수 subset으로 라벨. *(이후 `docs/HARDWARE_LADDER.md` 3단계 사다리로 대체 — 위 ~25–40은 자금-조달-후 커스텀보드(②) 수치이고, 지금 저가 FPGA(①)는 ~5–8[EST].)* `make all` = **`test hazard unittests lint synth synth-glm formal`**(Makefile:58 — C1로 `synth-glm` 추가됨)이고 `bitacc`/`cache-study`/`bcov`/`formal-ind`/`coverage`/`spec-slow`/`cdc`는 별도.

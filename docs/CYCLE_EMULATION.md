@@ -9,7 +9,7 @@ read-latency model (NVMe/PCIe) engaged, sweeping the knobs, and counting cycles.
 > **Storage note (one-time).** The `flash_xbar` / `FLASH_LAT` storage-read fabric and its latency
 > model are **medium-agnostic** (address → weight bytes, with read-request issue and latency
 > hiding). In the product this fabric fronts an **NVMe/PCIe (M.2) backend** — the model store is
-> an **NVMe SSD (1–4 TB)**, tiered **NVMe (bulk, slow) → DDR5 (64 GB hot set, fast) → die** — and
+> an **NVMe SSD (1–4 TB)**, tiered **NVMe (bulk, slow) → fast DDR (hot set; DDR4 rung-1 / DDR5 or HBM rung-2, see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) → die** — and
 > the NAND-specific PHY is swapped for an NVMe host controller. The committed RTL keeps the
 > `flash_*` identifiers (`flash_xbar`, `FLASH_LAT`, `flash_req`, `flash_seq`, …); below, a "Flash"
 > in a param / sweep-label / PERF-output string is that committed name, while the storage *concept*

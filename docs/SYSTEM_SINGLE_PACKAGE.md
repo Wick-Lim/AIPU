@@ -8,6 +8,17 @@
 > **with the ethernet unplugged** (nothing leaves because there is **no path out** — see §3),
 > not datacenter-scale real-time serving.
 >
+> **This doc details the *rung-2* build; the fast-memory tier is rung-dependent.** The concrete
+> **64 GB DDR5 / ~400–600 GB/s** config described throughout is the **funded custom-board (rung 2)**
+> point on the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — *not* the only spec. Performance is set by
+> **memory bandwidth**, memory bandwidth by the silicon's IO pins + hard PHYs, and that by the build
+> budget, so the product ships as a **3-rung ladder** running the *same* bit-exact FP8 RTL, only the
+> memory interface changing: **rung 1** (prove-it, now) a low-end FPGA + **DDR4 ~4 ch (~100 GB/s)** +
+> 1 NVMe → **~5–8 tok/s [EST]**; **rung 2** (post-seed) this **DDR5 8–12 ch (or HBM), ~300–600 GB/s**
+> custom board → **~15–40 tok/s [EST]**; **rung 3** (at volume) a SoC/ASIC with HBM stacks (~TB/s) →
+> **~40+ tok/s [EST]**. Read every "64 GB DDR5" below as the **rung-2** spec — on rung 1 the fast tier
+> is DDR4, on rung 3 it is HBM / on-package.
+>
 > **Fast-memory choice: multi-channel DDR5, not HBM/GDDR6.** This workload is **NVMe/PCIe-bandwidth-
 > bound** (the wall is reading cold experts from the NVMe SSD), so the fast tier only needs ~300–600 GB/s.
 > An **8–12-channel DDR5** subsystem delivers that (DDR5-6400 ≈ 51 GB/s/ch → ~410 GB/s at 8 ch,
@@ -24,13 +35,18 @@
 > [`ACCEL_GLM52.md`](ACCEL_GLM52.md) and the `*_fp8` units); the memory/streaming system here
 > is **designed, not built**.
 >
-> **Compute die → FPGA card (current roadmap).** The committed product realizes this "compute
-> die" on a **data-center-class FPGA** (FPGA + on-board DDR5 + an NVMe SSD via M.2/PCIe on one card), **not a
-> custom ASIC** — because the workload is NVMe/PCIe-bandwidth-bound the die already sits ~75–80% idle
-> behind the NVMe read path, so an ASIC's compute-density edge is largely wasted against multi-million NRE (see
-> [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2). The single-package memory-hierarchy analysis
-> below is agnostic to that choice — read "the die" as "the FPGA fabric"; a custom ASIC is only
-> revisited if volume/power economics ever justify it.
+> **Compute die → FPGA card now, ASIC at volume (the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)
+> rungs).** The near-term product realizes this "compute die" on an **FPGA** (FPGA + on-board DDR5/DDR4
+> + an NVMe SSD via M.2/PCIe on one card) — rungs ①②. A **custom ASIC is the rung-③ endgame, not
+> "out of scope."** The earlier "an ASIC's compute-density edge is wasted" call reasoned from
+> *compute-bound*; but the real bottleneck is **memory bandwidth (IO pins + PHY)**, and an ASIC is
+> **exactly what breaks the FPGA's IO/PHY ceiling** — HBM stacks + many-channel controllers +
+> near-memory FP8 compute at **~TB/s**, at **lower $/seat and lower power once amortized over volume**
+> (see [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2). Its multi-million NRE + long lead time only
+> pay off **at manufacturing volume**, so it is **sequenced *after* the FPGA proves product-market
+> fit** — *not now* (no volume, no capital), but the deliberate endgame **for cost-down + performance
+> + power** at scale. The single-package memory-hierarchy analysis below is agnostic to the choice —
+> read "the die" as "the FPGA fabric (rungs ①②) or the ASIC (rung ③)."
 
 ---
 
@@ -222,8 +238,12 @@ same silicon, not this single-user (B=1) product**.
 **Bottom line (FP8):** this section's **conservative** model (prefetch + batch-hit-rate + MTP only)
 puts single-user at **~3–6 tokens/s**, **~6–12 with MTP ×2**. Stacking the *full* faithful lever set
 (`flash_xbar` N-way read banking across PCIe lanes / drives + `weight_decomp` + activation-sparsity + draft-K + hot-weight) raises
-the single-user ceiling to **~25–40 tok/s [EST]** — that fuller stack is the product headline
-([`ULTRA_PERF.md`](ULTRA_PERF.md) §4). The **~10–18 aggregate** at batch 32 + MTP ×2 (~100 GB/s
+the single-user ceiling to **~25–40 tok/s [EST]** — the top of the **rung-2 (funded custom board)**
+range (~15–40) and the fuller-stack product headline ([`ULTRA_PERF.md`](ULTRA_PERF.md) §4). Stage
+that to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md): the old flat "~25–40" was implicitly this
+**rung-2** number and it is **not** reachable on the cheap near-term hardware — the **prove-it FPGA
+(rung 1, DDR4 ~4 ch) is ~5–8 tok/s [EST]** (real + bit-exact, slow-but-honest), and a **rung-3
+SoC/ASIC (HBM, ~TB/s) tops ~40+ [EST]** at volume. The **~10–18 aggregate** at batch 32 + MTP ×2 (~100 GB/s
 aggregate NVMe — many PCIe lanes / drives striped [EST]) is the **non-target batched/datacenter regime of the same silicon, not the product's
 speed** (the box runs B=1). Prefetch is required (hides
 latency → reach the bandwidth wall); MTP and raw NVMe/PCIe bandwidth are the real multipliers;
@@ -272,7 +292,10 @@ can't be statically placed — it's a **caching + scheduling** problem:
 
 Software can't beat the bandwidth/energy ceiling but **gets you close to it and cuts demand** —
 exactly how today's stacks (vLLM, llama.cpp/KTransformers MoE offload, DeepSpeed ZeRO-Infinity,
-FlexGen) run 600B+ MoE models on a single GPU + RAM/SSD.
+FlexGen) run 600B+ MoE models on a single GPU + RAM/SSD. The **hardware ceiling is itself a ladder**,
+not a fixed number: more channels / PCIe lanes = a bigger, newer chip = more money, so the reachable
+tok/s climbs rung by rung (FPGA+DDR4 → FPGA+DDR5/HBM → ASIC+HBM) — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)
+for the per-rung tok/s [EST].
 
 ## 10. Power / heat
 
@@ -364,4 +387,7 @@ NVMe/PCIe-bound.
   (no CoWoS/interposer) and far fewer devices (a few DIMMs vs ~32 GDDR6 chips), and the DIMMs are
   upgradeable.
 - This is **interactive, not datacenter-real-time**; high tokens/s/user at scale still wants
-  multi-chip HBM (bandwidth), which this design deliberately trades away for cost.
+  multi-chip HBM (bandwidth), which the **rung-2** DDR5 board here deliberately trades away for cost.
+  Reclaiming that bandwidth is precisely the **rung-3 SoC/ASIC** endgame (HBM stacks, many-channel
+  PHY, near-memory compute at ~TB/s) — sequenced after the FPGA proves PMF, at volume; see
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md).

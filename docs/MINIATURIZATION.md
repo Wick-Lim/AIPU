@@ -1,22 +1,32 @@
 # Chip miniaturization — plan
 
-> **Scope note (FPGA fit, not ASIC; deprioritized).** The committed product path is an **FPGA
-> card**, not an ASIC ([`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2), so "shrink the die" here
-> means **fit a smaller / cheaper FPGA** (fewer LUT/DSP/BSRAM), *not* an ASIC shrink or tapeout.
-> The analysis stays valid — every lever is correctness-invariant (byte-identical token) — but the
-> study is **deprioritized behind a green P1** (real-model fidelity + full-scale correctness):
-> compute is NVMe/PCIe-starved and already cheap, so shrinking it buys cost/power headroom, not
-> throughput. Revisit once P1 is green and the vendor flow (E1) can measure the real LUT delta.
+> **Scope note (FPGA-fit now; rung-③ ASIC groundwork later).** See the hardware ladder
+> ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) for the staged framing. The near-term product path is
+> an **FPGA card** ([`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2), so "shrink the die" here means
+> **fit a smaller / cheaper FPGA** (fewer LUT/DSP/BSRAM) on the **prove-it/custom-board rungs ①–②** —
+> *not* a tapeout today. But this die-minimization is **not a dead-end**: the same by-construction area
+> cuts are the **die-area groundwork for the rung-③ ASIC**, where a smaller die is exactly what lowers
+> **$/unit + power at manufacturing volume** (the ASIC is the *endgame*, not out of scope — it is
+> sequenced after the FPGA proves PMF). The analysis stays valid — every lever is correctness-invariant
+> (byte-identical token) — and the *study itself* is **deprioritized behind a green P1** (real-model
+> fidelity + full-scale correctness): compute is NVMe/PCIe-starved and already cheap, so shrinking it
+> buys cost/power headroom, not throughput. Revisit once P1 is green and the vendor flow (E1) can
+> measure the real LUT delta.
 
-How to make the FP8 compute die dramatically smaller (for a smaller FPGA / lower cost / lower
-power — i.e. a cheaper, cooler **local single-user box**), ranked and phased. Grounded in the
-architecture's defining property. (Every lever cuts BOM/power; none change the product's
-single-user interactive tok/s — the die is NVMe/PCIe-bandwidth-bound, so compute is nearly free.)
+How to make the FP8 compute die dramatically smaller (for a smaller / cheaper FPGA on rungs ①–②, and
+lower $/unit + power for the rung-③ ASIC at volume — i.e. a cheaper, cooler **local single-user box**),
+ranked and phased. Grounded in the architecture's defining property. (Every lever cuts BOM/power; **none
+change the product's single-user interactive tok/s** — that speed is set by memory bandwidth and is
+therefore *rung-dependent* [~5–8 rung ① / ~15–40 rung ② / ~40+ rung ③, all **[EST]**; see
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)] — the die is NVMe/PCIe-bandwidth-bound, so compute is
+nearly free.)
 
 ## Thesis — an NVMe/PCIe-bandwidth-bound die should be *minimal*
 
-The workload is **NVMe/PCIe-bandwidth-bound**: the die sits ~75–80 % idle behind the NVMe→DDR5
-expert stream ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md), [`ULTRA_PERF.md`](ULTRA_PERF.md)). So
+The workload is **NVMe/PCIe-bandwidth-bound**: the die sits ~75–80 % idle behind the NVMe→DDR
+expert stream ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md), [`ULTRA_PERF.md`](ULTRA_PERF.md); the DDR
+tier is rung-dependent — DDR4 on rung ①, DDR5/HBM on rung ②, per
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). So
 **compute speed is nearly free** — you can make the die much *slower* (more serial, more shared)
 with **zero throughput loss**, up to the point where compute time exceeds the exposed NVMe/PCIe stall.
 Yet the die today carries **parallel / duplicated compute hardware sized for a throughput the

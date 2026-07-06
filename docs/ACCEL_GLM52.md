@@ -49,7 +49,7 @@ overridable from the real weights. Everything else above is exact.
 runs the full GLM-5.2-FP8 model **fully offline / air-gapped — nothing leaves because there is
 no path out** (the audit is literally "does it work with the ethernet unplugged?" — yes). The
 on-box residency described in this doc is exactly what makes that possible: the entire ~753 GB
-FP8 model lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a ~64 GB DDR5 hot-weight cache
+FP8 model lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a fast DDR hot-weight cache (rung-dependent — DDR4 on the prove-it FPGA, DDR5/HBM on the funded custom board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
 (see `docs/USBC_PRODUCT_PLAN.md`), so after a **one-time provisioning** load (itself doable in a
 secure facility; new-model/weight updates are a physical re-provision) the card serves one user
 (**B=1**) with no internet and no cloud, ever. That unlocks frontier-model use in the

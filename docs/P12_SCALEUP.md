@@ -118,8 +118,10 @@ arithmetic, and a full-config functional run is infeasible per §6).
 
 > **Scope — this is the NON-TARGET datacenter/aggregate regime, not the product.**
 > The product is a **local, single-user box** that runs **B=1** (one user, one sequence);
-> single-user interactive throughput (~3–12 → ~25–40 tok/s [EST] with the faithful levers
-> stacked) is the only metric that matters for it. Batching B *different* sequences is the
+> single-user interactive throughput (rung-dependent per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md):
+> **~5–8 tok/s [EST]** on the near-term prove-it FPGA today, **~15–40 tok/s [EST]** on the funded
+> custom board, ~40+ at volume — the faithful levers are stacked on every rung) is the only metric
+> that matters for it. Batching B *different* sequences is the
 > *aggregate-serving* (datacenter) use of the **same** silicon — a legitimate analysis of
 > what the RTL *could* do batched, kept here as a secondary result, but **never** the
 > product's headline speed. The "batching bandwidth win" below applies only when many

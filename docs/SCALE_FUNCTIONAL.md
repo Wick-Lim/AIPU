@@ -46,10 +46,14 @@ each decode token's KV written to `kv_mem` and attended — with each row's step
 byte-identical). These run at a small faithful slice (batch-axis correctness), not the real
 operator dims of the table above. Scope: this batch / multi-seq axis is a **capability of the
 silicon**, not the product's operating mode — the product is a **local, single-user box** that
-runs **B=1** (one user, the full GLM-5.2-FP8 753B model, ~3–12 → ~25–40 tok/s [EST], comfortably
-interactive). Verifying the batch axis proves the *same* silicon *could* run batched — a
+runs **B=1** (one user, the full GLM-5.2-FP8 753B model, at the rung-dependent tok/s below). Verifying the batch axis proves the *same* silicon *could* run batched — a
 **non-target, datacenter deployment** where many *different* users share the weight/projection
 fetch (the "batching bandwidth win") — which the personal box does not do.
+
+Where product speed is quoted, it is **rung-dependent** (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)):
+**~5–8 tok/s [EST]** on the near-term prove-it FPGA (slow but real + bit-exact), **~15–40 tok/s
+[EST]** on the funded custom board (the interactive product), **~40+ tok/s [EST]** at volume — the
+*same* verified FP8 RTL on every rung, only the memory bandwidth the silicon can feed it changes.
 
 ## The `mla_attn_fp8` fix — a TB-golden/stimulus bug, not an RTL bug
 

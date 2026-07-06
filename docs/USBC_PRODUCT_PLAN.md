@@ -6,6 +6,11 @@ external device**: a small, self-powered, active-cooled box that runs the real
 streams tokens to a host computer over a single USB-C cable.
 
 **Relationship to the other roadmaps (read together):**
+- [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — the **performance ladder** (the anchor for every tok/s
+  headline here). Throughput is set by **memory bandwidth**, which is set by the FPGA/silicon's IO +
+  PHY, which is set by budget — so speed is **staged across rungs**: ① prove-it FPGA ~5–8 · ② funded
+  custom board ~15–40 · ③ SoC/ASIC at volume ~40+ tok/s [EST]. Read every tok/s in this doc as
+  **rung-dependent** per that ladder.
 - [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) — the **RTL / silicon track** (P1–P4: real-model
   fidelity, full-scale, robustness, vendor-IP + FPGA physical). *That* makes the chip correct and
   real. **This** doc is the **device / appliance track** on top of it: form factor, power, thermal,
@@ -34,7 +39,7 @@ subscription-free come as the *result*.
 |---|---|
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
 | **What it runs** | the real `zai-org/GLM-5.2-FP8` (753 GB), **bit-exact** to the published model (not a quantized approximation) |
-| **Throughput** | ~25–40 tok/s single-user interactive [EST] |
+| **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) |
 | **Power** | ~80–110 W at interactive throughput (self-powered; ~30 W throttled) [EST] |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
 | **Host** | thin driver + a local OpenAI-compatible endpoint → existing chat UIs / editors point at it |
@@ -131,7 +136,7 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 | Spec | Target | Notes |
 |---|---|---|
 | Model | GLM-5.2-FP8, bit-exact | the differentiator vs quantized boxes |
-| Throughput | ≥ 25 tok/s (goal 30–40) single-user | comfortable interactive |
+| Throughput | **rung-②** funded board ≥ 25 tok/s (goal 30–40) single-user; **rung-①** prove-it FPGA ~5–8 [EST] | comfortable interactive on the product rung; staged per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) |
 | Power (peak) | ≤ 110 W self-powered; stretch ≤ 100 W USB-PD | see §7 power decision |
 | Idle power | ≤ 10 W | clock-gating + DVFS |
 | Size | ≤ ~1 L enclosure | external-SSD → small-mini-PC |
@@ -254,14 +259,22 @@ smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (
 
 ## 8. BOM & pricing [EST]
 
-| Component | Budget path | Data-center path |
+| Component | Rung ① prove-it (budget FPGA) | Rung ② product (custom board) |
 |---|---|---|
-| FPGA (largest uncertainty) | ~$0.5–1.5 k (mid, e.g. GW5AT-class) | ~$3–8 k (Alveo/Versal-class) |
-| DDR5 64 GB | ~$150–300 | ~$300 (128 GB ≈ $500) |
-| NVMe SSD ~1–2 TB (M.2 / PCIe Gen3–4 x4) | ~$100–250 | ~$300–500 (2–4 TB or multi-drive) |
+| FPGA (largest uncertainty) | ~$0.5–1.5 k (low/mid, e.g. KU3P / GW5AT-class) | ~$3–8 k (Versal / Agilex / HBM-class) |
+| Fast DDR tier | ~$150–300 (**DDR4** ~4 ch, near-term) | ~$300 (**DDR5** multi-ch / HBM, 64–128 GB) |
+| NVMe SSD ~1–2 TB (M.2 / PCIe Gen3–4 x4) | ~$100–250 (1 drive) | ~$300–500 (2–4 TB or multi-drive) |
 | PCB / PSU / controllers / enclosure | ~$150–300 | ~$300 |
 | **BOM total** | **~$1.0–2.4 k** | **~$4–9 k** |
 | **Indicative retail (≈2× BOM)** | **~$2.5–5 k** | **~$8–16 k** |
+
+**Rung mapping ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)):** the two paths are the ladder's first two
+rungs — **rung ①** the ~$1–2 k prove-it demo box (budget FPGA + DDR4, the near-term build) and **rung ②**
+the funded product (custom board, DDR5/HBM) — the ladder's ~$3–6 k box, up to ~$4–9 k for the
+HBM / data-center-card variant. **Rung ③ — a SoC/ASIC at manufacturing volume** — is the cost endgame:
+HBM stacks + many-channel PHY + near-memory FP8 compute at ~TB/s, with **lower $/seat and lower power**
+once the multi-million NRE amortizes over volume. Not now (no volume, no capital); sequenced *after* the
+FPGA rungs prove product-market fit — the same verified RTL on every rung.
 
 **Cost insight:** power is memory-dominated but **cost is FPGA-dominated** — the FPGA class (set by
 D0.2) is the pivotal BOM lever. Algorithmic levers (spec ÷K, compression, DVFS) improve

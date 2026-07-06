@@ -24,7 +24,10 @@ bounded-model-checked.
 > price**. (Provisioned once with the 753 GB weights — itself doable offline — then fully disconnected;
 > model updates are physical re-provisioning.) No per-token API fees, and no vendor that can rate-limit,
 > deprecate, or cut you off. The number that matters is **single-user
-> interactive throughput (~3 → ~25–40 tok/s [EST]** after stacking the faithful levers); the design
+> interactive throughput**, and it's set by the hardware rung you build on: **~5–8 tok/s on the
+> prove-it FPGA today → ~15–40 on the funded custom board [EST]** (rung ③ silicon reaches ~40+ at volume)
+> after stacking the faithful levers — the old flat ~25–40 was the funded rung's number, not a
+> near-term-cheap one; see the 3-rung [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md). The design
 > is deliberately NVMe/PCIe-bandwidth-bound to keep it cheap. Where these docs mention *aggregate /
 > datacenter batching* (per-user ~0.14 tok/s at B≈256), that is a **secondary analysis of a
 > different deployment**, not this appliance — see [`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md).
@@ -65,8 +68,11 @@ exhaustive enumeration, a real PDK, or a formal solver).
 
 **Modeled, not silicon — flagged [EST].** All throughput/energy figures come from a
 bandwidth-roofline model (`tokens/s ≈ NVMe_BW / [(1−h)·footprint] · K`), **not** from a routed
-netlist or silicon: single-user **~3 → ~25–40 tok/s** and **~9 → ~3 J/token** [EST] after stacking
-the NVMe-bandwidth levers (~16–27 with today's built levers → ~25–40 as the all-levers ceiling). Read them as
+netlist or silicon. The tok/s is **rung-dependent** — bandwidth is set by the chip's IO pins + PHYs,
+which is set by budget ([`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)): **~5–8 tok/s on the
+prove-it FPGA (rung ①), ~15–40 on the funded custom board (rung ②), ~40+ at volume (rung ③)** [EST],
+with **~9 → ~3 J/token** [EST] after stacking the NVMe-bandwidth levers (the old flat ~25–40 was the
+funded-rung ceiling, not a near-term-cheap number). Read them as
 an optimistic ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md),
 [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)). What *is* measured — the proven row above — is
 the roofline's underlying **memory-stall mechanism**, now validated on real RTL cycles (stall exactly
@@ -83,8 +89,9 @@ top-8 preserved. Full A now needs deeper depth / the full 753B run (multi-GPU), 
 ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)).
 
 **Out of scope** (vendor IP / hardware / resource-gated): DDR5/NVMe (PCIe)/USB-C **PHYs** (TB-stubbed),
-**full-chip FPGA P&R + board bring-up** (D0.2/D1 — needs Gowin + a board; ASIC/tapeout is out of scope,
-the product is an FPGA card), and a **full-model 8×H200 GPU validation** (substituted by the
+**full-chip FPGA P&R + board bring-up** (D0.2/D1 — needs Gowin + a board; the near-term product is an
+FPGA card, with ASIC/tapeout **sequenced later as the rung ③ volume endgame** — not abandoned, see
+[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)), and a **full-model 8×H200 GPU validation** (substituted by the
 CPU-bit-exact + T4 + truncated-full-model evidence above). *(The tokenizer + host software are now
 built — see [`host/`](host/README.md).)*
 
@@ -123,8 +130,10 @@ RMSNorm `eps 1e-5`, MTP (`num_nextn_predict_layers 1`).
 ```
 
 The workload is **NVMe/PCIe-bandwidth-bound**, so the system is built around streaming MoE experts
-from the NVMe SSD through a DDR5 working cache into a mostly-idle FP8 die (tier: **NVMe** bulk/slow →
-**DDR5** hot set/fast → die). `flash_xbar` is the committed name of that storage-read fabric — a
+from the NVMe SSD through a DDR working cache into a mostly-idle FP8 die (tier: **NVMe** bulk/slow →
+**DDR** hot set/fast → die). *(The **64 GB DDR5** in the diagram is the funded rung ② spec; the DDR tier
+is rung-dependent — DDR4 on the prove-it FPGA, DDR5/HBM on the custom board — see
+[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md).)* `flash_xbar` is the committed name of that storage-read fabric — a
 medium-agnostic address→weight-bytes crossbar with deep-queue latency-hiding; in the product it fronts
 an **NVMe/PCIe host-controller backend** (the NAND-specific backend is the swapped part, not the
 abstraction). Its N-channel banking maps to **PCIe lanes / multiple NVMe drives** — order-of-magnitude
@@ -228,13 +237,14 @@ die-shrink is free: there is a ~4–5× compute-slowdown budget to spend on shar
 ## Documents
 
 - **📊 [Slides — *AIPU Accelerator: Formally Verified FP8 Architecture*](https://docs.google.com/presentation/d/1EMqJOJCNTBaCVEf5EfYI_CymVg--K8ezVyCJcr7ovys/present)** — the project as a presentation deck (design, verification, results).
-- **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction (RTL/silicon track): the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the **FPGA-card** product path (ASIC out of scope).
+- **[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)** — **the honest hardware plan**: a 3-rung ladder (① prove-it FPGA ~5–8 tok/s now → ② funded custom board ~15–40 → ③ SoC/ASIC ~40+ at volume [EST]) — performance is set by memory bandwidth, which is set by the chip's IO/PHY budget. **Start here for "how fast, on what hardware."**
+- **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction (RTL/silicon track): the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the **FPGA-card** product path (ASIC = the rung ③ volume endgame, sequenced after FPGA proves PMF).
 - **[`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md)** — productization plan for the **USB-C external device** (the appliance track): form factor, power (~80–110 W self-powered), thermal, host software, BOM/pricing (~$2.5–8 k [EST]), phased D0–D5 gates. The heavy traffic stays internal → USB-C carries only tokens.
 - **[`host/`](host/README.md)** — the **host software scaffold** (D2): a local **OpenAI-compatible server** (`python3 host/aipu_server.py`, stdlib only) mirroring the RTL host interface, the **real GLM-5.2 BPE tokenizer** (+ byte fallback), the **GLM chat template**, OpenAI **sampling params**, and 3 backends — `MockDevice`, **`SimulatorBackend`** (drives the real `glm_model_fp8` slice via `vvp`), and USB (at D1). `make host-test` (18 tests).
 - **[`fpga/`](fpga/README.md)** — the **D0.2 FPGA-fit vendor-flow scaffold** (Gowin GW5AT-138 / Tang Mega 138K): `gw_sh` synth+P&R script + SDC (host/core async clocks) + compact-config wrapper + nextpnr fallback. Run it (needs Gowin, a user step) for the real LUT/DSP/BSRAM/Fmax — the unknown that gates device size/thermal/BOM/price.
 - **[`docs/OPERATION_FLOW.md`](docs/OPERATION_FLOW.md)** — the end-to-end operational flow: boot (NVMe→DDR5), per-token decode through every block (embed → 78-layer time-mux decoder → LM head → token), weight streaming, batching + union-skip MoE + speculative decode, CDC, and the per-token bottleneck. **Start here for "how it all runs."**
 - **[`docs/ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)** — accelerator architecture: exact config, MLA + DSA + MoE detail, the fp64-golden methodology, memory/streaming, RTL build order.
-- **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (FP8 die + 64 GB DDR5 + 1 TB NVMe SSD, e.g. a USB-C box): tiering, expert caching, the bottleneck/perf/cost model.
+- **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (FP8 die + DDR working cache + 1 TB NVMe SSD, e.g. a USB-C box): tiering, expert caching, the bottleneck/perf/cost model. (The DDR tier is rung-dependent — DDR4/DDR5/HBM per [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md).)
 - **Evidence:** [`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md) (real-checkpoint bit-exact + T4) · [`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md) (operators at real dims) · [`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md) (real sky130 area/P&R) · [`MODAL_VALIDATE.md`](docs/MODAL_VALIDATE.md) (GPU validation harness).
 - **Perf / power / physical:** [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) · [`LOW_POWER.md`](docs/LOW_POWER.md) (the bit-exact low-power path: energy is ~80% NVMe-read bytes → amortize the fetch; the DVFS **frequency** knob is now RTL-realized (`clk_throttle`, peak-power/eco), the J/token half is voltage/vendor; projected ~9 → ~1.5–3 J/token [EST]) · [`ULTRA_PERF.md`](docs/ULTRA_PERF.md) · [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md) · [`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md) (cycle-accurate: the memory-stall mechanism measured on real RTL cycles) · [`MINIATURIZATION.md`](docs/MINIATURIZATION.md) (die shrink: compute is nearly free on an NVMe-bound die → shared engines. **L0 compact config + L1 landed** — swiglu gate/up merged → 6→4 FP8 GEMM engines/block, byte-identical) · [`PPA_FP8.md`](docs/PPA_FP8.md) · [`FORMAL.md`](docs/FORMAL.md).
 - **Verification / scale:** [`FULL_CONFIG_ELAB.md`](docs/FULL_CONFIG_ELAB.md) (the RTL elaborates clean at the **true 753B config** — verilator, 0 errors; full-config SELRANGE lints since cleared 4122→0 byte-identical) · [`COVERAGE.md`](docs/COVERAGE.md) (verilator line/toggle/branch coverage, `make coverage` — merged **87.8% line / 80.1% toggle / 88.9% branch**) · [`P12_SCALEUP.md`](docs/P12_SCALEUP.md) · [`P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md) · [`ROADMAP.md`](docs/ROADMAP.md).
@@ -298,5 +308,8 @@ of an ECP5-85 on the controllers alone** — so the full system does **not** fit
 larger FPGA; the compute die's ECP5 size is **not yet measured** (a yosys-0.66 `synth_ecp5` scalability
 limit — an earlier "die 32–64× over" figure was a `KMAX` synth artifact, since disproven)
 ([`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md)). Because the workload is NVMe/PCIe-bandwidth-bound (the die
-sits ~75–80% idle behind the NVMe storage), an FPGA card is the committed product — an ASIC's faster compute would
-be largely wasted, so ASIC is out of scope.
+sits ~75–80% idle behind the NVMe storage), an FPGA card is the committed **near-term** product — at this
+rung an ASIC's faster *compute* would be largely wasted. But the real ceiling is **memory bandwidth (IO
+pins + PHY)**, which is exactly what an ASIC breaks (HBM stacks + many-channel controllers + near-memory
+compute at ~TB/s, lower $/seat + power at volume) — so ASIC is **not out of scope: it is the rung ③ volume
+endgame**, sequenced after the FPGA proves product-market fit ([`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)).

@@ -1,11 +1,20 @@
 # Physical characterization — REAL sky130 standard cells
 
-> **Scope note (ASIC is out of scope).** The product path is an **FPGA card**, not an ASIC
-> ([`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2). This sky130 (an ASIC PDK) characterization is
-> therefore **realizability evidence** — proof that the RTL synthesizes and *places* to real
-> standard cells with timing met, i.e. it is physically sound and will map cleanly to FPGA fabric —
-> **not** a product tapeout step. The numbers stand as real-cell PPA anchors; the flow is not the
-> product's physical path.
+> **Scope note — ASIC is the rung-③ volume endgame, not "out of scope"** (see
+> [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). The **near-term** product path is an **FPGA card**
+> (ladder rungs ①②, [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2); a custom **ASIC** is the
+> **rung-③ endgame at manufacturing volume** — precisely what breaks the FPGA's IO/PHY *bandwidth*
+> ceiling (HBM stacks + many-channel controllers + near-memory FP8 compute at ~TB/s) for lower
+> $/seat + higher tok/s + lower power once the multi-million NRE amortizes over volume. (The earlier
+> "ASIC out of scope" was argued from *compute*-bound reasoning; the real bottleneck is **memory
+> bandwidth**, which is exactly what an ASIC's PHY/HBM breaks — so ASIC is sequenced *after* FPGA
+> proves PMF, not abandoned.) This sky130 (an ASIC PDK) characterization therefore does **double
+> duty**: (1) near-term **realizability evidence** — proof that the RTL synthesizes and *places* to
+> real standard cells with timing met, i.e. it is physically sound and will map cleanly to FPGA
+> fabric; and (2) **groundwork for that rung-③ ASIC** — a real-PDK PPA basis for the eventual volume
+> tapeout, **not a deprioritized dead-end**. The numbers stand as real-cell PPA anchors; the flow is
+> not the *near-term* product's physical path (rungs ①② ship on FPGA), but it is the volume endgame's
+> foundation.
 
 Moves the FP8 compute die's area/timing from **[EST]** (market/physics models) to **real
 synthesized numbers on a real open-source PDK**. Flow: yosys 0.66 `synth` → `dfflibmap` →
@@ -106,8 +115,9 @@ yosys -p "read_verilog -sv -I src src/glm_matmul_fp8.v src/glm_fp_pipe.v; \
 
 ## FPGA resource fit (ECP5) — partial, honest
 
-Since the product is an **FPGA card** (ASIC out of scope), a first look at whether the *full
-system* fits a real FPGA. Partitioned `synth_ecp5` (yosys 0.66) of each memory-system controller
+Since the **near-term** product is an **FPGA card** (ladder rungs ①②; the ASIC is the rung-③ volume
+endgame, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), a first look at whether the *full system* fits
+a real FPGA. Partitioned `synth_ecp5` (yosys 0.66) of each memory-system controller
 **standalone** completed cleanly:
 
 | block | LUT4 | FF | CCU2C | MULT18 | EBR |

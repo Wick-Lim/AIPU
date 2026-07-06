@@ -31,8 +31,10 @@ honest limits as a first customer. Both are below.*
   box wins clearest for (a) **per-desk / air-gapped** deployment, (b) funds **without** a big GPU/MLOps
   team who want it **turnkey**, (c) footprint / power / **per-seat** economics. Be honest where their
   cluster already serves it.
-- **It is NOT the trading hot path.** ~25–40 tok/s is interactive research speed, **not microseconds**.
-  Never let them think it's a trading accelerator.
+- **It is NOT the trading hot path.** Interactive research speed — **~5–8 tok/s on the near-term
+  prove-it FPGA, ~15–40 on the funded custom board [EST]** (staged hardware, see
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) — **not microseconds**. Never let them think it's a
+  trading accelerator.
 - **It is NOT "alpha in a box."** It doesn't generate signals. It lets researchers use a frontier model
   on data they currently can't. Sell **confidentiality-enabled research productivity**, not edge-in-a-box.
   Quant people respect precision and will end the call the moment you overclaim.
@@ -144,8 +146,9 @@ unless per-desk air-gap or turnkey-753B matters) · wants microsecond latency (w
 a **signal generator** ("does it give alpha?").
 
 **The honest positioning in the call (say it plainly):** *"This is a confidentiality-enabled research
-tool — a frontier model on data you can't cloud. It is not the trading hot path (it's ~25–40 tok/s, not
-microseconds), and it does not generate signals. I won't oversell it."* Precision **is** the sell here.
+tool — a frontier model on data you can't cloud. It is not the trading hot path (~5–8 tok/s on the
+prove-it FPGA today, ~15–40 on the funded custom board [EST]; not microseconds), and it does not
+generate signals. I won't oversell it."* Precision **is** the sell here.
 
 **The ask:** *"Would [Fund] be a design partner? A couple of technical sessions on your infra + security
 requirements, and a short non-binding letter that you'd pilot it when the air-gapped demo is ready. No
@@ -156,7 +159,7 @@ cost — you get first access and shape it around how you actually run infra."*
 | They say | You say (honest) |
 |---|---|
 | "We already run models on our own GPU cluster." | "Then you've solved the capability — so the box is only interesting for (a) **per-desk air-gapped** deployment, (b) skipping the 753B quantize/serve/MLOps for a **turnkey** full-frontier box, (c) footprint/power/cost per seat. If your cluster already serves 753B privately to every desk, you may not need us — I'd rather know that now." |
-| "Is it fast enough?" | "For research/analysis, yes — ~25–40 tok/s, interactive. It is **not** the trading hot path, not microseconds. Different tool entirely." |
+| "Is it fast enough?" | "For research/analysis, yes — **~5–8 tok/s on the near-term prove-it FPGA today, ~15–40 on the funded custom board** ([EST]; staged hardware — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), interactive. It is **not** the trading hot path, not microseconds. Different tool entirely." |
 | "Does it give us edge / alpha?" | "It doesn't generate signals. It lets your researchers use a frontier model on data they currently can't — a productivity + secrecy edge, not a signal. I won't pretend otherwise." |
 | "Why not a zero-retention API or an on-prem vendor model?" | "Both still need a connection. The box runs **disconnected** — the audit is 'does it work with the cable unplugged?'. Zero-retention/VPC/TEE all fail that; if that bar doesn't matter to you, you don't need us." |
 | "How do we trust it doesn't exfiltrate?" | "There's no path out — it's air-gapped — and the datapath is **verified RTL, bit-exact to the real model**, so your infosec team can audit both the non-egress and the correctness. This is exactly the part your infra people can verify themselves." |

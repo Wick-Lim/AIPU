@@ -35,6 +35,11 @@ die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K`.
   `cdc_async_fifo` (request in, token out), `reset_sync` per domain.
 - **`glm_fp8_system`** — the compute-domain core: the die + the memory subsystem.
 - Memories are TB-modeled here; real DDR5 / NVMe (PCIe) / USB-C PHYs are vendor IP (out of scope).
+- **DDR is rung-dependent** — the diagram's `64 GB DDR5` is the *funded* rung-② point, **not THE spec**:
+  the near-term prove-it FPGA runs DDR4 (~4 ch, ~100 GB/s), the funded custom board runs DDR5 multi-ch /
+  HBM (~300–600 GB/s); see the hardware ladder ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). NVMe (the
+  753 GB model store) is the same on every rung — performance is set by memory bandwidth, i.e. by which
+  silicon the budget buys.
 
 ## 1. Boot — execution conditions & resident-set load (NVMe → DDR5)
 
@@ -51,7 +56,7 @@ die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K`.
 | 6 | 🔑 **`boot_loader.done`** | DMA the **~28 GB resident set** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas) **NVMe → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, 9240 tests, BMC-proven) |
 | 7 | **USB enumerated** | host driver loaded, endpoint open | host + vendor USB IP |
 
-The **256 routed experts stay on the NVMe SSD** (753 GB ≫ 64 GB DDR5) and are demand-streamed per token
+The **256 routed experts stay on the NVMe SSD** (753 GB ≫ the DDR working set) and are demand-streamed per token
 (§4). Boot 6 is pure DMA — no arithmetic, byte-exact.
 
 **Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + resident load (~28 GB /
@@ -191,9 +196,14 @@ async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
   exposed NVMe-refill; `cyc_per_tok` grows with `FLASH_LAT` (`stall = 3·FLASH_LAT+9` at the
   slice; `cyc_per_tok` 7947→8607 @FLASH_LAT=256), the roofline *mechanism* measured on real RTL
   cycles ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)).
-- **Projected (roofline, `[EST]`):** **single-user ~6–16 tok/s** (→ ~25–40 with all levers), ~3 J/token
-  — **this is the product: a fully offline / air-gapped local box** that runs the whole 753B frontier
-  model with the ethernet unplugged. The capability it unlocks is frontier AI where the cloud can't
+- **Projected (roofline, `[EST]`) — staged to the hardware ladder ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)):**
+  single-user tok/s is set by memory bandwidth, which is set by the silicon the budget buys, so it is
+  **rung-dependent** — **~5–8 tok/s on the near-term prove-it FPGA** (DDR4 ~4 ch, the buildable demo
+  *now*), **~15–40 tok/s on the funded custom board** (DDR5 multi-ch / HBM, rung ②), **~40+ tok/s at
+  ASIC volume** (rung ③, custom silicon w/ HBM stacks + near-memory compute — lower $/seat + power once
+  the NRE amortizes over volume). All `[EST]`, ~3 J/token; the old flat "~25–40" is the **funded rung-②**
+  number, not the cheap near-term box. **This is the product: a fully offline / air-gapped local box** that
+  runs the whole 753B frontier model with the ethernet unplugged. The capability it unlocks is frontier AI where the cloud can't
   reach — SCIFs, isolated OT / critical-infra, field/edge, or anywhere a vendor connection is itself the
   liability; the proof is binary — **nothing leaves because there's no path out** (the host link carries
   only token IDs + position, §1), so it passes the unplugged-ethernet test that every cloud option fails,

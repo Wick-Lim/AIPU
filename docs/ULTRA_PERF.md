@@ -1,5 +1,5 @@
 # ULTRA_PERF — Ranked Ultra-High-Performance Opportunity Report
-### GLM-5.2-FP8 single-module accelerator (FP8 die + 64 GB DDR5 + 1–4 TB NVMe SSD)
+### GLM-5.2-FP8 single-module accelerator (FP8 die + DDR4/DDR5/HBM per rung + 1–4 TB NVMe SSD — the memory tier is rung-dependent, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
 
 **Scope.** Opportunities *beyond* the already-built+measured levers (flash_xbar 7.99× latency-hide,
 weight_decomp 1.34×, MTP K=2 +23%, clk_en_ctrl 74% idle-gate, flash_layout +40% balance, the −87.6% BFP
@@ -27,15 +27,20 @@ flagged **NOT bit-exact**.
 > doable offline) and model updates are **physical** re-provisioning; and offline *alone* is table-stakes
 > for any local box — the moat is the **combination of offline + full frontier (753 B) + appliance/seat
 > price** (see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The performance number that
-> matters is therefore **single-user interactive throughput (~25–40 tok/s [EST]** with the faithful
-> levers stacked — the "Single-user" roofline row in §4). Any **aggregate-serving / datacenter-batch**
+> matters is therefore **single-user interactive throughput**, and it is **rung-dependent** — set by the
+> memory bandwidth the silicon can feed, which is set by the rung you build
+> ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST] on the near-term prove-it FPGA (rung ①),
+> ~15–40 tok/s [EST] on the funded custom board (rung ②)** with the faithful levers stacked (the doc's old
+> flat ~25–40 was implicitly the rung-② funded number — the "Single-user" roofline row in §4). Any **aggregate-serving / datacenter-batch**
 > figures below (B≈256, ~50 tok/s *aggregate*, **per-user ~0.14 tok/s**) describe a **DIFFERENT,
 > non-target deployment** kept here only as analysis of what the same silicon *could* do batched —
 > that per-user latency does **not** describe the box you plug in. When in doubt, the single-user
 > numbers are the product.
 
 **The one equation.** The workload is NVMe/PCIe-bandwidth-bound:
-`tok/s ≈ NVMe_BW / [(1−h)·footprint] · K`. Only three classes of idea move this wall:
+`tok/s ≈ NVMe_BW / [(1−h)·footprint] · K`. **`NVMe_BW`/`DDR_BW` are themselves set by the rung's IO pins +
+PHY** ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), so the absolute tok/s scales with the hardware rung; the
+levers below move the *other* terms. Only three classes of idea move this wall:
 **(i) move fewer expert bytes** (sparsity / dedup / stronger decomp), **(ii) compute at the data** (near-storage),
 **(iii) raise speculative K** (better drafts + batched verify). Everything else is incremental — die-side
 fmax/area work does **not** move the wall (the die is already ~75% idle behind the NVMe/storage read).
@@ -58,7 +63,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 | 10 | **IndexShare (DSA index once / 4 layers)** | Cache index-list; skip dsa_indexer on 3 of 4 layers (model-faithful) | At 1M ctx: index-read 10→2.5 GB/tok → keeps long-ctx NVMe-bound | **rtl-here** | med | ✅ |
 | 11 | **Parallel/pipelined DSA indexer** | Replace in-order 1-MAC dot with 128-lane reduction tree | At 1M ctx: ~0.05→~6 tok/s (kills O(S)·7-cyc drain); **bit-exact** | **rtl-here** | high | ✅ |
 | 12 | **MLA weight absorption (attend in 512-dim latent)** | Fold W_uk into q, W_uv into W_o; drop per-key up-projection | Removes ~3.2e5 per-key GEMMs/tok; **bit-exact** (matmul reassoc) | **rtl-here** | high | ✅ |
-| 13 | **Near-storage / computational-storage expert compute** | Move FP8 MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling. **No J/tok win** | out-of-scope | high | ✅ |
+| 13 | **Near-storage / computational-storage expert compute** — the **rung-③ endgame** | Move FP8 MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling (breaks the FPGA IO/PHY wall). **No J/tok win** | **rung ③** | high | ✅ |
 | 14 | **Batch × MTP multiply** | Run all B streams' MTP drafts in the same grouped pass | ~1.7× *on top of* batch → ~60–85 tok/s aggregate @B≈256 | **rtl-here** | low | (compose) |
 | 15 | **Paged multi-sequence KV cache** — ✅ **BUILT (`kv_cache_pager` NSEQ windows + `glm_fp8_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler now **realized**: B>1 *distinct users* decode in one forward, per-row bit-exact (proven B=2/4) | **rtl-here** | **✅ done** | (enabler) |
 
@@ -72,10 +77,12 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 
 These touch `(1−h)·footprint`, `K`, or the bus itself.
 
-- **Near-storage compute (#13)** — the single biggest lever: ~1000× fewer bus bytes/expert lifts the ceiling
-  to the SSD's internal NAND-sense limit (**10×+ tok/s [EST]**). Caveats: custom CSD/PIM silicon (**out-of-scope**
-  for this repo), and it does **not** cut J/token (the sense energy is the cost). The compute core is reusable
-  verified RTL.
+- **Near-storage compute (#13)** — the single biggest lever *and the **rung-③ endgame*** ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)):
+  ~1000× fewer bus bytes/expert lifts the ceiling to the SSD's internal NAND-sense limit (**10×+ tok/s [EST]**).
+  It needs custom CSD/PIM / near-memory silicon — an ASIC/SoC with HBM + near-memory compute is **exactly what
+  breaks the FPGA's IO/PHY bandwidth ceiling**, so it is **not "out of scope forever" but the volume endgame
+  (rung ③)**: not now (no volume, no capital), real later for cost-down + performance + power at manufacturing
+  volume. It does **not** cut J/token (the sense energy is the cost). The compute core is reusable verified RTL.
 - **Aggregate batching (#1/#2/#3-knee)** — ⚠️ **NOT the product; a secondary "what-if" for a datacenter
   deployment of the same silicon.** Reframes batching from the doc's "~1.5×" (a B=32, LRU-hit-rate artifact)
   to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch half is now integrated + verified
@@ -149,7 +156,8 @@ The only thing that needs to be *invented*; the math die is ready.
 2. **Grouped dispatcher.** Per MoE layer: (a) route all B tokens, histogram top-8 picks into a per-expert
    token-list (reuse scatter_gather.v + topk_select); (b) for each *distinct* active expert, gather its rows
    into a PE_M tile, fetch the ~37 MB expert from NVMe/DDR5 **once**, run the grouped GEMM, scatter back;
-   (c) advance all B tokens to L+1 in lockstep. Union ≤256 experts ≤9.5 GB → resident in 64 GB DDR5; the
+   (c) advance all B tokens to L+1 in lockstep. Union ≤256 experts ≤9.5 GB → resident in the rung-② board's
+   64 GB DDR5 (DDR is rung-dependent — [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), not a fixed spec); the
    union is the **only** NVMe/storage traffic, shared across all B rows.
    **✅ (b) is now INTEGRATED + verified.** `glm_decoder_block_fp8` (PE_M>1) already fetches **only** the
    union of experts any row selected — a `T_ESCAN` scan over the expert axis with a combinational `any_has`
@@ -194,27 +202,31 @@ under deployments this product does not target — kept for honesty, not as the 
 
 | Regime | Deployment | Bound by | tok/s (today → with levers) **[EST]** | Levers that apply |
 |--------|---------|----------|----------------------------------------|-------------------|
-| **Single-user ← THE PRODUCT** | **local personal box, interactive** | NVMe BW (16 GB routed/tok @100 GB/s [EST]) | ~3–12 → **~25–40** | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
+| **Single-user ← THE PRODUCT** | **local personal box, interactive** | NVMe BW (16 GB routed/tok @100 GB/s = **rung ②** [EST]) | ~3–12 → **~15–40** (rung ②; **rung ① prove-it ~5–8**, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) [EST] | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
 | Aggregate-serving *(not the product)* | datacenter batch, offline | NVMe/storage union then compute roofline | ~6 (B=1) → **~36–50** (×1.7 MTP → 60–85) *aggregate; per-user ~0.14* | batched MoE #1, PE_M #2, paged KV #15, B≈256 knee, scheduler |
-| Compute-bound *(hypothetical)* | full-resident HBM | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-storage #13 or HBM); array-scale for prefill |
+| Compute-bound *(hypothetical)* | full-resident HBM (**rung ③** class) | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-storage #13 or HBM — **rung ③**); array-scale for prefill |
 
 **On the ~100 GB/s storage figure [EST].** This is an *aggregate* NVMe/PCIe target, **not a single drive**:
 one PCIe Gen4 ×4 NVMe delivers ~7 GB/s (Gen3 ×4 ~3.5, Gen5 ×4 ~14), so ~100 GB/s implies a **multi-drive /
 many-lane array** (order ~14× Gen4 or ~7× Gen5 M.2 drives striped, or an equivalent many-lane PCIe fan-out)
-on a **custom board** — aggressive, and it scales *with lanes/drives* exactly as the old NAND story scaled
+on a **custom board** (the **rung-② board**, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) — aggressive, and it scales *with lanes/drives* exactly as the old NAND story scaled
 with channels. `weight_decomp` (lossless FP8) shrinks the bytes streamed, buying *effective* NVMe bandwidth
 on top. Treat 100 GB/s as an upper-bound target, not a single-M.2 spec; the tok/s rows below scale down
 roughly linearly with the storage BW actually deployed (e.g. a single Gen5 x4 ~14 GB/s ≈ ~0.9 tok/s at
 16 GB routed/tok, before decomp/sparsity/spec-K multipliers).
 
 **Reading it.** The product — a **single-user local box** — stacking the faithful RTL levers (flash_xbar N× +
-decomp 1.34→~1.5× + activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~25–40 tok/s @100 GB/s NVMe [EST]**,
-comfortably interactive, approaching the ~50 tok/s compute ceiling — at which point the answer is a
-bigger/cheaper compute die (compute is **not** the BOM cost). *(The aggregate-serving row is a separate,
+decomp 1.34→~1.5× + activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~15–40 tok/s @100 GB/s
+NVMe [EST] on the funded custom board (rung ②; the fully-stacked upper end ~25–40), and ~5–8 tok/s [EST] on the
+near-term prove-it FPGA (rung ①)** — the tok/s a box hits is set by the memory bandwidth of the rung you build
+([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), not by the RTL alone (the RTL is bit-exact and identical on every
+rung). Rung ② is comfortably interactive, approaching the ~50 tok/s compute ceiling — at which point the answer
+is a bigger/cheaper compute die (compute is **not** the BOM cost). *(The aggregate-serving row is a separate,
 non-target deployment: batching many users reaches the **same** ~50 tok/s ceiling but as pooled throughput, so
 each of the ~355 users floors at ~0.14 tok/s — that per-user figure belongs to a datacenter box, never to the
-personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-storage compute (#13,
-custom silicon). Cache cleverness (predictor) and extra dies are provably capped.
+personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-storage compute (#13) — the **rung-③ ASIC/SoC
+endgame** (HBM stacks + near-memory compute at manufacturing volume, for cost-down + performance + power). Cache
+cleverness (predictor) and extra dies are provably capped.
 
 ---
 

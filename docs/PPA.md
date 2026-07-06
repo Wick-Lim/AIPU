@@ -259,7 +259,9 @@ Plugging measured α into `P_dyn = α·C_eff·V²·f` with first-order ECP5 coef
 at a time**, so the *dynamic* power from computation is a few mW — **static leakage and
 clock distribution dominate**, not toggling; (2) the design is **low-power (tens of
 mW)**, well under the ~0.3–0.7 W a naïve "whole chip toggling" guess gives; (3) thermals
-are a non-issue (§ below). **Caveats:** the per-cell capacitances are first-order (could
+are a non-issue (§ below). These are **FPGA-rung** PPA figures (ECP5); perf/power are **rung-dependent**, and the lower
+**$/seat + power** at scale come with the **rung-3 ASIC** — see
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). **Caveats:** the per-cell capacitances are first-order (could
 be 2–3× off — the *measured* quantity is α); RTL α omits pure-combinational glitch power
 (gate-level would add a ~10–30 % margin; the ECP5 `cells_sim` gate-level sim hit an
 iverilog include-collision, so RTL activity was used); real watts still want Radiant's
@@ -358,12 +360,16 @@ gives a bitstream for power estimation.
 Use **Lattice Diamond/Radiant** (ECP5) or port to **Vivado** (Xilinx) /
 **Quartus** (Intel) for vendor-grade timing closure and power analysis.
 
-### Option C — real-cell realizability (sky130, not the product path)
+### Option C — real-cell realizability (sky130) — and the rung-3 ASIC basis
 
-ASIC is **out of scope** for the project (the AIPU product is an FPGA card — see
-[`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)). A standard-cell map (**yosys + Sky130**) is still
-useful as **realizability evidence** — real gate-level area (µm²) and register-to-register timing,
-confirming the RTL maps to real cells. See [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md) for the FP8
+ASIC is **not the near-term path, but the rung-3 endgame** — custom silicon **at manufacturing
+volume**, where it delivers the lower **$/seat**, higher tok/s, and lower **power** by breaking the
+FPGA's IO/PHY memory-bandwidth ceiling (the ladder: [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md);
+product sequencing: [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)). **Not now** (no volume, no
+capital); the endgame once the FPGA rungs prove product-market fit. A standard-cell map (**yosys +
+Sky130**) is useful **today** as **realizability evidence** — real gate-level area (µm²) and
+register-to-register timing, confirming the RTL maps to real cells — and doubles as the
+**groundwork for that rung-3 silicon**. See [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md) for the FP8
 die's real sky130 area/placement/timing. This is a soundness check, not a tapeout step.
 
 ---

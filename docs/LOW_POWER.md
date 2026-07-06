@@ -21,8 +21,8 @@ So per-token energy splits roughly:
 
 | bucket | share | why | can we cut it? |
 |---|---|---|---|
-| **NVMe routed-expert bytes** | **~80 %** | top-8/256 experts/MoE-layer streamed from the NVMe SSD every token (753 GB ≫ 64 GB DDR5, can't all reside) | **only** by moving fewer bytes or moving them less often |
-| DRAM / cache / KV | ~10–15 % | resident set + latent-KV in DDR5 | HBM (energy/bit), smaller footprint |
+| **NVMe routed-expert bytes** | **~80 %** | top-8/256 experts/MoE-layer streamed from the NVMe SSD every token (753 GB ≫ any box's DDR — rung-dependent, tens of GB — can't all reside) | **only** by moving fewer bytes or moving them less often |
+| DRAM / cache / KV | ~10–15 % | resident set + latent-KV in fast DDR (DDR4 rung-① / DDR5·HBM rung-②) | HBM (energy/bit), smaller footprint |
 | **compute die** | **~20 % and idle** | ~80 GFLOP/token on a die that's 75–80 % stalled | DVFS, gating, die-shrink (all done/free — see §4) |
 
 **The blunt conclusion: DVFS, die-shrink and clock-gating only touch the ~20 % compute slice.
@@ -31,15 +31,24 @@ tokens** (spec-decode K — the single-user box's lever). Amortizing across B *u
 **non-target datacenter-batch** regime (the same silicon batched, kept for analysis but not this
 personal box, which runs B=1). Everything below is ranked by that truth.
 
+> **Rung note — per-token power is hardware-rung-dependent ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).**
+> Every bit-exact lever in this doc is the **same RTL on every rung**, so it cuts J/token identically on
+> the rung-① prove-it FPGA (DDR4) and the rung-② funded board (DDR5/HBM). But the **structural** power win
+> — driving down the dominant storage-read **energy/bit itself** — is the **rung-③ ASIC endgame**: HBM
+> stacks + many-channel PHY + **near-memory FP8 compute** at ~TB/s move the ~80 % expert bytes far
+> cheaper/bit, for **lower $/seat + lower power once the NRE amortizes over volume**. ASIC here is **not**
+> a compute play (compute is already ~free, §4) — it is the **volume power/cost win**, sequenced *after*
+> the FPGA rungs prove PMF, not "out of scope."
+
 ## 2. The irreducible floor
 
 The active experts **must** be re-read from the NVMe SSD every token (the model is fixed; the 753 GB
-routed-expert set can't reside in 64 GB DDR5). That sets a hard J/token floor. The *only* bit-exact
+routed-expert set can't reside in a single box's DDR — tens of GB, rung-dependent, DDR4 on the prove-it rung and DDR5/HBM on the funded board; [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). That sets a hard J/token floor. The *only* bit-exact
 ways under it are: **(a) fewer bytes per fetch** (lossless compression), **(b) fewer fetches per
 token** (amortize one weight-load across K tokens via spec decode — the single-user box's lever;
 the across-**B-users** batch variant is the non-target datacenter regime, kept for analysis, not
 this product), **(c) more of the hot working set
-resident** (bigger DDR5 → higher hit-rate → fewer NVMe reads; a hardware-$ lever). Compute tricks
+resident** (bigger/faster DDR → higher hit-rate → fewer NVMe reads; a hardware-$ lever — literally climbing the ladder: more DDR channels / HBM = a bigger chip = a higher rung, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). Compute tricks
 cannot touch the floor.
 
 ## 3. Bit-exact lever ladder (J/token, single-user [EST])

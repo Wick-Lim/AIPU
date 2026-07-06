@@ -3,8 +3,9 @@
 *The ideal customer profile for the product defined in [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) /
 [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md): a **local, single-user appliance** running a full
 frontier open-weight model (GLM-5.2-FP8, 753B) that **works fully offline / air-gapped — nothing leaves
-because there is no path out** — no per-token fees, ~25–40 tok/s [EST] interactive, **one box / one
-seat** (B=1).*
+because there is no path out** — no per-token fees, **one box / one seat** (B=1), at a speed staged to
+the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rungs: ~5–8 tok/s [EST] on the prove-it FPGA today,
+~15–40 tok/s [EST] interactive on the funded custom board.*
 
 ---
 
@@ -127,8 +128,10 @@ The pitch is **not** "cheaper tokens" (the cloud API is cheaper if you're *allow
 **"the only way to give this specific professional frontier-model leverage on data they cannot put in
 the cloud, at a desk price."** The buyer is paying for **access under a constraint**, not for throughput.
 
-> Honest gate: the box's BOM (data-center-class FPGA + 1 TB NVMe SSD (M.2/PCIe) + 64 GB DDR5 + board) must land at a
-> *per-seat-defensible* price. That number is exactly what the **FPGA-fit measurement**
+> Honest gate: the box's BOM (FPGA + 1 TB NVMe SSD (M.2/PCIe) + DDR + board) must land at a
+> *per-seat-defensible* price — the FPGA class and DDR generation are **rung-dependent** (DDR4 on the
+> prove-it rung, 64 GB DDR5 / HBM on the funded board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
+> That number is exactly what the **FPGA-fit measurement**
 > ([`../fpga/`](../fpga/README.md), the parallel track) decides — it sets the FPGA class, which sets the
 > BOM. **The ICP is only real once that BOM lands in the low-$k's per seat.**
 
@@ -139,8 +142,9 @@ the cloud, at a desk price."** The buyer is paying for **access under a constrai
 2. **Their documents, their matters** — the whole point is the data never leaves; run it on a real
    matter they'd otherwise never touch with cloud AI.
 3. **Success metric = "would you pay per-seat for this?"** measured on *quality on confidential work +
-   the confidentiality guarantee*, not on tok/s. (25–40 tok/s is comfortably interactive; speed is not
-   the sale — *provable air-gap / locality — it works unplugged* — is.)
+   the confidentiality guarantee*, not on tok/s. (Even the prove-it rung's ~5–8 tok/s [EST] is enough to
+   pilot — the funded box reaches ~15–40 tok/s [EST] — because speed is not the sale — *provable air-gap
+   / locality — it works unplugged* — is.)
 4. **Deliverable that unlocks the pilot:** a working box (or even the compact FPGA config) that (a) runs
    real GLM-5.2 weights locally and (b) passes the **literal unplugged-ethernet test** — it keeps working
    with the network cable pulled, so there is provably **no path out**. Security's checkbox is the close.

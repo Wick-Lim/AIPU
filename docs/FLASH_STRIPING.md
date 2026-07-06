@@ -11,8 +11,9 @@ that deliver it and lays out the striping design space.
 
 The workload (real GLM-5.2): **75 MoE layers × 256 experts, top-8 fetched per layer per
 token, ~37 MB/expert (FP8)**, plus the always-read shared expert, MLA/attention weights,
-embeddings and the DSA index. The 753 GB of weights live on the NVMe SSD; DDR5 is the working
-cache (hit rate `h`); the FP8 die computes.
+embeddings and the DSA index. The 753 GB of weights live on the NVMe SSD; fast DDR is the working
+cache (hit rate `h`; DDR4 on the prove-it rung, DDR5/HBM once funded — see
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); the FP8 die computes.
 
 ---
 
@@ -173,9 +174,16 @@ NAND-multi-channel model, not per-device NVMe measurements — a single NVMe SSD
 (PCIe Gen3 x4), ~7 GB/s (Gen4 x4), ~14 GB/s (Gen5 x4). So the 50 GB/s baseline and the N× rows
 are **aggregate across multiple NVMe drives / many PCIe lanes** — realizing them is the custom
 board's job (several M.2/PCIe endpoints), not a single-drive claim, and the specific 50 GB/s
-anchor does not cleanly re-derive to one NVMe. The tok/s stay [EST].
+anchor does not cleanly re-derive to one NVMe. The tok/s stay [EST]. Mapped to the ladder
+([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): the **one-NVMe prove-it rung ①** sits at the low
+rows → **~5–8 tok/s [EST]** near-term; the **multi-NVMe / many-lane aggregate is the funded custom
+board (rung ②)** → the **~15–40 tok/s [EST]** rows; a device-level BW jump (HBF, §6 — rung-③-class)
+rides the same curve beyond.
 
-The **~25–40 tok/s sweet spot** — a usable interactive rate on a box that runs the **full
+The **~15–40 tok/s [EST] sweet spot — the table's ~24–40+ rows, realized on the funded custom
+board (rung ②: multiple NVMe drives / many PCIe lanes), not the near-term single-NVMe prove-it box
+(rung ①, ~5–8 tok/s [EST]; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))** — a usable interactive
+rate on a box that runs the **full
 753 GB GLM-5.2 model fully offline / air-gapped** (nothing leaves because there is no path out;
 the model is provisioned once, itself doable offline) at a fraction of cloud cost/power — is
 reachable by **adding NVMe drives / PCIe lanes + striping** —
@@ -205,7 +213,8 @@ placement strategy here rides the same curve.
   is **not yet implemented or measured**; the ~1.0 balance is the pigeonhole-free *expectation*,
   to be confirmed by extending `flash_layout.py`'s measurement harness to stripe mode.
 - **All tok/s here are [EST]** — bandwidth-roofline model, not silicon (see
-  [`ULTRA_PERF.md`](ULTRA_PERF.md), [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md)). Real systems
+  [`ULTRA_PERF.md`](ULTRA_PERF.md), [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md), and
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) for the rung staging). Real systems
   land below the roofline (achievable-vs-peak BW, cache-`h` optimism, second-order walls).
 - **The compute is bit-exact** to real GLM-5.2-FP8 ([`BIT_ACCURACY.md`](BIT_ACCURACY.md));
   striping is a *placement* choice and does not touch numerics.

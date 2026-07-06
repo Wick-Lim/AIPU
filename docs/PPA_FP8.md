@@ -2,7 +2,12 @@
 
 **All numbers below are `[synth-estimate, yosys generic/abc — not a placed-and-routed FPGA result]`.**
 (A real sky130 standard-cell placement of `glm_matmul_fp8` exists as realizability evidence — see
-[`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md); the product path is an FPGA card, ASIC is out of scope.)
+[`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md). The product path is an FPGA card — the prove-it and
+custom-board rungs of [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — and the **same** sky130 placement is
+the groundwork for an eventual **ASIC, the rung-③ volume endgame**: custom silicon is exactly what breaks
+the FPGA's memory IO/PHY bandwidth ceiling (HBM stacks + many-channel PHY + near-memory FP8 compute) for
+lower $/seat + power once amortized over volume. ASIC is **not out of scope** — it is sequenced *after*
+FPGA proves product-market fit, when volume justifies the NRE.)
 
 Method: yosys 0.66 FAST flow per repo note (no `synth_gowin` autoname).
 - **cells** = generic cells via `read_verilog -sv; (chparam); hierarchy; proc; opt; stat` (hierarchical, includes submodules).

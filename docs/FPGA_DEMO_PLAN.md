@@ -5,8 +5,14 @@ demo. **Why it matters:** the FPGA class sets the box's size / thermal / **BOM /
 and the per-seat price is what makes the [`ICP.md`](ICP.md) real. Everything downstream is bounded
 by the number this track returns.*
 
-**Product frame:** local, single-user box (B=1), target board **Sipeed Tang Mega 138K Pro**
-(**Gowin GW5AT-138**, ~138 K LUT, on-board DDR3). See [`MINIATURIZATION.md`](MINIATURIZATION.md).
+**Product frame:** local, single-user box (B=1). This **is** the **rung-① "prove-it"** plan of the
+staged [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — the cheap, near-term proof that the *same* verified
+RTL runs the real model's tokens on real FPGA silicon (**~5–8 tok/s [EST]**, slow but bit-exact). The
+**Sipeed Tang Mega 138K Pro** (**Gowin GW5AT-138**, ~138 K LUT, on-board DDR3) is used here as the
+**toolchain / bring-up board** for the synth + P&R flow; the real rung-① prove-it target is a **low-end
+Kintex UltraScale+ (KU3P-class)** board with **DDR4 (~4 ch, ~100 GB/s) + 1 NVMe** (~$1–2 k box) — the
+DDR4 memory system is what sets the ~5–8 tok/s [EST]. See [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) for
+the staged context and [`MINIATURIZATION.md`](MINIATURIZATION.md).
 
 ---
 
@@ -96,7 +102,11 @@ committed RTL names for a **medium-agnostic storage-read abstraction** — addre
 latency-hidden — that in the product fronts an **NVMe/PCIe** backend, not a NAND die.) So once L1/L2
 give a routed **Fmax**, `tok/s = Fmax ÷
 cyc_per_tok` is a *measured*, not modeled, single-user number — the thing that converts the
-[`ULTRA_PERF.md`](ULTRA_PERF.md) [EST] ladder into fact.
+[`ULTRA_PERF.md`](ULTRA_PERF.md) [EST] ladder into fact. On this rung the DDR4-bound target is
+**~5–8 tok/s [EST]** (the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rung-① proof); the funded custom
+board (rung-②, DDR5/HBM) is where the **~15–40 tok/s [EST]** interactive product lands, and rung-③
+(SoC/ASIC at volume) reaches **~40+ [EST]** — all the *same* bit-exact RTL, only the memory bandwidth
+the silicon can feed it changes.
 
 ## Cost / what a real demo needs
 
@@ -104,8 +114,9 @@ cyc_per_tok` is a *measured*, not modeled, single-user number — the thing that
   open `nextpnr-himbaechel`; the board (**Tang Mega 138K Pro, ~$200–300**) is only needed to *program*.
 - **L3 (the money shot)** needs the board + a Flash/SD-resident quantized weight image (`ckpt_pack.py`
   produces it — the demo board's on-board Flash/SD is all a reduced config needs) and a reduced config
-  (a few layers) — **not** the product's full **1–4 TB NVMe model store** or real **DDR5 + NVMe/PCIe
-  (M.2) host controller** (those are the custom-board / vendor-IP, out-of-scope-for-demo items). The
+  (a few layers) — **not** the product's full **1–4 TB NVMe model store** or the **DDR5/HBM + NVMe/PCIe
+  (M.2) host controller** (those are **rung-② custom-board / vendor-IP items** — see
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md); DDR5/HBM is a funded-board spec, not the near-term proof). The
   demo is a **reduced-config proof that real weights produce real tokens on real silicon at a measured
   rate**, not the shippable box.
 
@@ -113,7 +124,9 @@ cyc_per_tok` is a *measured*, not modeled, single-user number — the thing that
 
 An investor discounts every `[EST]`. The demo ladder converts three of them to fact, cheaply:
 1. **Fit/BOM** (L0–L2): "it fits a $X FPGA" → the per-seat price the [`ICP.md`](ICP.md) economics need.
-2. **Single-user tok/s** (L1/L2 Fmax × measured `cyc_per_tok`): the product speed, measured not modeled.
+2. **Single-user tok/s** (L1/L2 Fmax × measured `cyc_per_tok`): the rung-① proof speed (**~5–8 tok/s
+   [EST]** on DDR4), measured not modeled — the funded rung-② board is where **~15–40 tok/s [EST]** lands
+   ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
 3. **Real tokens on silicon** (L3): the whole thesis, demonstrable on a desk.
 
 Paired with **one signed design-partner LOI** from the primary ICP (a law-firm innovation team), that

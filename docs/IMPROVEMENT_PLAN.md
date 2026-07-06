@@ -35,7 +35,7 @@ Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendo
 | 1.1 | **`flash_xbar`** — N-channel banked storage-read fabric | 🟢 | Same pattern as `ddr5_xbar`: stripe expert fetches across N back-end channels → ~N× aggregate NVMe_BW. `flash_xbar` is a committed RTL identifier: it is the medium-agnostic storage-read fabric (address → weight bytes); in the product its NAND back-end is a labeled placeholder swapped for an **NVMe/PCIe host controller**, so the N channels map to **PCIe lanes / multiple NVMe drives**, not NAND dies. A 1–4 TB NVMe store reaches "10s of GB/s" [EST] by striping reads across lanes/drives (one Gen4 x4 NVMe ~7 GB/s; scale with lanes/drives). Build + BMC-verify like ddr5_xbar. **✅ DONE: deep per-channel outstanding queue (QDEPTH) hides storage read latency 7.99× (Little's law) + N_CH banking stacks (~57× combined @8ch×Q8); 2049 tests + BMC K=12.** | **~N× tok/s** (linear). 4ch ≈ 3→12 tok/s |
 | 1.2 | **NVMe expert layout** — co-activated experts on different channels | 🟢 | Offline placement so a token's top-8 experts spread across channels/drives (avoid channel hotspots), mirroring the DDR5 stripe. **✅ DONE: `tools/flash_layout.py` (balanced greedy least-conflict packer). Measured N_CH=8: optimized 55% of 8× peak BW vs naive round-robin 39% (~+40%) — kills the 4/5/6-on-one-channel collision tail (99.5% of fetches ≤2/ch). Honest: 8× unreachable (top-8 ≥ 8ch pigeonhole + popularity skew); the win is removing hotspots, not reaching peak. 8ch is the top-8 sweet spot. The pigeonhole cap and the sub-expert-striping (RAID-0) option that removes it are consolidated in [`FLASH_STRIPING.md`](FLASH_STRIPING.md).** | **~+40 %** of flash_xbar's realizable BW (sustains 1.1) |
 | 1.3 | **Deeper NVMe read pipeline** — more outstanding requests | 🟢 | Raise the fetch queue depth so the NVMe/storage tier stays saturated despite per-read latency (BW = outstanding / latency). Wire into `expert_cache_pf` + `flash_xbar`. | recovers the latency-bound gap to peak BW |
-| 1.4 | Faster NVMe medium (PCIe5 NVMe / more drives / more lanes) | 🟡 | Vendor/board choice; the NVMe host controller / PCIe root is vendor IP (the product needs a custom board — GW5AT-138 + big DDR5 + NVMe via M.2/PCIe — not the bring-up dev board). Document the BW target the RTL fabric must feed. | linear, but $ + board |
+| 1.4 | Faster NVMe medium (PCIe5 NVMe / more drives / more lanes) | 🟡 | Vendor/board choice; the NVMe host controller / PCIe root is vendor IP. The bandwidth a board can actually feed is **rung-dependent** — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md): the near-term prove-it rung is a low-end FPGA dev board + DDR4 + one NVMe; the funded product is a custom board (mid FPGA + DDR5-multi-channel **or** HBM + multi-NVMe over more PCIe lanes) — not the bring-up dev board. DDR5 is the **rung-2** memory, not a hard-asserted single spec. Document the BW target the RTL fabric must feed. | linear, but $ + board |
 
 ## P2 — Cut bytes moved (raises tok/s AND lowers J/token — the dual win)
 
@@ -64,8 +64,8 @@ energy lever — it directly cuts NVMe bytes. P3.2 (clock gating) trims idle. Be
 
 | # | Item | Type | Note |
 |---|---|---|---|
-| 4.1 | HBM instead of DDR5 (if energy ≫ cost) | 🟡 | HBM is the lower-energy-per-bit fast tier; the DDR5 choice trades energy for cost. A build-time option. |
-| 4.2 | Computational storage / near-NVMe compute | 🔴 | Research; moves compute to the data to avoid moving bytes. Out of RTL scope. |
+| 4.1 | HBM instead of DDR5 (if energy ≫ cost) | 🟡 | HBM is the lower-energy-per-bit fast tier; the DDR5 choice trades energy for cost. A build-time / **rung-2** board option (DDR5-multi-channel vs HBM — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); HBM stacks are also what anchor the **rung-3** ASIC's on-package memory. |
+| 4.2 | Computational storage / near-NVMe compute | 🔴 | Moves compute to the data to avoid moving bytes — out of RTL scope (RTL can't add IO pins/PHY or near-memory silicon). This **near-memory compute** is exactly a **rung-3 SoC/ASIC** capability (HBM stacks + many-channel PHY + near-memory FP8 at ~TB/s) that breaks the FPGA's IO/PHY ceiling once amortized over volume — the endgame, not a dead-end (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rung ③). |
 
 ---
 
@@ -82,11 +82,20 @@ Stacking the 🟢 RTL items on the baseline (~3 tok/s, ~8–10 J/token):
 | ~~+ hit-rate (2.3)~~ | ~~(1−h)↓~~ | — | — | ❌ measured NO-OP at real cache |
 | + clock gating (3.2) | idle ↓ | ~27 | ~3.8 | ⏳ enable-side RTL (ICG vendor) |
 
-**Revised target (honest, post-measurement): ~3 → ~16 tok/s built today** (flash_xbar ×4 +
+**Revised target (honest, post-measurement): ~3 → ~16 tok/s with the levers built + verified in RTL today** (flash_xbar ×4 +
 decompress 1.34×), **~27 with MTP K>1**; **~9 → ~4–7 J/token**. The cache-hit-rate lever (2.3) was
 *measured* to be a no-op at the real cache size — the popular experts the predictor names are
 already resident — so the real gains come from **NVMe/storage bandwidth + fewer bytes (decompress, MTP)**,
 not cache cleverness. All numbers [EST]; the built RTL items are verified here.
+
+> **These are RTL-lever multipliers on the storage roofline — not a hardware headline.** The absolute
+> tok/s each multiplier lands on is set by the board's **memory bandwidth**, which is **rung-dependent**
+> (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). Staged to the ladder: **rung ① (near-term prove-it —
+> low-end FPGA + DDR4 + 1 NVMe) ~5–8 tok/s [EST]**, the honest cheap demo; **rung ② (funded custom board
+> — DDR5-multi-channel / HBM + multi-NVMe) ~15–40 tok/s [EST]**, where the ~16–27 lever-stacked figures
+> here live; **rung ③ (volume SoC/ASIC — HBM + near-memory compute) ~40+ tok/s [EST]**. "Built today"
+> means the RTL is built + verified — **not** that rung-② speed is reachable on rung-① cheap hardware.
+> The same bit-exact FP8 RTL runs on every rung; only the bandwidth it is fed changes.
 
 ## Execution order (RTL, by impact-per-effort)
 

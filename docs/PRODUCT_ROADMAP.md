@@ -22,9 +22,13 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 > frontier (753 B) + appliance/seat price.* (Honest: the 753 GB checkpoint is loaded **once** — itself
 > doable offline — and model updates are physical re-provisioning; after that, fully disconnected.) The
 > performance metric that
-> matters is **single-user interactive throughput (~25–40 tok/s [EST]** with the faithful levers
-> stacked). The design is deliberately **NVMe/PCIe-bandwidth-bound to be cheap** (an NVMe SSD holds
-> the whole model; DDR5 caches the hot working set). Any **aggregate / datacenter-batch** numbers in these docs
+> matters is **single-user interactive throughput**, and it is **rung-dependent** (set by the
+> silicon's memory bandwidth — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST]
+> on the near-term prove-it FPGA (rung ①), ~15–40 tok/s [EST] on the funded custom board (rung ②)**,
+> and ~40+ at manufacturing volume (rung ③) — the **same bit-exact FP8 RTL** on every rung, only the
+> memory interface changes. The design is deliberately **NVMe/PCIe-bandwidth-bound to be cheap** (an
+> NVMe SSD holds the whole model; **fast DDR** — DDR4 on rung ①, DDR5 or HBM on rung ② — caches the
+> hot working set). Any **aggregate / datacenter-batch** numbers in these docs
 > (B≈256, ~50 tok/s *aggregate*, per-user ~0.14 tok/s) are a **secondary analysis of a different,
 > non-target deployment** of the same silicon — the RTL supports it, but it is **not this product**,
 > and its per-user latency never describes the box you plug in.
@@ -47,7 +51,7 @@ and how fast can it go?"* — **yes**, and the levers are measured.
 | Memory | DDR5/NVMe/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (+ clk_throttle) + directed TBs at slice; **verilator line/toggle/branch coverage** (`make coverage`, 87.8% line merged) | coverage *closure*, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
-| Physical | slice-scale yosys estimates + real sky130 realizability (placement, timing met) | full synth + **FPGA** P&R + timing closure via the vendor flow → **bitstream** (ASIC/tapeout out of scope) |
+| Physical | slice-scale yosys estimates + real sky130 realizability (placement, timing met) | full synth + **FPGA** P&R + timing closure via the vendor flow → **bitstream** (rungs ①②; ASIC/tapeout is the rung-③ volume endgame, not out of scope — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
 | Software | weight-pack tools (ckpt_pack/flash_layout); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md)) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
@@ -136,29 +140,37 @@ one thing the slice cannot.
 - P2.2 Full CDC sign-off across USB / memory / compute clock domains; reset/init/boot-load hardening.
 - P2.3 Reliability (FPGA path): the built ECC (SECDED scrub) + BRAM-ECC + CDC/reset hardening
   carry over; MBIST maps to a BRAM self-test. ASIC-specific DFT (scan-chain insertion, boundary
-  scan) is **out of scope** — on FPGA the vendor JTAG/config handles device test.
+  scan) is **not needed on the FPGA rungs (①②)** — the vendor JTAG/config handles device test — and
+  is **deferred to the rung-③ ASIC endgame**, where it becomes required (see
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
 - P2.4 Power: real ICG clock-gating cells, power domains, DVFS hooks, thermal budget.
 - P2.5 Verification closure: functional + code coverage targets, constrained-random regression,
   gate-level (post-synth) sim, production-width controller formal + k-induction for unboundedness.
 
 ### P3 — Vendor IP + physical implementation
-- P3.1 License + integrate the PHYs: DDR5 multi-channel controller+PHY, PCIe/NVMe host controller, USB-C device.
-- P3.2 Target — **FPGA-card product** (the committed path; **ASIC is out of scope**). A
-  data-center-class FPGA + on-board DDR + NVMe (M.2/PCIe) runs the real model streamed; bitstream via
-  the vendor flow.
-  - **Why not ASIC:** the workload is **NVMe/PCIe-bandwidth-bound**, so the die already sits
-    ~75–80% idle behind the NVMe/PCIe read [EST] (a bandwidth-bound picture that only sharpens on
-    NVMe, which is typically leaner than a fat multi-channel NAND array). An ASIC's headline
-    advantage (faster / denser compute) is therefore
-    largely *wasted* here — it would only buy power/efficiency and unit-cost-at-volume, at
-    multi-million NRE + months–years and no do-overs. For a bandwidth-bound design the FPGA-card
-    (compute is cheap; the memory interface is what matters) is not a stepping stone but a
-    legitimate end product. ASIC is only revisited if volume/power economics ever justify the NRE.
+- P3.1 License + integrate the PHYs: the DDR controller+PHY (**DDR4 on rung ①, DDR5 multi-channel or
+  HBM on rung ②** — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), PCIe/NVMe host controller, USB-C device.
+- P3.2 Target — **FPGA-card product for the near/mid term** (rungs ①②, the committed path — see
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); **ASIC is the rung-③ volume endgame, not out of scope.**
+  A data-center-class FPGA + on-board DDR + NVMe (M.2/PCIe) runs the real model streamed; bitstream via
+  the vendor flow. This is a **staged ladder**: rung ① (low-end FPGA, ~5–8 tok/s [EST]) proves it
+  cheap, rung ② (custom mid-FPGA board, DDR5/HBM, ~15–40 tok/s [EST]) is the funded interactive product.
+  - **Why FPGA first, ASIC at volume:** the workload is **memory-bandwidth-bound** — performance is set
+    by memory bandwidth, which is set by the chip's IO pins + hard PHYs, which is set by budget. The FPGA
+    rungs prove the RTL on real silicon and reach product-market fit *without* a multi-million NRE bet.
+    An **ASIC is exactly what breaks the FPGA's IO/PHY ceiling**: it integrates **HBM stacks +
+    many-channel controllers + near-memory FP8 compute** that no FPGA package offers, at **~TB/s** with
+    **lower $/seat + lower power** once the NRE amortizes over manufacturing volume (rung ③). So the
+    earlier "ASIC out of scope" — argued from *"compute-bound → ASIC's compute edge is wasted"* — is
+    **superseded**: the real bottleneck is bandwidth, and ASIC is precisely how a bandwidth-bound
+    product scales past the FPGA package. Sequence: **FPGA (①②) to prove + fund → ASIC (③) when volume
+    justifies the NRE and demands lower $/seat + higher tok/s + lower power.** Not now (no volume, no
+    capital); the endgame later, for cost-down + performance + power at volume.
 - P3.3 Full-scale STA (SDC), power sign-off, signal/power integrity.
 
 ### P4 — System, software, manufacturing
-- P4.1 PCB: multi-layer controlled-impedance board (FPGA + DDR5 + NVMe via M.2/PCIe + USB-C), BOM,
-  assembly. (This is the **custom product board**; the Tang Mega 138K Pro dev board — 32 MB onboard
+- P4.1 PCB: multi-layer controlled-impedance board (FPGA + DDR5/HBM + NVMe via M.2/PCIe + USB-C), BOM,
+  assembly. (This is the **rung ② custom product board**; the Tang Mega 138K Pro dev board — 32 MB onboard
   Flash + 1 GB soldered DDR3 — is bring-up/reduced-demo only, not the shipping hardware.)
 - P4.2 Software stack: USB-C host driver, tokenizer, the checkpoint→NVMe quant-layout pipeline
   (productionize `ckpt_pack.py`/`flash_layout.py`), inference runtime + continuous-batch scheduler.
