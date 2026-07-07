@@ -118,29 +118,38 @@ at the compact config (PE_N=2, DDR_NCH=2, KV_RESIDENT=8, EFIFO_DEPTH=8, CACHE_SL
 | `$dff` (registers) | 4004 cells (multi-bit) | FF demand |
 | `$add` / `$sub` / `$mux` | 7558 / 2063 / 112657 | LUT/carry logic demand |
 
-Reference capacity — **GW5AST-138** (Tang Mega 138K Pro): **138,240 LUT4, 298 DSP**. The
-346 multiply ops vs 298 DSP means **DSP is the tight resource** on this device — the routed
-fit (after DSP packing + LUT map) decides whether the compact whole-system fits GW5AST-138
-or needs a larger FPGA (a KU3P-class part carries several × the DSP).
+**Which device to compare against — NOT GW5AST-138.** The Gowin **GW5AST-138** (Tang Mega,
+138,240 LUT4 / 298 DSP) is **DDR3-only, no NVMe** → it **cannot be the product board** (the ①b
+streaming demo needs DDR4 + NVMe). It was only ever a *fabric-fit curiosity*, and comparing 346
+mul ops to its 298 DSP ("DSP tight") is measuring against a **disqualified device** — an artifact,
+not a real constraint. The real target is a **KU3P-class part (DDR4-capable)** with **~1,368 DSP48E2**
+(XCKU3P — confirm vs datasheet), several × the Gowin part → **346 mul ops is comfortable, DSP is
+not the binding resource on the actual target.**
 
-**BLOCKED — the authoritative routed fit** (final LUT4 / DSP / BSRAM utilization + **Fmax**):
-- The **open flow can't produce it**: yosys 0.66 `synth_gowin` does **not** infer DSP for the
-  `gw5a` family (`mul2dsp` is gw1n/gw2a-only), so the whole-system FP8 datapath explodes in the
-  `abc -lut4` map. Structural tool gap, not slowness.
-- Needs the **Gowin vendor flow** (`gw_sh`, GW5A-aware DSP map + P&R) — currently blocked on the
-  floating license server (`192.168.30.16`, unreachable subnet), OR a newer yosys with gw5a DSP.
+**BLOCKED — the authoritative routed fit against the real (KU3P-class) device** (LUT / DSP / BSRAM +
+**Fmax**). Neither flow on this machine hits the right device:
+- **Gowin open flow (oss-cad-suite)** → targets GW5A (the disqualified DDR3 part), *and* yosys 0.66
+  has no `gw5a` DSP inference (`mul2dsp` is gw1n/gw2a-only), so the FP8 datapath explodes in
+  `abc -lut4`. Wrong device **and** a tool gap.
+- **KU3P-class fit** needs **AMD/Xilinx Vivado** (DDR4 IP + real DSP48 map + P&R) — **not installed
+  on this Mac**. So the fit-that-matters is tooling-blocked here, separate from the Gowin issue.
 
 | Field | Value | Status |
 |---|---|---|
-| Per-unit fit (`glm_matmul_fp8`) | ~17.8K LUT4-eq + 20 DSP + 5.4K DFF | **[MEASURED]** |
-| Whole-system multiply demand | 346 `$mul` ops (compact) | **[MEASURED, coarse]** |
-| Whole-system memory demand | 54 arrays (compact) | **[MEASURED, coarse]** |
-| Routed LUT / DSP / BSRAM utilization | — | [PENDING — vendor flow] |
-| Routed Fmax | — | [PENDING — vendor flow] |
-| → FPGA device chosen | GW5AST-138 (tight on DSP) vs KU3P-class | [PENDING — needs routed fit] |
+| Per-unit fit (`glm_matmul_fp8`, Gowin DSP-inferred) | ~17.8K LUT4-eq + 20 DSP + 5.4K DFF | **[MEASURED]** — indicative only (wrong-device fabric) |
+| Whole-system multiply demand (device-agnostic) | 346 `$mul` ops (compact) | **[MEASURED, coarse]** |
+| Whole-system memory demand (device-agnostic) | 54 arrays (compact) | **[MEASURED, coarse]** |
+| Routed LUT / DSP / BSRAM on a **KU3P-class** part | — | [PENDING — needs **Vivado**] |
+| Routed Fmax | — | [PENDING — needs Vivado] |
+| → FPGA device chosen (KU3P / 5P / 11P class) | DSP not tight; sized by LUT/BRAM + DDR4 banks | [PENDING — needs Vivado fit] |
 | → DDR4 channels × size | — | [PENDING] |
 | → NVMe (gen × capacity) | — | [PENDING] |
 | → power rails / PMIC | — | [PENDING] |
+
+> **Correction of record:** an earlier draft treated GW5AST-138's 298 DSP as the fit budget and
+> read "DSP tight." That device is DDR4-disqualified; the device-agnostic demand (346 mul / 54 mem)
+> is the real measurement, and it is comfortable on the KU3P-class target. The authoritative routed
+> fit needs Vivado on a KU3P-class part.
 
 ---
 
