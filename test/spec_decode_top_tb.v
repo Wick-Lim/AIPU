@@ -7,7 +7,7 @@
 //   be IDENTICAL to what plain GREEDY decoding (argmax every step) of the SAME
 //   model + SAME weights would produce.  This TB proves that token-for-token.
 //
-//   GOLDEN (reference greedy):  a STANDALONE glm_model_fp8 (u_ref) is driven
+//   GOLDEN (reference greedy):  a STANDALONE glm_model_q4k (u_ref) is driven
 //     greedily by the TB -- run, take argmax, append, feed it back as the next
 //     token at pos+1, repeat -- for N short steps from a fixed prompt + fixed
 //     weights.  That argmax chain greedy[0..N-1] is the reference sequence.
@@ -37,12 +37,13 @@
 //   REPORTED: the token count N, the sequence-identity verdict, accepts/rejects,
 //   and the effective tokens/main-pass (= total_tokens/main_passes).
 //
-//   SIM DEPTH: each glm_model_fp8 forward is deep, so this uses the SMALL slice
+//   SIM DEPTH: each glm_model_q4k forward is deep, so this uses the SMALL slice
 //   the leaf units' own TBs use (MODEL_DIM=16/L=2/VOCAB=16) and a SHORT N=5
 //   generation.  The orchestrator FSM + controller stream under test are
 //   identical at any slice; only the leaf math is smaller, so the run finishes
-//   under iverilog.  Random (deterministic) FP8 weights make the greedy
-//   sequence non-degenerate so reorder/loss bugs are observable.
+//   under iverilog.  Weights are deterministic random Q4_K super-blocks (4-bit
+//   codes + per-column scale6); the proof is token-for-token equivalence of the
+//   spec-decode stream to greedy, plus the count/X/done invariants.
 //============================================================================
 module spec_decode_top_tb;
     // ---- SMALL-but-valid slice (mirrors the leaf units' own small TBs) ----
@@ -81,9 +82,9 @@ module spec_decode_top_tb;
     localparam integer FF_KWD  = $clog2(FF_KMAX_D + 1);
     localparam integer FF_KMAX_M = (INTER_MOE > MODEL_DIM) ? INTER_MOE : MODEL_DIM;
     localparam integer R_KW    = $clog2(FF_KMAX_M + 1);
-    localparam integer A_NB    = (A_KMAX    + BLK - 1) / BLK;
-    localparam integer FF_NB_D = (FF_KMAX_D + BLK - 1) / BLK;
-    localparam integer R_NB    = (FF_KMAX_M + BLK - 1) / BLK;
+    localparam integer A_NSB    = (A_KMAX    + 255) / 256;  // Q4_K super-blocks
+    localparam integer FF_NSB_D = (FF_KMAX_D + 255) / 256;
+    localparam integer R_NSB    = (FF_KMAX_M + 255) / 256;
     localparam integer LAYW    = (L     <= 1) ? 1 : $clog2(L);
     localparam integer TOKW    = (VOCAB <= 1) ? 1 : $clog2(VOCAB);
     localparam integer DIMW    = (MODEL_DIM <= 1) ? 1 : $clog2(MODEL_DIM);
@@ -93,7 +94,7 @@ module spec_decode_top_tb;
     localparam integer CKIW    = $clog2(CK);
     localparam integer NPTILE  = MODEL_DIM / PROJ_TN;
     localparam integer PTW     = (NPTILE <= 1) ? 1 : $clog2(NPTILE);
-    localparam integer PROJ_NB = (CK + BLK - 1) / BLK;
+    localparam integer PROJ_NSB = (CK + 255) / 256;
 
     localparam integer NGEN = 5;        // generated tokens (4-6 per the spec)
     localparam integer CAP  = 64;
@@ -113,38 +114,44 @@ module spec_decode_top_tb;
     reg [15:0] Wlm [0:VOCAB-1][0:MODEL_DIM-1];
     reg [15:0] G1 [0:L-1][0:MODEL_DIM-1];
     reg [15:0] G2 [0:L-1][0:MODEL_DIM-1];
-    reg [7:0] W_dq  [0:L-1][0:Q_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] W_uq  [0:L-1][0:HQK-1][0:Q_LORA-1];
-    reg [7:0] W_dkv [0:L-1][0:KV_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] W_kr  [0:L-1][0:ROPE-1][0:MODEL_DIM-1];
-    reg [7:0] W_uk  [0:L-1][0:HNOPE-1][0:KV_LORA-1];
-    reg [7:0] W_uv  [0:L-1][0:HV-1][0:KV_LORA-1];
-    reg [7:0] W_o   [0:L-1][0:MODEL_DIM-1][0:HV-1];
-    reg [15:0] ScW_dq[0:L-1], ScW_uq[0:L-1], ScW_dkv[0:L-1], ScW_kr[0:L-1],
-               ScW_uk[0:L-1], ScW_uv[0:L-1], ScW_o[0:L-1];
+    // ---- Q4_K weight codes (4-bit nibbles) -- all matrices ----
+    reg [3:0] W_dq  [0:L-1][0:Q_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] W_uq  [0:L-1][0:HQK-1][0:Q_LORA-1];
+    reg [3:0] W_dkv [0:L-1][0:KV_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] W_kr  [0:L-1][0:ROPE-1][0:MODEL_DIM-1];
+    reg [3:0] W_uk  [0:L-1][0:HNOPE-1][0:KV_LORA-1];
+    reg [3:0] W_uv  [0:L-1][0:HV-1][0:KV_LORA-1];
+    reg [3:0] W_o   [0:L-1][0:MODEL_DIM-1][0:HV-1];
     reg [15:0] CKV [0:L-1][0:S_MAX-1][0:KV_LORA-1];
     reg [15:0] KRP [0:L-1][0:S_MAX-1][0:ROPE-1];
-    reg [7:0]  Wg [0:L-1][0:MODEL_DIM-1][0:N_EXPERT-1];
-    reg [15:0] ScWg[0:L-1];
-    reg [7:0] Dg [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] Du [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] Dd [0:L-1][0:MODEL_DIM-1][0:INTER_DENSE-1];
-    reg [15:0] ScDg [0:L-1][0:FF_NB_D-1];
-    reg [15:0] ScDu [0:L-1][0:FF_NB_D-1];
-    reg [15:0] ScDd [0:L-1][0:FF_NB_D-1];
-    reg [7:0] Mg [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] Mu [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] Md [0:L-1][0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [7:0] SHg [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] SHu [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] SHd [0:L-1][0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [15:0] ScMg [0:L-1][0:N_EXPERT-1], ScMu [0:L-1][0:N_EXPERT-1], ScMd [0:L-1][0:N_EXPERT-1];
-    reg [15:0] ScSHg[0:L-1], ScSHu[0:L-1], ScSHd[0:L-1];
+    reg [3:0]  Wg [0:L-1][0:MODEL_DIM-1][0:N_EXPERT-1];
+    reg [3:0] Dg [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] Du [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] Dd [0:L-1][0:MODEL_DIM-1][0:INTER_DENSE-1];
+    reg [3:0] Mg [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] Mu [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] Md [0:L-1][0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
+    reg [3:0] SHg [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] SHu [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] SHd [0:L-1][0:MODEL_DIM-1][0:INTER_MOE-1];
     // MTP-head extra ROMs (combine proj + concat norms)
     reg [15:0] GA  [0:MODEL_DIM-1];
     reg [15:0] GB  [0:MODEL_DIM-1];
-    reg [7:0]  Wp  [0:MODEL_DIM-1][0:CK-1];
-    reg [15:0] ScWp[0:PROJ_NB-1];
+    reg [3:0]  Wp  [0:MODEL_DIM-1][0:CK-1];
+
+    // ---- Q4_K super-block params (arbitrary but self-consistent; shared by
+    //   u_ref and dut so token-for-token equivalence holds regardless of value).
+    //   At this slice A_KMAX=16, FF_KMAX_D=32, FF_KMAX_M=16, CK=32 -> every GEMM
+    //   lives in super-block 0, sub-block 0 only.  d/dmin are global fp16 0.125;
+    //   the sub-block-0 scale6 is chosen PER COLUMN by mk_sc96() (min6=28 fixed)
+    //   -> w_deq = d*scale6*q - dmin*28 (bipolar, ~FP8 magnitude), exercising the
+    //   model's per-column q4k_scale_min extraction.  The verified sequence still
+    //   collapses to a fixed point at this tiny VOCAB=16/L=2 slice for essentially
+    //   any weights (an architecture property, not a quantization one), so the
+    //   proof rests on token-for-token equivalence + the count/X/done invariants
+    //   and (accepts==0) the strict full-stream equality, NOT on token diversity.
+    localparam [15:0] Q_D      = 16'h3000;  // fp16 0.125 (super-block d)
+    localparam [15:0] Q_DM     = 16'h3000;  // fp16 0.125 (super-block dmin)
 
     // ---- deterministic stimulus generators (independent, X-free) ----
     function [15:0] gen_bf16; input integer seed; input integer band;
@@ -155,13 +162,20 @@ module spec_decode_top_tb;
         m=hh[12:6];
         gen_bf16={s,e,m};
     end endfunction
-    function [7:0] gen_e4m3; input integer seed; input integer band;
-        reg s; reg [3:0] e; reg [2:0] m; integer hh; begin
+    function [3:0] gen_q4; input integer seed; input integer band;
+        integer hh; begin
         hh=(seed*2654435761)^(seed<<13)^(seed*40503);
-        s=hh[3];
-        if (band==1) e = 4'd7 + {3'b0,hh[4]}; else e = 4'd6 + {3'b0,hh[4]};
-        m = hh[12:10];
-        gen_e4m3 = {s,e,m};
+        gen_q4 = hh[9:6] ^ hh[6:3];   // 4-bit Q4_K code, varied (band unused)
+    end endfunction
+    // Per-column Q4_K sub-block-0 scale: each output column gets a DISTINCT
+    //   scale6 (1..15, never 0) so the dequant transform varies column-to-column
+    //   -- restores the weight entropy 4-bit codes alone lack, keeping the greedy
+    //   sequence non-degenerate.  min6=28 fixed (with d=dmin=0.125 -> offset 3.5).
+    //   Legitimate Q4_K: every column carries its own super-block params.
+    function [95:0] mk_sc96; input integer col; reg [95:0] v; integer s6; begin
+        s6 = (col % 15) + 1;
+        v = 96'd0; v[5:0] = s6[5:0]; v[37:32] = 6'd28;
+        mk_sc96 = v;
     end endfunction
     function [15:0] gen_scale; input integer seed;
         reg [7:0] e; reg [6:0] m; integer hh; begin
@@ -178,45 +192,34 @@ module spec_decode_top_tb;
         for (gl=0;gl<L;gl=gl+1) begin
             for (i=0;i<MODEL_DIM;i=i+1) begin G1[gl][i]=gen_bf16(sc,band); sc=sc+1; end
             for (i=0;i<MODEL_DIM;i=i+1) begin G2[gl][i]=gen_bf16(sc,band); sc=sc+1; end
-            for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin W_dq[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin W_uq[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin W_dkv[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin W_kr[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin W_uk[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin W_uv[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin W_o[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScW_dq[gl]=gen_scale(sc); sc=sc+1;  ScW_uq[gl]=gen_scale(sc); sc=sc+1;
-            ScW_dkv[gl]=gen_scale(sc); sc=sc+1; ScW_kr[gl]=gen_scale(sc); sc=sc+1;
-            ScW_uk[gl]=gen_scale(sc); sc=sc+1;  ScW_uv[gl]=gen_scale(sc); sc=sc+1;
-            ScW_o[gl]=gen_scale(sc); sc=sc+1;
+            for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin W_dq[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin W_uq[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin W_dkv[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin W_kr[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin W_uk[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin W_uv[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin W_o[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
             for (i=0;i<S_MAX;i=i+1) for (j=0;j<KV_LORA;j=j+1) begin CKV[gl][i][j]=gen_bf16(sc,band); sc=sc+1; end
             for (i=0;i<S_MAX;i=i+1) for (j=0;j<ROPE;j=j+1)    begin KRP[gl][i][j]=gen_bf16(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin Wg[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScWg[gl]=gen_scale(sc); sc=sc+1;
-            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Dg[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Du[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin Dd[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDg[gl][i]=gen_scale(sc); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDu[gl][i]=gen_scale(sc); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDd[gl][i]=gen_scale(sc); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin Wg[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Dg[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Du[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin Dd[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
             for (e=0;e<N_EXPERT;e=e+1) begin
-                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mg[gl][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mu[gl][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin Md[gl][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                ScMg[gl][e]=gen_scale(sc); sc=sc+1; ScMu[gl][e]=gen_scale(sc); sc=sc+1; ScMd[gl][e]=gen_scale(sc); sc=sc+1;
+                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mg[gl][e][i][j]=gen_q4(sc,band); sc=sc+1; end
+                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mu[gl][e][i][j]=gen_q4(sc,band); sc=sc+1; end
+                for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin Md[gl][e][i][j]=gen_q4(sc,band); sc=sc+1; end
             end
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHg[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHu[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin SHd[gl][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScSHg[gl]=gen_scale(sc); sc=sc+1; ScSHu[gl]=gen_scale(sc); sc=sc+1; ScSHd[gl]=gen_scale(sc); sc=sc+1;
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHg[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHu[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin SHd[gl][i][j]=gen_q4(sc,band); sc=sc+1; end
         end
         for (i=0;i<MODEL_DIM;i=i+1) begin GF[i]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<VOCAB;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Wlm[i][j]=gen_bf16(sc,band); sc=sc+1; end
         // MTP-head extras (only affect the DRAFT, never the verified sequence)
         for (i=0;i<MODEL_DIM;i=i+1) begin GA[i]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<MODEL_DIM;i=i+1) begin GB[i]=gen_bf16(sc,band); sc=sc+1; end
-        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<CK;j=j+1) begin Wp[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<PROJ_NB;i=i+1) begin ScWp[i]=gen_scale(sc); sc=sc+1; end
+        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<CK;j=j+1) begin Wp[i][j]=gen_q4(sc,band); sc=sc+1; end
     end endtask
 
     //========================================================================
@@ -301,14 +304,17 @@ module spec_decode_top_tb;
     //========================================================================
     // main-model combinational pull responders (shared regs -> both models)
     //========================================================================
-    integer t, re, ft, fo, cd, obd, lt, lay;
-    reg [15:0] em_val, gn_val, fn_val, sc_a;
-    reg [PE_N*8-1:0]   aw_col;   reg [16*PE_N*A_NB-1:0]  aw_scale;
+    integer t, re, ft, fo, cd, lt, lay;
+    reg [15:0] em_val, gn_val, fn_val;
+    reg [PE_N*4-1:0]   aw_q;
+    reg [16*PE_N*A_NSB-1:0]  aw_d, aw_dmin;  reg [96*PE_N*A_NSB-1:0]  aw_scales;
     reg [KV_LORA*16-1:0] kc_ckv; reg [ROPE*16-1:0]       kc_krope; reg kc_valid;
-    reg [8*N_EXPERT-1:0] rw_col; reg [16*N_EXPERT*R_NB-1:0] rw_scale;
-    reg [8*TN-1:0] fw_col, fw_col_up; reg [16*TN*FF_NB_D-1:0] fw_scale_g, fw_scale_u;
+    reg [4*N_EXPERT-1:0] rw_q;
+    reg [16*N_EXPERT*R_NSB-1:0] rw_d, rw_dmin; reg [96*N_EXPERT*R_NSB-1:0] rw_scales;
+    reg [4*TN-1:0] fw_q, fw_q_up;
+    reg [16*TN*FF_NSB_D-1:0] fw_d_g, fw_dmin_g, fw_d_u, fw_dmin_u;
+    reg [96*TN*FF_NSB_D-1:0] fw_scales_g, fw_scales_u;
     reg [LM_TN*16-1:0] lw_col;
-    reg [15:0] kb1;
 
     always @* em_val = EMB[mu_em_tok][mu_em_idx];
     always @* fn_val = GF[mu_fn_idx];
@@ -319,26 +325,28 @@ module spec_decode_top_tb;
     end
     always @* begin
         lay = mu_layer;
-        aw_col   = {PE_N*8{1'b0}};
-        aw_scale = {16*PE_N*A_NB{1'b0}};
+        aw_q      = {PE_N*4{1'b0}};
+        aw_d      = {16*PE_N*A_NSB{1'b0}};
+        aw_dmin   = {16*PE_N*A_NSB{1'b0}};
+        aw_scales = {96*PE_N*A_NSB{1'b0}};
         for (t=0;t<PE_N;t=t+1) begin
             case (mu_aw_sel)
-            4'd0: if (mu_aw_grp*PE_N+t < Q_LORA)   aw_col[8*t+:8]=W_dq [lay][mu_aw_grp*PE_N+t][mu_aw_k];
-            4'd1: if (mu_aw_grp*PE_N+t < HQK)      aw_col[8*t+:8]=W_uq [lay][mu_aw_grp*PE_N+t][mu_aw_k];
-            4'd2: if (mu_aw_grp*PE_N+t < KV_LORA)  aw_col[8*t+:8]=W_dkv[lay][mu_aw_grp*PE_N+t][mu_aw_k];
-            4'd3: if (mu_aw_grp*PE_N+t < ROPE)     aw_col[8*t+:8]=W_kr [lay][mu_aw_grp*PE_N+t][mu_aw_k];
-            4'd4: if (mu_aw_grp*PE_N+t < HNOPE)    aw_col[8*t+:8]=W_uk [lay][mu_aw_grp*PE_N+t][mu_aw_k];
-            4'd5: if (mu_aw_grp*PE_N+t < HV)       aw_col[8*t+:8]=W_uv [lay][mu_aw_grp*PE_N+t][mu_aw_k];
-            4'd6: if (mu_aw_grp*PE_N+t < MODEL_DIM)aw_col[8*t+:8]=W_o  [lay][mu_aw_grp*PE_N+t][mu_aw_k];
-            default: aw_col[8*t+:8]=8'h0;
+            4'd0: if (mu_aw_grp*PE_N+t < Q_LORA)   aw_q[4*t+:4]=W_dq [lay][mu_aw_grp*PE_N+t][mu_aw_k];
+            4'd1: if (mu_aw_grp*PE_N+t < HQK)      aw_q[4*t+:4]=W_uq [lay][mu_aw_grp*PE_N+t][mu_aw_k];
+            4'd2: if (mu_aw_grp*PE_N+t < KV_LORA)  aw_q[4*t+:4]=W_dkv[lay][mu_aw_grp*PE_N+t][mu_aw_k];
+            4'd3: if (mu_aw_grp*PE_N+t < ROPE)     aw_q[4*t+:4]=W_kr [lay][mu_aw_grp*PE_N+t][mu_aw_k];
+            4'd4: if (mu_aw_grp*PE_N+t < HNOPE)    aw_q[4*t+:4]=W_uk [lay][mu_aw_grp*PE_N+t][mu_aw_k];
+            4'd5: if (mu_aw_grp*PE_N+t < HV)       aw_q[4*t+:4]=W_uv [lay][mu_aw_grp*PE_N+t][mu_aw_k];
+            4'd6: if (mu_aw_grp*PE_N+t < MODEL_DIM)aw_q[4*t+:4]=W_o  [lay][mu_aw_grp*PE_N+t][mu_aw_k];
+            default: aw_q[4*t+:4]=4'h0;
             endcase
         end
-        case (mu_aw_sel)
-            4'd0: sc_a=ScW_dq[lay]; 4'd1: sc_a=ScW_uq[lay]; 4'd2: sc_a=ScW_dkv[lay];
-            4'd3: sc_a=ScW_kr[lay]; 4'd4: sc_a=ScW_uk[lay]; 4'd5: sc_a=ScW_uv[lay];
-            4'd6: sc_a=ScW_o[lay]; default: sc_a=16'h3F80;
-        endcase
-        for (t=0;t<PE_N;t=t+1) aw_scale[16*t+:16]=sc_a;
+        // per-lane Q4_K super-block params (super-block 0; scale6 varies by column)
+        for (t=0;t<PE_N;t=t+1) begin
+            aw_d     [16*t+:16] = Q_D;
+            aw_dmin  [16*t+:16] = Q_DM;
+            aw_scales[96*t+:96] = mk_sc96(mu_aw_grp*PE_N+t);
+        end
     end
     always @* begin
         kc_ckv   = {KV_LORA*16{1'b0}};
@@ -351,77 +359,59 @@ module spec_decode_top_tb;
         else     kc_valid <= mu_kc_req;
     end
     always @* begin
-        rw_col   = {8*N_EXPERT{1'b0}};
-        rw_scale = {16*N_EXPERT*R_NB{1'b0}};
+        rw_q      = {4*N_EXPERT{1'b0}};
+        rw_d      = {16*N_EXPERT*R_NSB{1'b0}};
+        rw_dmin   = {16*N_EXPERT*R_NSB{1'b0}};
+        rw_scales = {96*N_EXPERT*R_NSB{1'b0}};
         for (re=0;re<N_EXPERT;re=re+1) begin
-            rw_col[8*re+:8]    = Wg[mu_layer][mu_rw_k][re];
-            rw_scale[16*re+:16]= ScWg[mu_layer];
+            rw_q[4*re+:4] = Wg[mu_layer][mu_rw_k][re];
+            rw_d     [16*re+:16] = Q_D;
+            rw_dmin  [16*re+:16] = Q_DM;
+            rw_scales[96*re+:96] = mk_sc96(re);
         end
     end
-    // FFN expert weight + scale.  FF_NB_D==1 at this slice (every GEMM is one
-    // K-block), so only K-block 0 is populated; the FF_NB_D>1 path is written
-    // generically (dead here) with a variable index so it never OOBs.
+    // FFN expert weight (Q4_K).  FF_NSB_D==1 at this slice (every GEMM is one
+    // super-block), so the shared {d,dmin,scales96} triple is broadcast to
+    // every (lane,super-block) slot; only the 4-bit codes vary per weight.
     always @* begin
         lay = mu_layer;
-        kb1 = (FF_NB_D>1) ? 16'd1 : 16'd0;
-        fw_col     = {8*TN{1'b0}};      fw_col_up  = {8*TN{1'b0}};
-        fw_scale_g = {16*TN*FF_NB_D{1'b0}}; fw_scale_u = {16*TN*FF_NB_D{1'b0}};
-        obd = (mu_fw_grp*TN) / BLK;
+        fw_q     = {4*TN{1'b0}};      fw_q_up  = {4*TN{1'b0}};
+        fw_d_g   = {16*TN*FF_NSB_D{1'b0}}; fw_dmin_g = {16*TN*FF_NSB_D{1'b0}};
+        fw_d_u   = {16*TN*FF_NSB_D{1'b0}}; fw_dmin_u = {16*TN*FF_NSB_D{1'b0}};
+        fw_scales_g = {96*TN*FF_NSB_D{1'b0}}; fw_scales_u = {96*TN*FF_NSB_D{1'b0}};
         for (ft=0;ft<TN;ft=ft+1) begin
             fo = mu_fw_grp*TN + ft;
             if (lay < N_DENSE) begin
                 if (mu_fw_sel==2'd2) begin
-                    if (fo<MODEL_DIM) fw_col[8*ft+:8]=Dd[lay][fo][mu_fw_k];
+                    if (fo<MODEL_DIM) fw_q[4*ft+:4]=Dd[lay][fo][mu_fw_k];
                 end else if (fo<INTER_DENSE) begin
-                    fw_col   [8*ft+:8]=Dg[lay][fo][mu_fw_k];
-                    fw_col_up[8*ft+:8]=Du[lay][fo][mu_fw_k];
+                    fw_q   [4*ft+:4]=Dg[lay][fo][mu_fw_k];
+                    fw_q_up[4*ft+:4]=Du[lay][fo][mu_fw_k];
                 end
             end else begin
                 if (mu_fw_shared) begin
                     if (mu_fw_sel==2'd2) begin
-                        if (fo<MODEL_DIM) fw_col[8*ft+:8]=SHd[lay][fo][mu_fw_k];
+                        if (fo<MODEL_DIM) fw_q[4*ft+:4]=SHd[lay][fo][mu_fw_k];
                     end else if (fo<INTER_MOE) begin
-                        fw_col   [8*ft+:8]=SHg[lay][fo][mu_fw_k];
-                        fw_col_up[8*ft+:8]=SHu[lay][fo][mu_fw_k];
+                        fw_q   [4*ft+:4]=SHg[lay][fo][mu_fw_k];
+                        fw_q_up[4*ft+:4]=SHu[lay][fo][mu_fw_k];
                     end
                 end else begin
                     if (mu_fw_sel==2'd2) begin
-                        if (fo<MODEL_DIM) fw_col[8*ft+:8]=Md[lay][mu_fw_eidx][fo][mu_fw_k];
+                        if (fo<MODEL_DIM) fw_q[4*ft+:4]=Md[lay][mu_fw_eidx][fo][mu_fw_k];
                     end else if (fo<INTER_MOE) begin
-                        fw_col   [8*ft+:8]=Mg[lay][mu_fw_eidx][fo][mu_fw_k];
-                        fw_col_up[8*ft+:8]=Mu[lay][mu_fw_eidx][fo][mu_fw_k];
+                        fw_q   [4*ft+:4]=Mg[lay][mu_fw_eidx][fo][mu_fw_k];
+                        fw_q_up[4*ft+:4]=Mu[lay][mu_fw_eidx][fo][mu_fw_k];
                     end
                 end
             end
         end
+        // per-lane Q4_K super-block params (super-block 0; scale6 varies by column)
         for (ft=0;ft<TN;ft=ft+1) begin
-            if (lay < N_DENSE) begin
-                if (mu_fw_sel==2'd2) begin
-                    fw_scale_g[16*(0*TN+ft)+:16]=ScDd[lay][0];
-                    if (FF_NB_D>1) fw_scale_g[16*(1*TN+ft)+:16]=ScDd[lay][kb1];
-                end else begin
-                    fw_scale_g[16*(0*TN+ft)+:16]=ScDg[lay][obd];
-                    fw_scale_u[16*(0*TN+ft)+:16]=ScDu[lay][obd];
-                    if (FF_NB_D>1) begin
-                        fw_scale_g[16*(1*TN+ft)+:16]=ScDg[lay][obd];
-                        fw_scale_u[16*(1*TN+ft)+:16]=ScDu[lay][obd];
-                    end
-                end
-            end else begin
-                if (mu_fw_shared) begin
-                    if (mu_fw_sel==2'd2) fw_scale_g[16*(0*TN+ft)+:16]=ScSHd[lay];
-                    else begin
-                        fw_scale_g[16*(0*TN+ft)+:16]=ScSHg[lay];
-                        fw_scale_u[16*(0*TN+ft)+:16]=ScSHu[lay];
-                    end
-                end else begin
-                    if (mu_fw_sel==2'd2) fw_scale_g[16*(0*TN+ft)+:16]=ScMd[lay][mu_fw_eidx];
-                    else begin
-                        fw_scale_g[16*(0*TN+ft)+:16]=ScMg[lay][mu_fw_eidx];
-                        fw_scale_u[16*(0*TN+ft)+:16]=ScMu[lay][mu_fw_eidx];
-                    end
-                end
-            end
+            fw_d_g    [16*ft+:16] = Q_D;   fw_dmin_g[16*ft+:16] = Q_DM;
+            fw_d_u    [16*ft+:16] = Q_D;   fw_dmin_u[16*ft+:16] = Q_DM;
+            fw_scales_g[96*ft+:96] = mk_sc96(mu_fw_grp*TN+ft);
+            fw_scales_u[96*ft+:96] = mk_sc96(mu_fw_grp*TN+ft);
         end
     end
 
@@ -431,14 +421,18 @@ module spec_decode_top_tb;
     //========================================================================
     localparam integer TMTPL = 0;                       // MTP decoder uses layer-0 weights
     reg [15:0] t_cn_val, t_gn_val;
-    reg [PROJ_TN*8-1:0] t_pw_col; reg [16*PROJ_TN*PROJ_NB-1:0] t_pw_scale;
-    reg [PE_N*8-1:0] t_aw_col; reg [16*PE_N*A_NB-1:0] t_aw_scale;
+    reg [PROJ_TN*4-1:0] t_pw_q;
+    reg [16*PROJ_TN*PROJ_NSB-1:0] t_pw_d, t_pw_dmin; reg [96*PROJ_TN*PROJ_NSB-1:0] t_pw_scales;
+    reg [PE_N*4-1:0] t_aw_q;
+    reg [16*PE_N*A_NSB-1:0] t_aw_d, t_aw_dmin; reg [96*PE_N*A_NSB-1:0] t_aw_scales;
     reg [KV_LORA*16-1:0] t_kc_ckv; reg [ROPE*16-1:0] t_kc_krope; reg t_kc_valid;
-    reg [8*N_EXPERT-1:0] t_rw_col; reg [16*N_EXPERT*R_NB-1:0] t_rw_scale;
-    reg [8*TN-1:0] t_fw_col, t_fw_col_up; reg [16*TN*FF_NB_D-1:0] t_fw_scale_g, t_fw_scale_u;
+    reg [4*N_EXPERT-1:0] t_rw_q;
+    reg [16*N_EXPERT*R_NSB-1:0] t_rw_d, t_rw_dmin; reg [96*N_EXPERT*R_NSB-1:0] t_rw_scales;
+    reg [4*TN-1:0] t_fw_q, t_fw_q_up;
+    reg [16*TN*FF_NSB_D-1:0] t_fw_d_g, t_fw_dmin_g, t_fw_d_u, t_fw_dmin_u;
+    reg [96*TN*FF_NSB_D-1:0] t_fw_scales_g, t_fw_scales_u;
     reg [LM_TN*16-1:0] t_lw_col;
-    integer tt, tre, tft, tfo, tcd, tobd, tlt, tpq;
-    reg [15:0] t_sca;
+    integer tt, tre, tft, tfo, tcd, tlt, tpq;
 
     always @* begin
         case (t_cn_which)
@@ -448,36 +442,40 @@ module spec_decode_top_tb;
         endcase
     end
     always @* begin
-        t_pw_col   = {PROJ_TN*8{1'b0}};
-        t_pw_scale = {16*PROJ_TN*PROJ_NB{1'b0}};
-        for (tpq=0; tpq<PROJ_TN; tpq=tpq+1)
-            t_pw_col[8*tpq +: 8] = Wp[t_pw_ptile*PROJ_TN + tpq][t_pw_k];
-        for (tcd=0; tcd<PROJ_NB; tcd=tcd+1)
-            for (tpq=0; tpq<PROJ_TN; tpq=tpq+1)
-                t_pw_scale[16*(tcd*PROJ_TN + tpq) +: 16] = ScWp[tcd];
+        t_pw_q      = {PROJ_TN*4{1'b0}};
+        t_pw_d      = {16*PROJ_TN*PROJ_NSB{1'b0}};
+        t_pw_dmin   = {16*PROJ_TN*PROJ_NSB{1'b0}};
+        t_pw_scales = {96*PROJ_TN*PROJ_NSB{1'b0}};
+        for (tpq=0; tpq<PROJ_TN; tpq=tpq+1) begin
+            t_pw_q[4*tpq +: 4] = Wp[t_pw_ptile*PROJ_TN + tpq][t_pw_k];
+            t_pw_d     [16*tpq+:16] = Q_D;
+            t_pw_dmin  [16*tpq+:16] = Q_DM;
+            t_pw_scales[96*tpq+:96] = mk_sc96(t_pw_ptile*PROJ_TN + tpq);
+        end
     end
     always @* t_gn_val = t_gn_which ? G2[TMTPL][t_gn_idx] : G1[TMTPL][t_gn_idx];
     always @* begin
-        t_aw_col   = {PE_N*8{1'b0}};
-        t_aw_scale = {16*PE_N*A_NB{1'b0}};
+        t_aw_q      = {PE_N*4{1'b0}};
+        t_aw_d      = {16*PE_N*A_NSB{1'b0}};
+        t_aw_dmin   = {16*PE_N*A_NSB{1'b0}};
+        t_aw_scales = {96*PE_N*A_NSB{1'b0}};
         for (tt=0;tt<PE_N;tt=tt+1) begin
             case (t_aw_sel)
-            4'd0: if (t_aw_grp*PE_N+tt < Q_LORA)   t_aw_col[8*tt+:8]=W_dq [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
-            4'd1: if (t_aw_grp*PE_N+tt < HQK)      t_aw_col[8*tt+:8]=W_uq [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
-            4'd2: if (t_aw_grp*PE_N+tt < KV_LORA)  t_aw_col[8*tt+:8]=W_dkv[TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
-            4'd3: if (t_aw_grp*PE_N+tt < ROPE)     t_aw_col[8*tt+:8]=W_kr [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
-            4'd4: if (t_aw_grp*PE_N+tt < HNOPE)    t_aw_col[8*tt+:8]=W_uk [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
-            4'd5: if (t_aw_grp*PE_N+tt < HV)       t_aw_col[8*tt+:8]=W_uv [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
-            4'd6: if (t_aw_grp*PE_N+tt < MODEL_DIM)t_aw_col[8*tt+:8]=W_o  [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
-            default: t_aw_col[8*tt+:8]=8'h0;
+            4'd0: if (t_aw_grp*PE_N+tt < Q_LORA)   t_aw_q[4*tt+:4]=W_dq [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
+            4'd1: if (t_aw_grp*PE_N+tt < HQK)      t_aw_q[4*tt+:4]=W_uq [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
+            4'd2: if (t_aw_grp*PE_N+tt < KV_LORA)  t_aw_q[4*tt+:4]=W_dkv[TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
+            4'd3: if (t_aw_grp*PE_N+tt < ROPE)     t_aw_q[4*tt+:4]=W_kr [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
+            4'd4: if (t_aw_grp*PE_N+tt < HNOPE)    t_aw_q[4*tt+:4]=W_uk [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
+            4'd5: if (t_aw_grp*PE_N+tt < HV)       t_aw_q[4*tt+:4]=W_uv [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
+            4'd6: if (t_aw_grp*PE_N+tt < MODEL_DIM)t_aw_q[4*tt+:4]=W_o  [TMTPL][t_aw_grp*PE_N+tt][t_aw_k];
+            default: t_aw_q[4*tt+:4]=4'h0;
             endcase
         end
-        case (t_aw_sel)
-            4'd0: t_sca=ScW_dq[TMTPL]; 4'd1: t_sca=ScW_uq[TMTPL]; 4'd2: t_sca=ScW_dkv[TMTPL];
-            4'd3: t_sca=ScW_kr[TMTPL]; 4'd4: t_sca=ScW_uk[TMTPL]; 4'd5: t_sca=ScW_uv[TMTPL];
-            4'd6: t_sca=ScW_o[TMTPL]; default: t_sca=16'h3F80;
-        endcase
-        for (tt=0;tt<PE_N;tt=tt+1) t_aw_scale[16*tt+:16]=t_sca;
+        for (tt=0;tt<PE_N;tt=tt+1) begin
+            t_aw_d     [16*tt+:16] = Q_D;
+            t_aw_dmin  [16*tt+:16] = Q_DM;
+            t_aw_scales[96*tt+:96] = mk_sc96(t_aw_grp*PE_N+tt);
+        end
     end
     always @* begin
         t_kc_ckv   = {KV_LORA*16{1'b0}};
@@ -490,67 +488,55 @@ module spec_decode_top_tb;
         else     t_kc_valid <= t_kc_req;
     end
     always @* begin
-        t_rw_col   = {8*N_EXPERT{1'b0}};
-        t_rw_scale = {16*N_EXPERT*R_NB{1'b0}};
+        t_rw_q      = {4*N_EXPERT{1'b0}};
+        t_rw_d      = {16*N_EXPERT*R_NSB{1'b0}};
+        t_rw_dmin   = {16*N_EXPERT*R_NSB{1'b0}};
+        t_rw_scales = {96*N_EXPERT*R_NSB{1'b0}};
         for (tre=0;tre<N_EXPERT;tre=tre+1) begin
-            t_rw_col[8*tre+:8]    = Wg[TMTPL][t_rw_k][tre];
-            t_rw_scale[16*tre+:16]= ScWg[TMTPL];
+            t_rw_q[4*tre+:4] = Wg[TMTPL][t_rw_k][tre];
+            t_rw_d     [16*tre+:16] = Q_D;
+            t_rw_dmin  [16*tre+:16] = Q_DM;
+            t_rw_scales[96*tre+:96] = mk_sc96(tre);
         end
     end
     // MTP runs the decoder in mtp_mode (DENSE here, mtp_mode=0) -> dense FFN weights.
     always @* begin
-        t_fw_col     = {8*TN{1'b0}};      t_fw_col_up  = {8*TN{1'b0}};
-        t_fw_scale_g = {16*TN*FF_NB_D{1'b0}}; t_fw_scale_u = {16*TN*FF_NB_D{1'b0}};
-        tobd = (t_fw_grp*TN) / BLK;
+        t_fw_q     = {4*TN{1'b0}};      t_fw_q_up  = {4*TN{1'b0}};
+        t_fw_d_g   = {16*TN*FF_NSB_D{1'b0}}; t_fw_dmin_g = {16*TN*FF_NSB_D{1'b0}};
+        t_fw_d_u   = {16*TN*FF_NSB_D{1'b0}}; t_fw_dmin_u = {16*TN*FF_NSB_D{1'b0}};
+        t_fw_scales_g = {96*TN*FF_NSB_D{1'b0}}; t_fw_scales_u = {96*TN*FF_NSB_D{1'b0}};
         for (tft=0;tft<TN;tft=tft+1) begin
             tfo = t_fw_grp*TN + tft;
             if (mtp_mode==1'b0) begin
                 if (t_fw_sel==2'd2) begin
-                    if (tfo<MODEL_DIM) t_fw_col[8*tft+:8]=Dd[TMTPL][tfo][t_fw_k];
+                    if (tfo<MODEL_DIM) t_fw_q[4*tft+:4]=Dd[TMTPL][tfo][t_fw_k];
                 end else if (tfo<INTER_DENSE) begin
-                    t_fw_col   [8*tft+:8]=Dg[TMTPL][tfo][t_fw_k];
-                    t_fw_col_up[8*tft+:8]=Du[TMTPL][tfo][t_fw_k];
+                    t_fw_q   [4*tft+:4]=Dg[TMTPL][tfo][t_fw_k];
+                    t_fw_q_up[4*tft+:4]=Du[TMTPL][tfo][t_fw_k];
                 end
             end else begin
                 if (t_fw_shared) begin
                     if (t_fw_sel==2'd2) begin
-                        if (tfo<MODEL_DIM) t_fw_col[8*tft+:8]=SHd[TMTPL][tfo][t_fw_k];
+                        if (tfo<MODEL_DIM) t_fw_q[4*tft+:4]=SHd[TMTPL][tfo][t_fw_k];
                     end else if (tfo<INTER_MOE) begin
-                        t_fw_col   [8*tft+:8]=SHg[TMTPL][tfo][t_fw_k];
-                        t_fw_col_up[8*tft+:8]=SHu[TMTPL][tfo][t_fw_k];
+                        t_fw_q   [4*tft+:4]=SHg[TMTPL][tfo][t_fw_k];
+                        t_fw_q_up[4*tft+:4]=SHu[TMTPL][tfo][t_fw_k];
                     end
                 end else begin
                     if (t_fw_sel==2'd2) begin
-                        if (tfo<MODEL_DIM) t_fw_col[8*tft+:8]=Md[TMTPL][t_fw_eidx][tfo][t_fw_k];
+                        if (tfo<MODEL_DIM) t_fw_q[4*tft+:4]=Md[TMTPL][t_fw_eidx][tfo][t_fw_k];
                     end else if (tfo<INTER_MOE) begin
-                        t_fw_col   [8*tft+:8]=Mg[TMTPL][t_fw_eidx][tfo][t_fw_k];
-                        t_fw_col_up[8*tft+:8]=Mu[TMTPL][t_fw_eidx][tfo][t_fw_k];
+                        t_fw_q   [4*tft+:4]=Mg[TMTPL][t_fw_eidx][tfo][t_fw_k];
+                        t_fw_q_up[4*tft+:4]=Mu[TMTPL][t_fw_eidx][tfo][t_fw_k];
                     end
                 end
             end
         end
         for (tft=0;tft<TN;tft=tft+1) begin
-            if (mtp_mode==1'b0) begin
-                if (t_fw_sel==2'd2) t_fw_scale_g[16*(0*TN+tft)+:16]=ScDd[TMTPL][0];
-                else begin
-                    t_fw_scale_g[16*(0*TN+tft)+:16]=ScDg[TMTPL][tobd];
-                    t_fw_scale_u[16*(0*TN+tft)+:16]=ScDu[TMTPL][tobd];
-                end
-            end else begin
-                if (t_fw_shared) begin
-                    if (t_fw_sel==2'd2) t_fw_scale_g[16*(0*TN+tft)+:16]=ScSHd[TMTPL];
-                    else begin
-                        t_fw_scale_g[16*(0*TN+tft)+:16]=ScSHg[TMTPL];
-                        t_fw_scale_u[16*(0*TN+tft)+:16]=ScSHu[TMTPL];
-                    end
-                end else begin
-                    if (t_fw_sel==2'd2) t_fw_scale_g[16*(0*TN+tft)+:16]=ScMd[TMTPL][t_fw_eidx];
-                    else begin
-                        t_fw_scale_g[16*(0*TN+tft)+:16]=ScMg[TMTPL][t_fw_eidx];
-                        t_fw_scale_u[16*(0*TN+tft)+:16]=ScMu[TMTPL][t_fw_eidx];
-                    end
-                end
-            end
+            t_fw_d_g   [16*tft+:16] = Q_D;  t_fw_dmin_g[16*tft+:16] = Q_DM;
+            t_fw_d_u   [16*tft+:16] = Q_D;  t_fw_dmin_u[16*tft+:16] = Q_DM;
+            t_fw_scales_g[96*tft+:96] = mk_sc96(t_fw_grp*TN+tft);
+            t_fw_scales_u[96*tft+:96] = mk_sc96(t_fw_grp*TN+tft);
         end
     end
     always @* begin
@@ -564,7 +550,7 @@ module spec_decode_top_tb;
     //========================================================================
     // u_ref : standalone greedy reference model
     //========================================================================
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -579,14 +565,16 @@ module spec_decode_top_tb;
         .db_layer(r_db_layer), .idx_fresh(r_idx_fresh), .idx_win(r_idx_win),
         .gn_req(r_gn_req), .gn_which(r_gn_which), .gn_idx(r_gn_idx), .gn_val(gn_val),
         .aw_req(r_aw_req), .aw_sel(r_aw_sel), .aw_grp(r_aw_grp), .aw_k(r_aw_k),
-        .aw_col(aw_col), .aw_scale(aw_scale),
+        .aw_q(aw_q), .aw_d(aw_d), .aw_dmin(aw_dmin), .aw_scales(aw_scales),
         .kc_req(r_kc_req), .kc_idx(r_kc_idx), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
         .kc_valid(kc_valid),
-        .rw_req(r_rw_req), .rw_k(r_rw_k), .rw_col(rw_col), .rw_scale(rw_scale),
+        .rw_req(r_rw_req), .rw_k(r_rw_k),
+        .rw_q(rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(r_fw_req), .fw_sel(r_fw_sel), .fw_grp(r_fw_grp), .fw_k(r_fw_k),
         .fw_shared(r_fw_shared), .fw_eidx(r_fw_eidx),
-        .fw_col(fw_col), .fw_col_up(fw_col_up),
-        .fw_scale_g(fw_scale_g), .fw_scale_u(fw_scale_u),
+        .fw_q(fw_q), .fw_q_up(fw_q_up),
+        .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
+        .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
         .fn_req(r_fn_req), .fn_idx(r_fn_idx), .fn_val(fn_val),
         .lw_req(r_lw_req), .lw_vtile(r_lw_vtile), .lw_k(r_lw_k), .lw_col(lw_col),
         .h_state(ref_hstate)
@@ -615,29 +603,33 @@ module spec_decode_top_tb;
         .m_db_layer(m_db_layer), .m_idx_fresh(m_idx_fresh), .m_idx_win(m_idx_win),
         .m_gn_req(m_gn_req), .m_gn_which(m_gn_which), .m_gn_idx(m_gn_idx), .m_gn_val(gn_val),
         .m_aw_req(m_aw_req), .m_aw_sel(m_aw_sel), .m_aw_grp(m_aw_grp), .m_aw_k(m_aw_k),
-        .m_aw_col(aw_col), .m_aw_scale(aw_scale),
+        .m_aw_q(aw_q), .m_aw_d(aw_d), .m_aw_dmin(aw_dmin), .m_aw_scales(aw_scales),
         .m_kc_req(m_kc_req), .m_kc_idx(m_kc_idx),
         .m_kc_ckv(kc_ckv), .m_kc_krope(kc_krope), .m_kc_valid(kc_valid),
-        .m_rw_req(m_rw_req), .m_rw_k(m_rw_k), .m_rw_col(rw_col), .m_rw_scale(rw_scale),
+        .m_rw_req(m_rw_req), .m_rw_k(m_rw_k),
+        .m_rw_q(rw_q), .m_rw_d(rw_d), .m_rw_dmin(rw_dmin), .m_rw_scales(rw_scales),
         .m_fw_req(m_fw_req), .m_fw_sel(m_fw_sel), .m_fw_grp(m_fw_grp), .m_fw_k(m_fw_k),
         .m_fw_shared(m_fw_shared), .m_fw_eidx(m_fw_eidx),
-        .m_fw_col(fw_col), .m_fw_col_up(fw_col_up),
-        .m_fw_scale_g(fw_scale_g), .m_fw_scale_u(fw_scale_u),
+        .m_fw_q(fw_q), .m_fw_q_up(fw_q_up),
+        .m_fw_d_g(fw_d_g), .m_fw_dmin_g(fw_dmin_g), .m_fw_scales_g(fw_scales_g),
+        .m_fw_d_u(fw_d_u), .m_fw_dmin_u(fw_dmin_u), .m_fw_scales_u(fw_scales_u),
         .m_fn_req(m_fn_req), .m_fn_idx(m_fn_idx), .m_fn_val(fn_val),
         .m_lw_req(m_lw_req), .m_lw_vtile(m_lw_vtile), .m_lw_k(m_lw_k), .m_lw_col(lw_col),
         .t_cn_req(t_cn_req), .t_cn_which(t_cn_which), .t_cn_idx(t_cn_idx), .t_cn_val(t_cn_val),
         .t_pw_req(t_pw_req), .t_pw_ptile(t_pw_ptile), .t_pw_k(t_pw_k),
-        .t_pw_col(t_pw_col), .t_pw_scale(t_pw_scale),
+        .t_pw_q(t_pw_q), .t_pw_d(t_pw_d), .t_pw_dmin(t_pw_dmin), .t_pw_scales(t_pw_scales),
         .t_gn_req(t_gn_req), .t_gn_which(t_gn_which), .t_gn_idx(t_gn_idx), .t_gn_val(t_gn_val),
         .t_aw_req(t_aw_req), .t_aw_sel(t_aw_sel), .t_aw_grp(t_aw_grp), .t_aw_k(t_aw_k),
-        .t_aw_col(t_aw_col), .t_aw_scale(t_aw_scale),
+        .t_aw_q(t_aw_q), .t_aw_d(t_aw_d), .t_aw_dmin(t_aw_dmin), .t_aw_scales(t_aw_scales),
         .t_kc_req(t_kc_req), .t_kc_idx(t_kc_idx),
         .t_kc_ckv(t_kc_ckv), .t_kc_krope(t_kc_krope), .t_kc_valid(t_kc_valid),
-        .t_rw_req(t_rw_req), .t_rw_k(t_rw_k), .t_rw_col(t_rw_col), .t_rw_scale(t_rw_scale),
+        .t_rw_req(t_rw_req), .t_rw_k(t_rw_k),
+        .t_rw_q(t_rw_q), .t_rw_d(t_rw_d), .t_rw_dmin(t_rw_dmin), .t_rw_scales(t_rw_scales),
         .t_fw_req(t_fw_req), .t_fw_sel(t_fw_sel), .t_fw_grp(t_fw_grp), .t_fw_k(t_fw_k),
         .t_fw_shared(t_fw_shared), .t_fw_eidx(t_fw_eidx),
-        .t_fw_col(t_fw_col), .t_fw_col_up(t_fw_col_up),
-        .t_fw_scale_g(t_fw_scale_g), .t_fw_scale_u(t_fw_scale_u),
+        .t_fw_q(t_fw_q), .t_fw_q_up(t_fw_q_up),
+        .t_fw_d_g(t_fw_d_g), .t_fw_dmin_g(t_fw_dmin_g), .t_fw_scales_g(t_fw_scales_g),
+        .t_fw_d_u(t_fw_d_u), .t_fw_dmin_u(t_fw_dmin_u), .t_fw_scales_u(t_fw_scales_u),
         .t_lw_req(t_lw_req), .t_lw_vtile(t_lw_vtile), .t_lw_k(t_lw_k), .t_lw_col(t_lw_col)
     );
 

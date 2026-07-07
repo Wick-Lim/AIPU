@@ -159,8 +159,8 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mtp_head_fp8_pem_sim test/mtp_head_fp8_pem_tb.v src/mtp_head_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
 	@printf '[%s] ' "mtp_head_fp8(PE_M batch)"; $(VVP) $(BUILD_DIR)/mtp_head_fp8_pem_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: mtp_head_fp8_pem"; exit 1; }
-	@# spec_decode_top: MTP speculative-decode loop (glm_model_fp8 + mtp_head_fp8 + spec_decode_seq); spec==greedy.
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_decode_top_sim test/spec_decode_top_tb.v src/spec_decode_top.v src/glm_model_fp8.v src/mtp_head_fp8.v src/spec_decode_seq.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
+	@# spec_decode_top: MTP speculative-decode loop (glm_model_q4k + mtp_head_q4k + spec_decode_seq); spec==greedy.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_decode_top_sim test/spec_decode_top_tb.v src/spec_decode_top.v src/glm_model_q4k.v src/mtp_head_q4k.v src/spec_decode_seq.v src/glm_decoder_block_q4k.v src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
 	@printf '[%s] ' "spec_decode_top"; $(VVP) $(BUILD_DIR)/spec_decode_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_decode_top"; exit 1; }
 	@# spec_batched_top / spec_chain_top run the FULL model forward many times (K x

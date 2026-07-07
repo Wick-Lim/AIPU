@@ -110,9 +110,9 @@ module spec_decode_top #(
     parameter integer FF_KWD     = $clog2(FF_KMAX_D + 1),
     parameter integer FF_KMAX_M  = (INTER_MOE  > MODEL_DIM) ? INTER_MOE  : MODEL_DIM,
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1),
-    parameter integer A_NB       = (A_KMAX    + BLK - 1) / BLK,
-    parameter integer FF_NB_D    = (FF_KMAX_D + BLK - 1) / BLK,
-    parameter integer R_NB       = (FF_KMAX_M + BLK - 1) / BLK,
+    parameter integer A_NSB      = (A_KMAX    + 255) / 256,  // attention Q4_K super-blocks
+    parameter integer FF_NSB_D   = (FF_KMAX_D + 255) / 256,  // dense FFN super-blocks
+    parameter integer R_NSB      = (FF_KMAX_M + 255) / 256,  // router super-blocks
     parameter integer LAYW       = (L     <= 1) ? 1 : $clog2(L),
     parameter integer TOKW       = (VOCAB <= 1) ? 1 : $clog2(VOCAB),
     parameter integer DIMW       = (MODEL_DIM <= 1) ? 1 : $clog2(MODEL_DIM),
@@ -123,7 +123,7 @@ module spec_decode_top #(
     parameter integer CKIW       = $clog2(CK),
     parameter integer NPTILE     = MODEL_DIM / PROJ_TN,
     parameter integer PTW        = (NPTILE <= 1) ? 1 : $clog2(NPTILE),
-    parameter integer PROJ_NB    = (CK + BLK - 1) / BLK
+    parameter integer PROJ_NSB   = (CK + 255) / 256          // MTP proj Q4_K super-blocks
 )(
     input  wire                          clk,
     input  wire                          rst,        // sync, active-high
@@ -157,7 +157,7 @@ module spec_decode_top #(
     input  wire [15:0]                   e_val,
 
     // ====================================================================
-    // MAIN-MODEL (glm_model_fp8) PULL INTERFACES -- routed up, prefix m_*
+    // MAIN-MODEL (glm_model_q4k) PULL INTERFACES -- routed up, prefix m_*
     // ====================================================================
     output wire                          m_em_req,
     output wire [TOKW-1:0]               m_em_tok,
@@ -174,8 +174,10 @@ module spec_decode_top #(
     output wire [3:0]                    m_aw_sel,
     output wire [A_GRPW-1:0]             m_aw_grp,
     output wire [A_KCW-1:0]              m_aw_k,
-    input  wire [PE_N*8-1:0]             m_aw_col,
-    input  wire [16*PE_N*A_NB-1:0]       m_aw_scale,
+    input  wire [PE_N*4-1:0]             m_aw_q,       // PE_N Q4_K 4-bit weight lanes
+    input  wire [16*PE_N*A_NSB-1:0]      m_aw_d,       // fp16 d per (col,super-block)
+    input  wire [16*PE_N*A_NSB-1:0]      m_aw_dmin,    // fp16 dmin
+    input  wire [96*PE_N*A_NSB-1:0]      m_aw_scales,  // 6-bit scales
     output wire                          m_kc_req,
     output wire [IDXW-1:0]               m_kc_idx,
     input  wire [KV_LORA*16-1:0]         m_kc_ckv,
@@ -183,18 +185,24 @@ module spec_decode_top #(
     input  wire                          m_kc_valid,
     output wire                          m_rw_req,
     output wire [R_KW-1:0]               m_rw_k,
-    input  wire [8*N_EXPERT-1:0]         m_rw_col,
-    input  wire [16*N_EXPERT*R_NB-1:0]   m_rw_scale,
+    input  wire [4*N_EXPERT-1:0]         m_rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
+    input  wire [16*N_EXPERT*R_NSB-1:0]  m_rw_d,       // fp16 d
+    input  wire [16*N_EXPERT*R_NSB-1:0]  m_rw_dmin,    // fp16 dmin
+    input  wire [96*N_EXPERT*R_NSB-1:0]  m_rw_scales,  // 6-bit scales
     output wire                          m_fw_req,
     output wire [1:0]                    m_fw_sel,
     output wire [FF_GWD-1:0]             m_fw_grp,
     output wire [FF_KWD-1:0]             m_fw_k,
     output wire                          m_fw_shared,
     output wire [EIDXW-1:0]              m_fw_eidx,
-    input  wire [8*TN-1:0]               m_fw_col,
-    input  wire [8*TN-1:0]               m_fw_col_up,
-    input  wire [16*TN*FF_NB_D-1:0]      m_fw_scale_g,
-    input  wire [16*TN*FF_NB_D-1:0]      m_fw_scale_u,
+    input  wire [4*TN-1:0]               m_fw_q,       // GATE/DOWN Q4_K 4-bit lanes
+    input  wire [4*TN-1:0]               m_fw_q_up,    // UP companion Q4_K 4-bit lanes
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_d_g,     // GATE/DOWN fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_dmin_g,  // GATE/DOWN fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     m_fw_scales_g,// GATE/DOWN 6-bit scales
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_d_u,     // UP fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_dmin_u,  // UP fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     m_fw_scales_u,// UP 6-bit scales
     output wire                          m_fn_req,
     output wire [DIMW-1:0]               m_fn_idx,
     input  wire [15:0]                   m_fn_val,
@@ -204,7 +212,7 @@ module spec_decode_top #(
     input  wire [LM_TN*16-1:0]           m_lw_col,
 
     // ====================================================================
-    // MTP-HEAD (mtp_head_fp8) PULL INTERFACES -- routed up, prefix t_*
+    // MTP-HEAD (mtp_head_q4k) PULL INTERFACES -- routed up, prefix t_*
     // ====================================================================
     output wire                          t_cn_req,
     output wire [1:0]                    t_cn_which,
@@ -213,8 +221,10 @@ module spec_decode_top #(
     output wire                          t_pw_req,
     output wire [PTW-1:0]                t_pw_ptile,
     output wire [CKIW-1:0]               t_pw_k,
-    input  wire [PROJ_TN*8-1:0]          t_pw_col,
-    input  wire [16*PROJ_TN*PROJ_NB-1:0] t_pw_scale,
+    input  wire [PROJ_TN*4-1:0]          t_pw_q,       // PROJ_TN Q4_K 4-bit weight lanes
+    input  wire [16*PROJ_TN*PROJ_NSB-1:0] t_pw_d,      // fp16 d per (col,super-block)
+    input  wire [16*PROJ_TN*PROJ_NSB-1:0] t_pw_dmin,   // fp16 dmin
+    input  wire [96*PROJ_TN*PROJ_NSB-1:0] t_pw_scales, // 6-bit scales
     output wire                          t_gn_req,
     output wire                          t_gn_which,
     output wire [DIMW-1:0]               t_gn_idx,
@@ -223,8 +233,10 @@ module spec_decode_top #(
     output wire [3:0]                    t_aw_sel,
     output wire [A_GRPW-1:0]             t_aw_grp,
     output wire [A_KCW-1:0]              t_aw_k,
-    input  wire [PE_N*8-1:0]             t_aw_col,
-    input  wire [16*PE_N*A_NB-1:0]       t_aw_scale,
+    input  wire [PE_N*4-1:0]             t_aw_q,       // PE_N Q4_K 4-bit weight lanes
+    input  wire [16*PE_N*A_NSB-1:0]      t_aw_d,       // fp16 d per (col,super-block)
+    input  wire [16*PE_N*A_NSB-1:0]      t_aw_dmin,    // fp16 dmin
+    input  wire [96*PE_N*A_NSB-1:0]      t_aw_scales,  // 6-bit scales
     output wire                          t_kc_req,
     output wire [IDXW-1:0]               t_kc_idx,
     input  wire [KV_LORA*16-1:0]         t_kc_ckv,
@@ -232,18 +244,24 @@ module spec_decode_top #(
     input  wire                          t_kc_valid,
     output wire                          t_rw_req,
     output wire [R_KW-1:0]               t_rw_k,
-    input  wire [8*N_EXPERT-1:0]         t_rw_col,
-    input  wire [16*N_EXPERT*R_NB-1:0]   t_rw_scale,
+    input  wire [4*N_EXPERT-1:0]         t_rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
+    input  wire [16*N_EXPERT*R_NSB-1:0]  t_rw_d,       // fp16 d
+    input  wire [16*N_EXPERT*R_NSB-1:0]  t_rw_dmin,    // fp16 dmin
+    input  wire [96*N_EXPERT*R_NSB-1:0]  t_rw_scales,  // 6-bit scales
     output wire                          t_fw_req,
     output wire [1:0]                    t_fw_sel,
     output wire [FF_GWD-1:0]             t_fw_grp,
     output wire [FF_KWD-1:0]             t_fw_k,
     output wire                          t_fw_shared,
     output wire [EIDXW-1:0]              t_fw_eidx,
-    input  wire [8*TN-1:0]               t_fw_col,
-    input  wire [8*TN-1:0]               t_fw_col_up,
-    input  wire [16*TN*FF_NB_D-1:0]      t_fw_scale_g,
-    input  wire [16*TN*FF_NB_D-1:0]      t_fw_scale_u,
+    input  wire [4*TN-1:0]               t_fw_q,       // GATE/DOWN Q4_K 4-bit lanes
+    input  wire [4*TN-1:0]               t_fw_q_up,    // UP companion Q4_K 4-bit lanes
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_d_g,     // GATE/DOWN fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_dmin_g,  // GATE/DOWN fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     t_fw_scales_g,// GATE/DOWN 6-bit scales
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_d_u,     // UP fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_dmin_u,  // UP fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     t_fw_scales_u,// UP 6-bit scales
     output wire                          t_lw_req,
     output wire [VTW-1:0]                t_lw_vtile,
     output wire [DIMW-1:0]               t_lw_k,
@@ -291,7 +309,7 @@ module spec_decode_top #(
     //========================================================================
     // u_main : the FULL FP8 main model (verified next token + hidden state).
     //========================================================================
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -306,14 +324,16 @@ module spec_decode_top #(
         .db_layer(m_db_layer), .idx_fresh(m_idx_fresh), .idx_win(m_idx_win),
         .gn_req(m_gn_req), .gn_which(m_gn_which), .gn_idx(m_gn_idx), .gn_val(m_gn_val),
         .aw_req(m_aw_req), .aw_sel(m_aw_sel), .aw_grp(m_aw_grp), .aw_k(m_aw_k),
-        .aw_col(m_aw_col), .aw_scale(m_aw_scale),
+        .aw_q(m_aw_q), .aw_d(m_aw_d), .aw_dmin(m_aw_dmin), .aw_scales(m_aw_scales),
         .kc_req(m_kc_req), .kc_idx(m_kc_idx), .kc_ckv(m_kc_ckv), .kc_krope(m_kc_krope),
         .kc_valid(m_kc_valid),
-        .rw_req(m_rw_req), .rw_k(m_rw_k), .rw_col(m_rw_col), .rw_scale(m_rw_scale),
+        .rw_req(m_rw_req), .rw_k(m_rw_k),
+        .rw_q(m_rw_q), .rw_d(m_rw_d), .rw_dmin(m_rw_dmin), .rw_scales(m_rw_scales),
         .fw_req(m_fw_req), .fw_sel(m_fw_sel), .fw_grp(m_fw_grp), .fw_k(m_fw_k),
         .fw_shared(m_fw_shared), .fw_eidx(m_fw_eidx),
-        .fw_col(m_fw_col), .fw_col_up(m_fw_col_up),
-        .fw_scale_g(m_fw_scale_g), .fw_scale_u(m_fw_scale_u),
+        .fw_q(m_fw_q), .fw_q_up(m_fw_q_up),
+        .fw_d_g(m_fw_d_g), .fw_dmin_g(m_fw_dmin_g), .fw_scales_g(m_fw_scales_g),
+        .fw_d_u(m_fw_d_u), .fw_dmin_u(m_fw_dmin_u), .fw_scales_u(m_fw_scales_u),
         .fn_req(m_fn_req), .fn_idx(m_fn_idx), .fn_val(m_fn_val),
         .lw_req(m_lw_req), .lw_vtile(m_lw_vtile), .lw_k(m_lw_k), .lw_col(m_lw_col),
         .h_state(m_hstate)
@@ -322,7 +342,7 @@ module spec_decode_top #(
     //========================================================================
     // u_mtp : the FP8 MTP draft head (h_t + embed(verified) -> t+2 draft).
     //========================================================================
-    mtp_head_fp8 #(
+    mtp_head_q4k #(
         .MODEL_DIM(MODEL_DIM), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -336,17 +356,19 @@ module spec_decode_top #(
         .logits(t_logits), .argmax(t_argmax),
         .cn_req(t_cn_req), .cn_which(t_cn_which), .cn_idx(t_cn_idx), .cn_val(t_cn_val),
         .pw_req(t_pw_req), .pw_ptile(t_pw_ptile), .pw_k(t_pw_k),
-        .pw_col(t_pw_col), .pw_scale(t_pw_scale),
+        .pw_q(t_pw_q), .pw_d(t_pw_d), .pw_dmin(t_pw_dmin), .pw_scales(t_pw_scales),
         .gn_req(t_gn_req), .gn_which(t_gn_which), .gn_idx(t_gn_idx), .gn_val(t_gn_val),
         .aw_req(t_aw_req), .aw_sel(t_aw_sel), .aw_grp(t_aw_grp), .aw_k(t_aw_k),
-        .aw_col(t_aw_col), .aw_scale(t_aw_scale),
+        .aw_q(t_aw_q), .aw_d(t_aw_d), .aw_dmin(t_aw_dmin), .aw_scales(t_aw_scales),
         .kc_req(t_kc_req), .kc_idx(t_kc_idx), .kc_ckv(t_kc_ckv), .kc_krope(t_kc_krope),
         .kc_valid(t_kc_valid),
-        .rw_req(t_rw_req), .rw_k(t_rw_k), .rw_col(t_rw_col), .rw_scale(t_rw_scale),
+        .rw_req(t_rw_req), .rw_k(t_rw_k),
+        .rw_q(t_rw_q), .rw_d(t_rw_d), .rw_dmin(t_rw_dmin), .rw_scales(t_rw_scales),
         .fw_req(t_fw_req), .fw_sel(t_fw_sel), .fw_grp(t_fw_grp), .fw_k(t_fw_k),
         .fw_shared(t_fw_shared), .fw_eidx(t_fw_eidx),
-        .fw_col(t_fw_col), .fw_col_up(t_fw_col_up),
-        .fw_scale_g(t_fw_scale_g), .fw_scale_u(t_fw_scale_u),
+        .fw_q(t_fw_q), .fw_q_up(t_fw_q_up),
+        .fw_d_g(t_fw_d_g), .fw_dmin_g(t_fw_dmin_g), .fw_scales_g(t_fw_scales_g),
+        .fw_d_u(t_fw_d_u), .fw_dmin_u(t_fw_dmin_u), .fw_scales_u(t_fw_scales_u),
         .lw_req(t_lw_req), .lw_vtile(t_lw_vtile), .lw_k(t_lw_k), .lw_col(t_lw_col)
     );
 
