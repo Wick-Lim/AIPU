@@ -34,8 +34,8 @@ bounded-model-checked.
 
 > **Naming.** **AIPU** (AI Processing Unit, repo [`Wick-Lim/AIPU`](https://github.com/Wick-Lim/AIPU))
 > is the whole accelerator. The project was formerly *TPU*; the classic *5-stage scalar TPU
-> core* keeps its own name (*"TPU v2.0"*, `tpu_*` modules) but is now **LEGACY — moved to
-> [`legacy/`](legacy/), off the GLM product path** (the GLM datapath instantiates none of it).
+> core* (*"TPU v2.0"*, `tpu_*` modules) was a separate legacy design and has been **removed**
+> from the repo — it was never on the GLM product path (see git history if you need it).
 >
 > **Branches:** `prototype` (frozen at `47fb7f8`) = the research prototype (full FP8 datapath +
 > memory system + batching stack, bit-exact at the slice); **`main` develops exactly one thing —
@@ -212,7 +212,7 @@ Whole-chip structural gate (`make synth-glm`, caught a real multi-driver bug); p
 sparse decode + union key-fetch + SWIN scratch decouple; `spec_chain_top` multi-token accept;
 SECDED scrub + lane-partitioned pager ECC + MBIST/ICG clock-gating; `weight_decomp` refill +
 C8 loopback closed; 2-domain `reset_sync` + CDC sign-off; full-config elaboration study (found
-+ guarded a latent dense≥MoE FFN-width constraint). See [`ROADMAP.md`](docs/ROADMAP.md),
++ guarded a latent dense≥MoE FFN-width constraint). See
 [`P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md), [`P12_SCALEUP.md`](docs/P12_SCALEUP.md).
 
 ### Performance / power levers — measured
@@ -250,8 +250,7 @@ die-shrink is free: there is a ~4–5× compute-slowdown budget to spend on shar
 - **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (FP8 die + DDR working cache + 1 TB NVMe SSD, e.g. a USB-C box): tiering, expert caching, the bottleneck/perf/cost model. (The DDR tier is rung-dependent — DDR4/DDR5/HBM per [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md).)
 - **Evidence:** [`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md) (real-checkpoint bit-exact + T4) · [`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md) (operators at real dims) · [`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md) (real sky130 area/P&R) · [`MODAL_VALIDATE.md`](docs/MODAL_VALIDATE.md) (GPU validation harness).
 - **Perf / power / physical:** [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) · [`LOW_POWER.md`](docs/LOW_POWER.md) (the bit-exact low-power path: energy is ~80% NVMe-read bytes → amortize the fetch; the DVFS **frequency** knob is now RTL-realized (`clk_throttle`, peak-power/eco), the J/token half is voltage/vendor; projected ~9 → ~1.5–3 J/token [EST]) · [`ULTRA_PERF.md`](docs/ULTRA_PERF.md) · [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md) · [`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md) (cycle-accurate: the memory-stall mechanism measured on real RTL cycles) · [`MINIATURIZATION.md`](docs/MINIATURIZATION.md) (die shrink: compute is nearly free on an NVMe-bound die → shared engines. **L0 compact config + L1 landed** — swiglu gate/up merged → 6→4 FP8 GEMM engines/block, byte-identical) · [`PPA_FP8.md`](docs/PPA_FP8.md) · [`FORMAL.md`](docs/FORMAL.md).
-- **Verification / scale:** [`FULL_CONFIG_ELAB.md`](docs/FULL_CONFIG_ELAB.md) (the RTL elaborates clean at the **true 753B config** — verilator, 0 errors; full-config SELRANGE lints since cleared 4122→0 byte-identical) · [`COVERAGE.md`](docs/COVERAGE.md) (verilator line/toggle/branch coverage, `make coverage` — merged **87.8% line / 80.1% toggle / 88.9% branch**) · [`P12_SCALEUP.md`](docs/P12_SCALEUP.md) · [`P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md) · [`ROADMAP.md`](docs/ROADMAP.md).
-- **Legacy scalar TPU core** (the old TPU v2.0 under [`legacy/`](legacy/), off the GLM product path — build with `make legacy`): [`SPEC.md`](SPEC.md) · [`docs/ISA.md`](docs/ISA.md) · [`docs/PPA.md`](docs/PPA.md).
+- **Verification / scale:** [`FULL_CONFIG_ELAB.md`](docs/FULL_CONFIG_ELAB.md) (the RTL elaborates clean at the **true 753B config** — verilator, 0 errors; full-config SELRANGE lints since cleared 4122→0 byte-identical) · [`COVERAGE.md`](docs/COVERAGE.md) (verilator line/toggle/branch coverage, `make coverage` — merged **87.8% line / 80.1% toggle / 88.9% branch**) · [`P12_SCALEUP.md`](docs/P12_SCALEUP.md) · [`P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md).
 
 ---
 
@@ -265,12 +264,11 @@ make formal      # bounded model checking (yosys-smtbmc + z3) of the memory cont
 make coverage    # verilator line/toggle/branch coverage over the verilatable unit TBs
 make host-test   # host OpenAI-server + device-protocol + tokenizer scaffold tests (18)
 make cache-study # GLM-trace hit-rate / batching / prefetch / decompress / layout measurements
-make lint        # verilator --lint-only -Wall
+make lint        # verilator lint of the GLM top (diagnostic; not part of `all`)
 make synth-glm   # yosys whole-chip structural gate on the GLM top glm_fp8_system_cdc
 make synth-glm-compact  # same gate on the FPGA-miniaturization config (PE_N=2/DDR_NCH=2/…, byte-identical)
 make sim-glm-compact    # system TB proving the compact config decodes the SAME token stream
-make all         # the GLM rung-① FPGA prove-it gate: unittests + lint + synth-glm + formal
-make legacy      # build+test the LEGACY scalar TPU v2.0 core (legacy/, off the GLM product path)
+make all         # the GLM rung-① FPGA prove-it gate: unittests + synth-glm + formal
 ```
 
 Per-GLM-unit compile (list sources explicitly — **zsh does not word-split**):
@@ -296,14 +294,6 @@ The RTL is built at a small-but-faithful **slice** keeping every operator and ra
 MODEL_DIM=128, 6 layers (3 dense + 3 MoE), 4 heads, MLA nope16/rope16/v32, q_lora64/kv_lora32,
 8-expert top-2 + 1 shared, INTER_MOE=64, INTER_DENSE=256, VOCAB=256, S_MAX=8. Running the real
 753B model adds the memory/streaming system + array scaling ([`ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)).
-
-Separately, under **[`legacy/`](legacy/)** sits the **scalar TPU v2.0 core** — a classic 5-stage
-pipeline (IF→ID→EX→MEM→WB) with hazard forwarding, load-use stalls, and a busy-stall that hands
-tensor ops to dedicated units (`legacy/src/gemm_systolic.v`, `conv2d_unit.v`, `softmax_unit.v`,
-`attention_unit.v`) + an AXI4-Lite wrapper (`legacy/src/tpu_top.v` / `tpu_soc.v` / `tpu_axi.v`). It
-is **LEGACY — the old TPU v2.0 core, off the GLM product path**: the GLM datapath instantiates none
-of it, and it builds/tests separately via `make legacy`. Detail in its legacy docs
-[`SPEC.md`](SPEC.md) / [`docs/ISA.md`](docs/ISA.md).
 
 **FPGA sanity note.** An FP8 GEMM (`glm_matmul_fp8`, PE 1×1 time-multiplexed) fits a **Tang Nano
 20K** (GW2A-18, ~49% LUT, ~0 DSP) — fp32 does not (`mla_attn` alone ≈ 396 DSP-equiv, 8× the

@@ -99,7 +99,7 @@ module clk_gate_cluster #(
     assign gated_clk = gated_clk_w;
 
     // -------- the gated leaf: register_file clocked on the GATED clock --------
-    register_file u_rf_gated (
+    clk_gate_leaf u_rf_gated (
         .clk          (gated_clk_w),
         .rst          (rst),
         .read_addr1   (read_addr1),

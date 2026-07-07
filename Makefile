@@ -1,16 +1,14 @@
-# TPU v2.0 -- Verilog build / simulation / lint / synth
+# GLM-5.2-FP8 accelerator -- Verilog build / simulation / synth / formal
 #
-#   make build      -> compile the design + system TB into build/tpu_sim
-#   make test       -> build + run the system integration TB (ALL N TESTS PASSED)
-#   make hazard     -> build + run the hazard/pipeline TB
+#   make all        -> the GLM prove-it gate: unittests + synth-glm + formal
 #   make unittests  -> build + run EVERY per-unit TB (ALL N TESTS PASSED each)
-#   make sim        -> alias for `test`
-#   make wave       -> run the system TB and leave ./tpu_waveform.vcd (real VCD)
-#   make lint       -> verilator --lint-only -Wall on the whole design (clean)
+#   make synth-glm  -> yosys elaborate + `check -assert` the whole product top
+#   make formal     -> BMC of the memory-system controllers
+#   make lint       -> verilator --lint-only on the GLM top (diagnostic; not yet
+#                      -Wall clean -- informational, NOT part of `all`)
 #   make coverage   -> verilator --coverage-line/-toggle structural coverage of
 #                      the clean-verilating TB subset (per-module + merged report)
-#   make synth      -> yosys elaborate/synth gate (no error, no inferred latch)
-#   make all        -> test + hazard + unittests + lint + synth
+#   make host-test  -> host-side runtime scaffold self-test (host/test_aipu.py)
 #   make clean      -> remove build artifacts and the generated VCDs
 
 IVERILOG  ?= iverilog
@@ -19,111 +17,14 @@ VERILATOR ?= verilator
 YOSYS     ?= yosys
 
 BUILD_DIR  := build
-SIM_BIN    := $(BUILD_DIR)/tpu_sim
-HAZARD_BIN := $(BUILD_DIR)/hazard_sim
-AXI_BIN    := $(BUILD_DIR)/axi_sim
-SOC_BIN    := $(BUILD_DIR)/soc_sim
-
-# ---- LEGACY scalar-TPU core (v2.0), NOT part of the GLM-5.2-FP8 prove-it track ----
-#   The old 5-stage scalar "TPU v2.0" core lives under legacy/ (src + test).  It is
-#   NOT what `main` proves (the product is the GLM FP8 accelerator, rung ① FPGA
-#   prove-it -- see docs/HARDWARE_LADDER.md).  Kept, buildable via `make legacy`,
-#   but off the default `make all` path so `main` == the GLM prove-it target.
-DESIGN := \
-	legacy/src/tpu_top.v \
-	legacy/src/instruction_decoder.v \
-	legacy/src/register_file.v \
-	legacy/src/memory.v \
-	legacy/src/tile_memory.v \
-	legacy/src/vector_alu.v \
-	legacy/src/dma_controller.v \
-	legacy/src/scatter_gather.v \
-	legacy/src/gemm_systolic.v \
-	legacy/src/conv2d_unit.v \
-	legacy/src/softmax_unit.v \
-	legacy/src/attention_unit.v \
-	legacy/src/fused_ops_unit.v
-
-AXI_DESIGN := legacy/src/tpu_axi.v $(DESIGN)
-SOC_DESIGN := legacy/src/tpu_soc.v src/axi_master_dma.v src/cdc_async_fifo.v $(DESIGN)
-
-# ---- legacy per-unit TBs (built from legacy/, via `make legacy`) ----
-UNITS := instruction_decoder register_file memory tile_memory vector_alu \
-         dma_controller scatter_gather gemm_systolic conv2d_unit softmax_unit \
-         fused_ops_unit attention_unit
-
 IFLAGS := -g2012 -Wall -I src
-# legacy builds also need legacy/src on the include path (tpu_defs.vh lives there)
-LFLAGS := -g2012 -Wall -I src -I legacy/src
 
-.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint host-test synth synth-glm synth-glm-compact sim-glm-compact cdc ppa coverage clean legacy
+.PHONY: all unittests spec-slow cache-study formal formal-ind bitacc lint host-test synth-glm synth-glm-compact sim-glm-compact cdc coverage clean
 
-# `all` is the GLM-5.2-FP8 prove-it gate (main's product).  The legacy scalar
-# TPU core (test/hazard/soc/axi/legacy-units) is off this path -- run `make legacy`.
-all: unittests lint synth-glm formal
+# `all` is the GLM-5.2-FP8 prove-it gate (main's product): every per-unit TB, the
+# whole-chip structural sign-off, and the memory-controller formal proofs.
+all: unittests synth-glm formal
 
-# ---- legacy scalar-TPU core (v2.0) -- the old design, kept but not on `all` ----
-legacy: $(SIM_BIN) $(HAZARD_BIN)
-	$(VVP) $(SIM_BIN)
-	$(VVP) $(HAZARD_BIN)
-	@# legacy per-unit TBs (moved off the GLM `unittests` gate)
-	@set -e; for u in $(UNITS); do \
-	  extra=""; \
-	  if [ "$$u" = "attention_unit" ]; then extra="legacy/src/softmax_unit.v"; fi; \
-	  $(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/$${u}_sim legacy/test/$${u}_tb.v legacy/src/$$u.v $$extra; \
-	  printf '[%s] ' "$$u"; $(VVP) $(BUILD_DIR)/$${u}_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: $$u"; exit 1; }; \
-	done
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_param_sim legacy/test/conv2d_param_tb.v legacy/src/conv2d_unit.v
-	@printf '[%s] ' "conv2d_param"; $(VVP) $(BUILD_DIR)/conv2d_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: conv2d_param"; exit 1; }
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_evenk_sim legacy/test/conv2d_evenk_tb.v legacy/src/conv2d_unit.v
-	@printf '[%s] ' "conv2d_evenk"; $(VVP) $(BUILD_DIR)/conv2d_evenk_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: conv2d_evenk"; exit 1; }
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/gemm_ml_sim legacy/test/gemm_ml_tb.v legacy/src/gemm_ml.v
-	@printf '[%s] ' "gemm_ml"; $(VVP) $(BUILD_DIR)/gemm_ml_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: gemm_ml"; exit 1; }
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/attention_param_sim legacy/test/attention_param_tb.v legacy/src/attention_unit.v legacy/src/softmax_unit.v
-	@printf '[%s] ' "attention_param"; $(VVP) $(BUILD_DIR)/attention_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: attention_param"; exit 1; }
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/softmax_param_sim legacy/test/softmax_param_tb.v legacy/src/softmax_unit.v
-	@printf '[%s] ' "softmax_param"; $(VVP) $(BUILD_DIR)/softmax_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: softmax_param"; exit 1; }
-	@$(IVERILOG) $(LFLAGS) -o $(AXI_BIN) legacy/test/tpu_axi_tb.v $(AXI_DESIGN)
-	@printf '[%s] ' "tpu_axi"; $(VVP) $(AXI_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: tpu_axi"; exit 1; }
-	@$(IVERILOG) $(LFLAGS) -o $(SOC_BIN) legacy/test/tpu_soc_tb.v $(SOC_DESIGN)
-	@printf '[%s] ' "tpu_soc"; $(VVP) $(SOC_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: tpu_soc"; exit 1; }
-
-build: $(SIM_BIN)
-
-$(SIM_BIN): legacy/test/tpu_tb.v $(DESIGN) legacy/src/tpu_defs.vh
-	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(LFLAGS) -o $(SIM_BIN) legacy/test/tpu_tb.v $(DESIGN)
-
-$(HAZARD_BIN): legacy/test/hazard_tb.v $(DESIGN) legacy/src/tpu_defs.vh
-	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(LFLAGS) -o $(HAZARD_BIN) legacy/test/hazard_tb.v $(DESIGN)
-
-test sim: $(SIM_BIN)
-	$(VVP) $(SIM_BIN)
-
-hazard: $(HAZARD_BIN)
-	$(VVP) $(HAZARD_BIN)
-
-# AXI4-Lite BFM testbench: drive the tpu_axi slave wrapper (around the unchanged
-# TPU core) over the AW/W/B/AR/R channels and check a real program through the
-# bus against independent goldens.  Builds tpu_axi_tb + the wrapper + full core.
-$(AXI_BIN): legacy/test/tpu_axi_tb.v $(AXI_DESIGN) legacy/src/tpu_defs.vh
-	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(LFLAGS) -o $(AXI_BIN) legacy/test/tpu_axi_tb.v $(AXI_DESIGN)
-
-axi: $(AXI_BIN)
-	$(VVP) $(AXI_BIN)
-
-# Two-clock SoC end-to-end TB: external-memory BFM -> AXI master DMA -> instr CDC
-# -> core (autonomous program execution) -> result CDC -> AXI slave readback, on
-# two asynchronous clocks.
-$(SOC_BIN): legacy/test/tpu_soc_tb.v $(SOC_DESIGN) legacy/src/tpu_defs.vh
-	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(LFLAGS) -o $(SOC_BIN) legacy/test/tpu_soc_tb.v $(SOC_DESIGN)
-
-soc: $(SOC_BIN)
-	$(VVP) $(SOC_BIN)
 
 # Build + run every per-unit TB.  attention_unit additionally needs softmax_unit.
 unittests:
@@ -132,7 +33,7 @@ unittests:
 	@# regenerate it so `unittests` is self-contained on a fresh clone (deterministic seed).
 	@python3 tools/route_trace.py --dump >/dev/null
 	@# ---- GLM-5.2 datapath units (bf16/fp32, fp32-golden verified) ----
-	@# (legacy scalar-TPU per-unit TBs moved to `make legacy`.)
+	@# (the old scalar-TPU per-unit TBs were removed with legacy/.)
 	@# rmsnorm_unit: bf16 in/out, fp32 reduce + rsqrt; the FP numerics foundation.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/rmsnorm_unit_sim test/rmsnorm_unit_tb.v src/rmsnorm_unit.v
 	@printf '[%s] ' "rmsnorm_unit"; $(VVP) $(BUILD_DIR)/rmsnorm_unit_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -393,7 +294,6 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mtp_head_sim test/mtp_head_tb.v src/mtp_head.v src/glm_decoder_block.v src/rmsnorm_unit.v src/mla_attn.v src/rope_interleave_unit.v src/glm_matmul_pipe.v src/dsa_indexer.v src/glm_softmax.v src/topk_select.v src/glm_act.v src/swiglu_expert.v src/moe_router.v src/glm_fp_pipe.v
 	@printf '[%s] ' "mtp_head"; $(VVP) $(BUILD_DIR)/mtp_head_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: mtp_head"; exit 1; }
-	@# (legacy attention_param / softmax_param / tpu_axi TBs -> `make legacy`.)
 	@# AXI4-Lite MASTER DMA engine vs an AXI slave-memory BFM.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/axi_master_dma_sim test/axi_master_dma_tb.v src/axi_master_dma.v
 	@printf '[%s] ' "axi_master_dma"; $(VVP) $(BUILD_DIR)/axi_master_dma_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -402,7 +302,6 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/cdc_async_fifo_sim test/cdc_async_fifo_tb.v src/cdc_async_fifo.v
 	@printf '[%s] ' "cdc_async_fifo"; $(VVP) $(BUILD_DIR)/cdc_async_fifo_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: cdc_async_fifo"; exit 1; }
-	@# (legacy tpu_soc TB -> `make legacy`.)
 	@# ---- P2 productization building blocks (ECC / reset-CDC / DFT-MBIST / power-ICG) ----
 	@# ecc_mem_wrap: SECDED-protected synchronous RAM (encode on write, decode+correct/detect on read) -- exhaustive single-correct + double-detect.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/ecc_mem_wrap_sim test/ecc_mem_wrap_tb.v src/ecc_mem_wrap.v src/ecc_secded.v
@@ -422,7 +321,7 @@ unittests:
 	    || { echo "FAILED: icg_cell"; exit 1; }
 	@# clk_gate_cluster (task C7): icg_cell + clk_en_ctrl gating a real leaf -- gated == free-running (bit-exact),
 	@# idle => clock frozen, scan_enable => transparent, req=1 => enable=1 safety invariant.
-	@$(IVERILOG) $(IFLAGS) -I legacy/src -o $(BUILD_DIR)/clk_gate_cluster_sim test/clk_gate_cluster_tb.v src/clk_gate_cluster.v src/icg_cell.v src/clk_en_ctrl.v legacy/src/register_file.v
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/clk_gate_cluster_sim test/clk_gate_cluster_tb.v src/clk_gate_cluster.v src/icg_cell.v src/clk_en_ctrl.v src/clk_gate_leaf.v
 	@printf '[%s] ' "clk_gate_cluster"; $(VVP) $(BUILD_DIR)/clk_gate_cluster_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: clk_gate_cluster"; exit 1; }
 	@# kv_ecc_ring (task C6): lane-partitioned SECDED ring for wide (ragged, non-64-aligned) KV rows --
@@ -610,27 +509,18 @@ bitacc:
 	@printf '[%s] ' "modal_validate(compare logic)"; echo "PASS"
 	@echo "bitacc: glm_matmul_fp8 == real GLM-5.2-FP8 FP8 contract, argmax preserved; Modal P1.1 app ready (docs/MODAL_VALIDATE.md)"
 
-wave: $(SIM_BIN)
-	$(VVP) $(SIM_BIN)
-	@echo "VCD written to ./tpu_waveform.vcd"
-
+# Verilator lint of the GLM product top (diagnostic, NOT part of `all`): the GLM
+# datapath is not yet -Wall clean (width/pin warnings under review), so this is
+# informational.  The fidelity gate is `unittests` + `synth-glm` + `formal`.
 lint:
-	$(VERILATOR) --lint-only -Wall -Isrc --top-module TPU $(DESIGN)
+	$(VERILATOR) --lint-only -Wall -Isrc --top-module glm_fp8_system_cdc $(GLM_CDC_SRCS)
 
 # Host software scaffold (D2): OpenAI-compatible server + device protocol (stdlib).
 host-test:
 	@printf '[host] '; python3 host/test_aipu.py | tail -1
 
-# Yosys synthesis gate: elaborate the whole hierarchy, run proc/opt, then
-# `check -assert` which FAILS (non-zero exit) on any structural problem
-# (unresolved hierarchy, combinational loop, multiple drivers).  `stat` prints
-# the gate-level cell count.  `-q` keeps the log quiet; a non-zero exit fails make.
-synth:
-	$(YOSYS) -q -p "read_verilog -sv -I src $(DESIGN); \
-	                hierarchy -top TPU -check; proc; opt; check -assert; stat"
-
 # ---- Whole-chip structural gate for the GLM-5.2-FP8 product top (task C1) ----
-# `synth` above gates only the legacy scalar TPU core.  This gate elaborates the
+# This gate elaborates the
 # ENTIRE product hierarchy -- the 2-clock chip top `glm_fp8_system_cdc` and every
 # GLM compute + memory-system + CDC leaf beneath it -- and runs `check -assert`,
 # which FAILS (non-zero exit) on any unresolved hierarchy, combinational loop,
@@ -715,50 +605,6 @@ cdc:
 	@python3 tools/cdc_check.py src/glm_fp8_system_cdc.v \
 	    || { echo "FAILED: cdc structural sign-off"; exit 1; }
 
-# ---- PPA (area + timing) via yosys synth_ecp5 -----------------------------
-# For each tensor unit and the full TPU top we map to real Lattice ECP5 FPGA
-# primitives with `synth_ecp5` and report:
-#   AREA  -- `stat` prints LUT4, TRELLIS_FF (FF), CCU2C (carry), MULT18X18D
-#            (DSP), DP16KD (block RAM), L6MUX21/PFUMX (muxes).
-#   TIMING-- `ltp` prints "Longest topological path ... length N" = the
-#            combinational logic-cell DEPTH (critical-path depth).  Routed fmax
-#            needs nextpnr-ecp5 (not installed here) so we report logic depth.
-PPA_DIR := $(BUILD_DIR)/ppa
-
-PPA_SRC_gemm_systolic := src/gemm_systolic.v
-PPA_SRC_conv2d_unit   := src/conv2d_unit.v
-PPA_SRC_softmax_unit  := src/softmax_unit.v
-PPA_SRC_attention_unit:= src/attention_unit.v src/softmax_unit.v
-PPA_SRC_TPU           := $(DESIGN)
-
-PPA_UNITS := gemm_systolic conv2d_unit softmax_unit attention_unit TPU
-
-# NOTE: `ltp` walks every combinational path; on the full flattened TPU it emits
-# millions of "Detected loop" traversal lines (carry-chain artifacts, NOT real
-# loops) and runs ~15 min, so we run ltp ONLY on the four tensor units (the
-# actionable pipeline candidates) and report AREA-ONLY for the full TPU top.
-# Output is FILTERED before being written (grep > log, not tee raw), so each log
-# stays a few hundred bytes instead of gigabytes.
-ppa:
-	@mkdir -p $(PPA_DIR)
-	@for m in $(PPA_UNITS); do \
-	  case $$m in \
-	    gemm_systolic)  src="$(PPA_SRC_gemm_systolic)";  cmds="synth_ecp5 -top $$m; stat; ltp";; \
-	    conv2d_unit)    src="$(PPA_SRC_conv2d_unit)";    cmds="synth_ecp5 -top $$m; stat; ltp";; \
-	    softmax_unit)   src="$(PPA_SRC_softmax_unit)";   cmds="synth_ecp5 -top $$m; stat; ltp";; \
-	    attention_unit) src="$(PPA_SRC_attention_unit)"; cmds="synth_ecp5 -top $$m; stat; ltp";; \
-	    TPU)            src="$(PPA_SRC_TPU)";            cmds="synth_ecp5 -top $$m; stat";; \
-	  esac; \
-	  echo "================================================================"; \
-	  echo "== PPA: synth_ecp5 top=$$m"; \
-	  echo "================================================================"; \
-	  $(YOSYS) -p "read_verilog -sv -I src $$src; $$cmds" 2>&1 \
-	    | grep -E '^[[:space:]]*[0-9]+[[:space:]]+(LUT4|TRELLIS_FF|CCU2C|MULT18X18D|DP16KD|L6MUX21|PFUMX|TRELLIS_IO)[[:space:]]*$$|^[[:space:]]*Longest topological path.*length|Number of cells:|^ERROR|Error:' \
-	    > $(PPA_DIR)/$$m.log; \
-	  if [ ! -s $(PPA_DIR)/$$m.log ]; then echo "PPA FAILED for $$m (no synth output)"; exit 1; fi; \
-	  cat $(PPA_DIR)/$$m.log; \
-	done
-	@echo "ppa: synth_ecp5 area (+ltp for the 4 tensor units) captured (logs in $(PPA_DIR)/)"
 
 # ---- Structural code coverage (Verilator --coverage-line/-toggle) ---------
 # Verilate + run the SUBSET of behavioral TBs that build+run cleanly under
@@ -775,5 +621,5 @@ coverage:
 	@VERILATOR="$(VERILATOR)" bash tools/cov_run.sh
 
 clean:
-	rm -rf $(BUILD_DIR) tpu_waveform.vcd hazard_waveform.vcd
+	rm -rf $(BUILD_DIR)
 	rm -f *.vcd

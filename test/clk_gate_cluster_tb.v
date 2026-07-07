@@ -64,7 +64,7 @@ module clk_gate_cluster_tb;
     //------------------------------------------------------------------
     // REFERENCE: identical leaf on the FREE-RUNNING clk, same stimulus
     //------------------------------------------------------------------
-    register_file ref_rf (
+    clk_gate_leaf ref_rf (
         .clk          (clk),          // ungated
         .rst          (rst),
         .read_addr1   (read_addr1),

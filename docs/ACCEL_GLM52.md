@@ -180,10 +180,10 @@ infrastructure and the golden uses matching fp32 reduce so they agree within tol
 > it uses its own `glm_matmul_fp8` / `glm_softmax` / `mla_attn_fp8` / `swiglu_expert_fp8` /
 > `moe_router_fp8` / `glm_act` etc. The listed scalar-TPU modules (`gemm_ml`, `gemm_systolic`,
 > `softmax_unit`, `attention_unit`, `scatter_gather`, `fused_ops_unit`, `tpu_soc`, `tpu_axi`,
-> `tile_memory`, `tpu_defs.vh`) are **LEGACY**, now isolated under [`legacy/`](../legacy/) and off the
-> product path (`make legacy`). Read the "Reuse" rows as historical planning, not the current build.
+> `tile_memory`, `tpu_defs.vh`) were **LEGACY** and have been **removed** from the repo — they were
+> never on the GLM product path (see git history). Read the "Reuse" rows as historical planning.
 
-**Early-plan "reuse" (now LEGACY, under `legacy/` — the GLM build uses its own `glm_*`/fp8 units):**
+**Early-plan "reuse" (now removed — the GLM build uses its own `glm_*`/fp8 units):**
 `gemm_ml`, `gemm_systolic`, `softmax_unit`,
 `attention_unit`, `scatter_gather`, `fused_ops_unit`, `tpu_soc`, `tpu_axi`,
 `axi_master_dma`, `cdc_async_fifo`, `tile_memory`, `tpu_defs.vh`.

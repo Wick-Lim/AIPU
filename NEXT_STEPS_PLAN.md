@@ -19,8 +19,8 @@
 > **main은 정확히 이 rung-①(FPGA 동작증명) 하나만 개발한다** — 활성 RTL(src/·test/)은 전부 '전체
 > 753B-계열 GLM이 실 저가 FPGA 실리콘에서 오프라인·bit-exact로 돈다'를 증명하는 코드이고, rung-②③
 > (커스텀보드·볼륨 ASIC)은 **문서화된 로드맵이지 지금 main에서 개발 중인 코드가 아니다**. 예전 5-스테이지
-> 스칼라 'TPU v2.0' 코어는 활성 src/test에서 **`legacy/`(legacy/src·legacy/test)로 격리**됐고(GLM
-> 데이터패스는 그것을 하나도 인스턴스화하지 않는다) `make legacy`로만 빌드된다 — `make all`은 GLM
+> 스칼라 'TPU v2.0' 코어는 활성 src/test에서 저장소에서 **제거**됐고(GLM
+> 데이터패스는 그것을 하나도 인스턴스화하지 않는다) 저장소에서 삭제됐다(git 히스토리 참조) — `make all`은 GLM
 > 동작증명 게이트다.
 > 아래 완료 목록의 **배치 멀티시퀀스 트랙**
 > (`glm_fp8_soc_ms`, N_STEPS 연속배치 디코드, `make bcov` B∈{1,2,3,5,8})은 *같은 실리콘*을
@@ -98,7 +98,7 @@
 - [x] **ECC/MBIST 작업 언블록:** 모든 reg-array 분류 → *docs/P2_MEMORY_MAP.md* (**C2**)
 - [x] **unbounded ddr5 증명:** connect-bind lift(`make formal-ind`에 편입) → *test/formal/ddr5_xbar_ind_fv.v*, *docs/FORMAL.md* (**C5**)
 - [x] **CI 부트스트랩:** `.github/workflows/ci.yml` 존재
-- [x] **문서 정합화:** single-user tok/s 사다리 통일 — **~3 baseline → ~16–27 built today → ~25–40 [EST] ceiling**(전체 레버). *(그 후 하드웨어 현실 반영으로 이 평평한 수치는 `docs/HARDWARE_LADDER.md`의 3단계 사다리로 대체됨: 저가 FPGA ~5–8[EST] / 커스텀보드 ~15–40[EST] / 볼륨 ASIC ~40+. 위 ~25–40은 자금-조달-후 단계(②) 수치.)* `q_lora/kv_lora` = 실 checkpoint **2048/512**(q_lora CONFIRMED, kv_lora standard-assumed). `make all` = `unittests lint synth-glm formal`(Makefile:63) — GLM 동작증명 게이트(레거시 `-top TPU` `synth`·`test`/`hazard`는 빠지고 `make legacy`로 이동).
+- [x] **문서 정합화:** single-user tok/s 사다리 통일 — **~3 baseline → ~16–27 built today → ~25–40 [EST] ceiling**(전체 레버). *(그 후 하드웨어 현실 반영으로 이 평평한 수치는 `docs/HARDWARE_LADDER.md`의 3단계 사다리로 대체됨: 저가 FPGA ~5–8[EST] / 커스텀보드 ~15–40[EST] / 볼륨 ASIC ~40+. 위 ~25–40은 자금-조달-후 단계(②) 수치.)* `q_lora/kv_lora` = 실 checkpoint **2048/512**(q_lora CONFIRMED, kv_lora standard-assumed). `make all` = `unittests synth-glm formal`(Makefile:63) — GLM 동작증명 게이트(레거시 `-top TPU` `synth`·`test`/`hazard`는 빠지고 `make legacy`로 이동).
 
 ## 재조준 타임라인 (P1.1 제거)
 
@@ -137,4 +137,4 @@ WEEKS 4-8 — XL 구조 작업 (오라클 게이트)
 9. **~~`reset_sync`·P2 프리미티브·`weight_decomp/2`가 어떤 product top에도 미인스턴스~~ — 부분 폐쇄.** `reset_sync`는 CDC top에 배선(C3), `weight_decomp`는 NVMe→loader refill 경로에 배선(C9, `glm_fp8_system` DECOMP=1). **남은 미인스턴스:** `mbist_ctrl`/`icg_cell`(system top에는 아직 미배선 — `clk_gate_cluster`는 유닛 레벨만; C7 잔여).
 10. **"모든 dim은 param bump"는 한 구조 변경 과소평가** — `mla_attn_fp8`이 scratch를 S_MAX(1M)로 사이징 → SWIN 디커플 필요(B7). RTL default(`Q_LORA=64`,`KV_LORA=32`,`POSW=20`,`S_MAX=8`)는 slice 값.
 11. **~~`ecc_mem_wrap`은 read시 정정만~~ — C4로 폐쇄됨.** scrub-write-back + sticky `serr`/`derr` + `err_ack` + back-door raw-codeword 주입이 구현되어 P2.1 "retry/recovery" 요구를 충족(read 후 재read에서 `serr=0`).
-12. **문서 불일치 — 해소됨:** single-user tok/s를 한 사다리로 통일(**~3 → ~16–27 built → ~25–40 [EST] ceiling**); README ~30+→~25–40, SSP ~3–6은 보수 subset으로 라벨. *(이후 `docs/HARDWARE_LADDER.md` 3단계 사다리로 대체 — 위 ~25–40은 자금-조달-후 커스텀보드(②) 수치이고, 지금 저가 FPGA(①)는 ~5–8[EST].)* `make all` = **`unittests lint synth-glm formal`**(Makefile:63 — GLM 동작증명 게이트; 레거시 `-top TPU` `synth`·`test`/`hazard`는 빠져 `make legacy`로 이동)이고 `bitacc`/`cache-study`/`bcov`/`formal-ind`/`coverage`/`spec-slow`/`cdc`는 별도.
+12. **문서 불일치 — 해소됨:** single-user tok/s를 한 사다리로 통일(**~3 → ~16–27 built → ~25–40 [EST] ceiling**); README ~30+→~25–40, SSP ~3–6은 보수 subset으로 라벨. *(이후 `docs/HARDWARE_LADDER.md` 3단계 사다리로 대체 — 위 ~25–40은 자금-조달-후 커스텀보드(②) 수치이고, 지금 저가 FPGA(①)는 ~5–8[EST].)* `make all` = **`unittests synth-glm formal`**(Makefile:63 — GLM 동작증명 게이트; 레거시 `-top TPU` `synth`·`test`/`hazard`는 빠져 `make legacy`로 이동)이고 `bitacc`/`cache-study`/`bcov`/`formal-ind`/`coverage`/`spec-slow`/`cdc`는 별도.
