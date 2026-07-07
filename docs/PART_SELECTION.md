@@ -101,15 +101,43 @@ DDR routing, the core of the layout difficulty.
 | **NVMe** | reduced-config image size → capacity; Gen3 vs Gen4 → bandwidth | FPGA PCIe generation |
 | **Power** | after the three above: each rail's voltage × max current → PMIC selection | FPGA/DDR/NVMe datasheets |
 
-## Fill-in once the fit is measured (Phase D / E1)
+## Fit-measurement status (what is measured vs still blocked)
+
+**Measured — per compute unit (open flow, DSP-inferred)** — `glm_matmul_fp8` maps to
+**~17.8 K LUT4-equiv + 20 DSP (MULT18X18/MULT9X9) + ~5.4 K DFF** (yosys 0.66 `synth_gowin`
+with DSP inference; the `abc -lut4` path that "timed out" was a tool limitation, not a
+design one — see [`../fpga/README.md`](../fpga/README.md)).
+
+**Measured — compact whole-system coarse demand (open flow, pre-map)** — `glm_fp8_system_cdc`
+at the compact config (PE_N=2, DDR_NCH=2, KV_RESIDENT=8, EFIFO_DEPTH=8, CACHE_SLOTS=2):
+
+| Coarse cell | Count | Reads as |
+|---|---|---|
+| `$mul` (multipliers) | **346** | multiply ops = **DSP demand ceiling** (small FP8 mants pack; not 1 DSP each) |
+| `$mem_v2` (memories) | **54** | BSRAM demand (count; sizes set the block total) |
+| `$dff` (registers) | 4004 cells (multi-bit) | FF demand |
+| `$add` / `$sub` / `$mux` | 7558 / 2063 / 112657 | LUT/carry logic demand |
+
+Reference capacity — **GW5AST-138** (Tang Mega 138K Pro): **138,240 LUT4, 298 DSP**. The
+346 multiply ops vs 298 DSP means **DSP is the tight resource** on this device — the routed
+fit (after DSP packing + LUT map) decides whether the compact whole-system fits GW5AST-138
+or needs a larger FPGA (a KU3P-class part carries several × the DSP).
+
+**BLOCKED — the authoritative routed fit** (final LUT4 / DSP / BSRAM utilization + **Fmax**):
+- The **open flow can't produce it**: yosys 0.66 `synth_gowin` does **not** infer DSP for the
+  `gw5a` family (`mul2dsp` is gw1n/gw2a-only), so the whole-system FP8 datapath explodes in the
+  `abc -lut4` map. Structural tool gap, not slowness.
+- Needs the **Gowin vendor flow** (`gw_sh`, GW5A-aware DSP map + P&R) — currently blocked on the
+  floating license server (`192.168.30.16`, unreachable subnet), OR a newer yosys with gw5a DSP.
 
 | Field | Value | Status |
 |---|---|---|
-| LUT / logic-cell utilization | — | [PENDING] |
-| DSP utilization | — | [PENDING] |
-| Block RAM / URAM utilization | — | [PENDING] |
-| Routed Fmax | — | [PENDING] |
-| → FPGA device chosen | — | [PENDING] |
+| Per-unit fit (`glm_matmul_fp8`) | ~17.8K LUT4-eq + 20 DSP + 5.4K DFF | **[MEASURED]** |
+| Whole-system multiply demand | 346 `$mul` ops (compact) | **[MEASURED, coarse]** |
+| Whole-system memory demand | 54 arrays (compact) | **[MEASURED, coarse]** |
+| Routed LUT / DSP / BSRAM utilization | — | [PENDING — vendor flow] |
+| Routed Fmax | — | [PENDING — vendor flow] |
+| → FPGA device chosen | GW5AST-138 (tight on DSP) vs KU3P-class | [PENDING — needs routed fit] |
 | → DDR4 channels × size | — | [PENDING] |
 | → NVMe (gen × capacity) | — | [PENDING] |
 | → power rails / PMIC | — | [PENDING] |
