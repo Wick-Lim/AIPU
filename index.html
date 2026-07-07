@@ -1,4 +1,23 @@
-<title>AIPU — offline frontier-AI appliance</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIPU — a frontier AI model on your desk, fully offline</title>
+<meta name="description" content="A local, single-user appliance that runs the full 753-billion-parameter GLM-5.2 model fully offline — air-gapped, bit-exact to the real checkpoint, and owned outright. Frontier AI where the cloud can't go.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://wick-lim.github.io/AIPU/">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#F1F3F6">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AIPU">
+<meta property="og:title" content="AIPU — a frontier AI model on your desk, fully offline">
+<meta property="og:description" content="Runs the full 753B GLM-5.2 model with the ethernet unplugged — air-gapped, bit-exact to the real checkpoint, a single-user appliance you own. Verified RTL, measured evidence, honest gaps.">
+<meta property="og:url" content="https://wick-lim.github.io/AIPU/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="AIPU — a frontier AI model on your desk, fully offline">
+<meta name="twitter:description" content="The full 753B GLM-5.2 model, running with the ethernet unplugged. Air-gapped, bit-exact, yours. Verified RTL and measured evidence.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%2314181F'/%3E%3Crect%20x='11'%20y='7'%20width='4.5'%20height='18'%20rx='1.2'%20fill='%23C27C34'/%3E%3C/svg%3E">
 <style>
   :root{
     --paper:#F1F3F6; --card:#FBFCFD; --ink:#14181F; --ink2:#586173; --ink3:#8992A1;
@@ -174,8 +193,13 @@
     @keyframes rise{to{opacity:1;transform:none}}
   }
   :focus-visible{outline:2px solid var(--copper);outline-offset:2px;border-radius:4px}
+  .skiplink{position:absolute;left:-999px;top:0;background:var(--ink);color:#fff;padding:10px 16px;border-radius:0 0 8px 0;font-family:var(--mono);font-size:.8rem;z-index:20}
+  .skiplink:focus{left:0}
 </style>
+</head>
+<body>
 
+<a class="skiplink" href="#main">Skip to content</a>
 <div class="topbar">
   <div class="wrap">
     <div class="brand">AIPU<b>·</b>local frontier-AI appliance</div>
@@ -183,11 +207,11 @@
   </div>
 </div>
 
-<header class="hero">
+<header class="hero" id="main">
   <div class="wrap">
     <p class="eyebrow reveal"><span class="dot">▍</span> One box · one user · full 753B model · runs with the ethernet unplugged</p>
     <h1 class="reveal" style="animation-delay:.06s">Frontier AI on your desk. <span class="c">Even with the ethernet unplugged.</span></h1>
-    <p class="lead reveal" style="animation-delay:.12s">A local, single-user appliance that runs the full <b>753-billion-parameter</b> GLM-5.2 model <b>fully offline — air-gapped, no internet, ever.</b> It finally puts a frontier model on the work, and in the places, that are shut out of the cloud — and you <b>own it outright.</b> Nothing leaves because <b>there is no path out.</b></p>
+    <p class="lead reveal" style="animation-delay:.12s">A local, single-user appliance that runs the full <b>753-billion-parameter</b> GLM-5.2 model <b>fully offline — air-gapped, no internet, ever.</b> It finally puts a frontier model onto the work — and into the places — that the cloud shuts out, and you <b>own it outright.</b> Nothing leaves, because <b>there is no path out.</b></p>
     <div class="facts">
       <div class="fact reveal"><div class="n">753<span class="u">B</span></div><div class="k">params, run locally</div></div>
       <div class="fact reveal"><div class="n">5–40<span class="u">tok/s</span></div><div class="k">single-user, staged [est]</div></div>
@@ -252,10 +276,10 @@
         <thead><tr><th>Evidence</th><th>Against</th><th>Result</th><th>Status</th></tr></thead>
         <tbody>
           <tr><td><span class="what">Operator bit-accuracy</span><div class="src">vs real GLM-5.2-FP8 safetensors</div></td><td>published checkpoint</td><td class="num"><span class="c">9216/9216</span> · argmax 16/16</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
-          <tr><td><span class="what">FP8 E4M3 arithmetic</span><div class="src">exhaustive enumeration</div></td><td>fp64</td><td class="num">all <span class="c">66,069</span></td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
-          <tr><td><span class="what">Memory-system controllers</span><div class="src">formal, z3</div></td><td>bounded + k-induction</td><td class="num">6 controllers proven</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
+          <tr><td><span class="what">FP8 E4M3 arithmetic</span><div class="src">all 256 decodes + 256² multiply pairs</div></td><td>fp64 golden</td><td class="num"><span class="c">66,069</span> · 0 fail</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
+          <tr><td><span class="what">Memory-system controllers</span><div class="src">formal BMC, z3</div></td><td>bounded + k-induction</td><td class="num">7 controllers proven</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
           <tr><td><span class="what">Full 753B config</span><div class="src">6144 / 78L / 256-expert / 154880</div></td><td>verilator, true dims</td><td class="num"><span class="c">0</span> errors</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
-          <tr><td><span class="what">Real sky130 place &amp; route</span><div class="src">FP8 matmul, OpenROAD PDK</div></td><td>SkyWater sky130</td><td class="num">placement · timing MET</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
+          <tr><td><span class="what">Real sky130 placement + STA</span><div class="src">FP8 matmul · OpenROAD ORFS <span style="color:var(--ink3)">· routing needs x86 host</span></div></td><td>SkyWater sky130hd</td><td class="num">legal · <span class="c">+15.9 ns</span> slack</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
           <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~15–40 tok/s</td><td><span class="chip e">[est]</span></td></tr>
         </tbody>
       </table>
@@ -371,3 +395,6 @@
     <p class="note">Every claim traces to the project's open verification record — measured items are reproducible against <b>github.com/Wick-Lim/AIPU</b>. Throughput, BOM, and per-seat price are estimates until the FPGA demo lands. Built with an honest-gaps-documented ethos: nothing here is hidden.</p>
   </div>
 </footer>
+
+</body>
+</html>
