@@ -24,48 +24,58 @@ HAZARD_BIN := $(BUILD_DIR)/hazard_sim
 AXI_BIN    := $(BUILD_DIR)/axi_sim
 SOC_BIN    := $(BUILD_DIR)/soc_sim
 
-# ---- v2.0 design source set (file name == module name, except top TPU) ----
+# ---- LEGACY scalar-TPU core (v2.0), NOT part of the GLM-5.2-FP8 prove-it track ----
+#   The old 5-stage scalar "TPU v2.0" core lives under legacy/ (src + test).  It is
+#   NOT what `main` proves (the product is the GLM FP8 accelerator, rung ① FPGA
+#   prove-it -- see docs/HARDWARE_LADDER.md).  Kept, buildable via `make legacy`,
+#   but off the default `make all` path so `main` == the GLM prove-it target.
 DESIGN := \
-	src/tpu_top.v \
-	src/instruction_decoder.v \
-	src/register_file.v \
-	src/memory.v \
-	src/tile_memory.v \
-	src/vector_alu.v \
-	src/dma_controller.v \
-	src/scatter_gather.v \
-	src/gemm_systolic.v \
-	src/conv2d_unit.v \
-	src/softmax_unit.v \
-	src/attention_unit.v \
-	src/fused_ops_unit.v
+	legacy/src/tpu_top.v \
+	legacy/src/instruction_decoder.v \
+	legacy/src/register_file.v \
+	legacy/src/memory.v \
+	legacy/src/tile_memory.v \
+	legacy/src/vector_alu.v \
+	legacy/src/dma_controller.v \
+	legacy/src/scatter_gather.v \
+	legacy/src/gemm_systolic.v \
+	legacy/src/conv2d_unit.v \
+	legacy/src/softmax_unit.v \
+	legacy/src/attention_unit.v \
+	legacy/src/fused_ops_unit.v
 
-# ---- AXI4-Lite wrapper source: the slave wrapper + the full unchanged core. ----
-AXI_DESIGN := src/tpu_axi.v $(DESIGN)
-# ---- Two-clock SoC: AXI master DMA + async CDC FIFOs + the unchanged core. ----
-SOC_DESIGN := src/tpu_soc.v src/axi_master_dma.v src/cdc_async_fifo.v $(DESIGN)
+AXI_DESIGN := legacy/src/tpu_axi.v $(DESIGN)
+SOC_DESIGN := legacy/src/tpu_soc.v src/axi_master_dma.v src/cdc_async_fifo.v $(DESIGN)
 
-# ---- per-unit TBs.  Each builds against its own module (file==module); the
-#      attention TB also needs softmax_unit (it instantiates the real unit). ----
+# ---- legacy per-unit TBs (built from legacy/, via `make legacy`) ----
 UNITS := instruction_decoder register_file memory tile_memory vector_alu \
          dma_controller scatter_gather gemm_systolic conv2d_unit softmax_unit \
          fused_ops_unit attention_unit
 
 IFLAGS := -g2012 -Wall -I src
+# legacy builds also need legacy/src on the include path (tpu_defs.vh lives there)
+LFLAGS := -g2012 -Wall -I src -I legacy/src
 
-.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint host-test synth synth-glm synth-glm-compact sim-glm-compact cdc ppa coverage clean
+.PHONY: all build test hazard axi soc unittests spec-slow cache-study formal formal-ind bitacc sim wave lint host-test synth synth-glm synth-glm-compact sim-glm-compact cdc ppa coverage clean legacy
 
-all: test hazard unittests lint synth synth-glm formal
+# `all` is the GLM-5.2-FP8 prove-it gate (main's product).  The legacy scalar
+# TPU core (test/hazard/soc/axi/legacy-units) is off this path -- run `make legacy`.
+all: unittests lint synth-glm formal
+
+# ---- legacy scalar-TPU core (v2.0) -- the old design, kept but not on `all` ----
+legacy: $(SIM_BIN) $(HAZARD_BIN)
+	$(VVP) $(SIM_BIN)
+	$(VVP) $(HAZARD_BIN)
 
 build: $(SIM_BIN)
 
-$(SIM_BIN): test/tpu_tb.v $(DESIGN) src/tpu_defs.vh
+$(SIM_BIN): legacy/test/tpu_tb.v $(DESIGN) legacy/src/tpu_defs.vh
 	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(IFLAGS) -o $(SIM_BIN) test/tpu_tb.v $(DESIGN)
+	$(IVERILOG) $(LFLAGS) -o $(SIM_BIN) legacy/test/tpu_tb.v $(DESIGN)
 
-$(HAZARD_BIN): test/hazard_tb.v $(DESIGN) src/tpu_defs.vh
+$(HAZARD_BIN): legacy/test/hazard_tb.v $(DESIGN) legacy/src/tpu_defs.vh
 	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(IFLAGS) -o $(HAZARD_BIN) test/hazard_tb.v $(DESIGN)
+	$(IVERILOG) $(LFLAGS) -o $(HAZARD_BIN) legacy/test/hazard_tb.v $(DESIGN)
 
 test sim: $(SIM_BIN)
 	$(VVP) $(SIM_BIN)
@@ -76,9 +86,9 @@ hazard: $(HAZARD_BIN)
 # AXI4-Lite BFM testbench: drive the tpu_axi slave wrapper (around the unchanged
 # TPU core) over the AW/W/B/AR/R channels and check a real program through the
 # bus against independent goldens.  Builds tpu_axi_tb + the wrapper + full core.
-$(AXI_BIN): test/tpu_axi_tb.v $(AXI_DESIGN) src/tpu_defs.vh
+$(AXI_BIN): legacy/test/tpu_axi_tb.v $(AXI_DESIGN) legacy/src/tpu_defs.vh
 	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(IFLAGS) -o $(AXI_BIN) test/tpu_axi_tb.v $(AXI_DESIGN)
+	$(IVERILOG) $(LFLAGS) -o $(AXI_BIN) legacy/test/tpu_axi_tb.v $(AXI_DESIGN)
 
 axi: $(AXI_BIN)
 	$(VVP) $(AXI_BIN)
@@ -86,9 +96,9 @@ axi: $(AXI_BIN)
 # Two-clock SoC end-to-end TB: external-memory BFM -> AXI master DMA -> instr CDC
 # -> core (autonomous program execution) -> result CDC -> AXI slave readback, on
 # two asynchronous clocks.
-$(SOC_BIN): test/tpu_soc_tb.v $(SOC_DESIGN) src/tpu_defs.vh
+$(SOC_BIN): legacy/test/tpu_soc_tb.v $(SOC_DESIGN) legacy/src/tpu_defs.vh
 	@mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(IFLAGS) -o $(SOC_BIN) test/tpu_soc_tb.v $(SOC_DESIGN)
+	$(IVERILOG) $(LFLAGS) -o $(SOC_BIN) legacy/test/tpu_soc_tb.v $(SOC_DESIGN)
 
 soc: $(SOC_BIN)
 	$(VVP) $(SOC_BIN)
@@ -107,17 +117,17 @@ unittests:
 	    || { echo "FAILED: $$u"; exit 1; }; \
 	done
 	@# 2nd-size proof for the parameterized conv2d_unit (IMG_H=IMG_W=6,K=3).
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/conv2d_param_sim test/conv2d_param_tb.v src/conv2d_unit.v
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_param_sim legacy/test/conv2d_param_tb.v legacy/src/conv2d_unit.v
 	@printf '[%s] ' "conv2d_param"; $(VVP) $(BUILD_DIR)/conv2d_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: conv2d_param"; exit 1; }
 	@# EVEN-K proof for conv2d_unit (IMG_H=4,IMG_W=6,K=2): guards the pad=1 output-
 	@# pixel counter-width fix (NPIX_MAX = OH+2*PAD_MAX, not IMG_H*IMG_W).
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/conv2d_evenk_sim test/conv2d_evenk_tb.v src/conv2d_unit.v
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_evenk_sim legacy/test/conv2d_evenk_tb.v legacy/src/conv2d_unit.v
 	@printf '[%s] ' "conv2d_evenk"; $(VVP) $(BUILD_DIR)/conv2d_evenk_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: conv2d_evenk"; exit 1; }
 	@# MULTI-LINE TM proof: gemm_ml at N=8 packs each matrix row across 2 TM lines
 	@# (tiles beyond LINE_LANES=4), bit-exact vs an independent golden.
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/gemm_ml_sim test/gemm_ml_tb.v src/gemm_ml.v
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/gemm_ml_sim legacy/test/gemm_ml_tb.v legacy/src/gemm_ml.v
 	@printf '[%s] ' "gemm_ml"; $(VVP) $(BUILD_DIR)/gemm_ml_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: gemm_ml"; exit 1; }
 	@# ---- GLM-5.2 datapath units (bf16/fp32, fp32-golden verified) ----
@@ -383,15 +393,15 @@ unittests:
 	    || { echo "FAILED: mtp_head"; exit 1; }
 	@# 2nd-size proof for the parameterized attention_unit (SEQ=2,D=2); it
 	@# additionally needs softmax_unit (instantiated at SM_PAD lanes).
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/attention_param_sim test/attention_param_tb.v src/attention_unit.v src/softmax_unit.v
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/attention_param_sim legacy/test/attention_param_tb.v legacy/src/attention_unit.v legacy/src/softmax_unit.v
 	@printf '[%s] ' "attention_param"; $(VVP) $(BUILD_DIR)/attention_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: attention_param"; exit 1; }
 	@# 2nd-size proof for the parameterized softmax_unit (LEN=4 and LEN=16).
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/softmax_param_sim test/softmax_param_tb.v src/softmax_unit.v
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/softmax_param_sim legacy/test/softmax_param_tb.v legacy/src/softmax_unit.v
 	@printf '[%s] ' "softmax_param"; $(VVP) $(BUILD_DIR)/softmax_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: softmax_param"; exit 1; }
 	@# AXI4-Lite BFM testbench: drive the tpu_axi slave wrapper over the bus.
-	@$(IVERILOG) $(IFLAGS) -o $(AXI_BIN) test/tpu_axi_tb.v $(AXI_DESIGN)
+	@$(IVERILOG) $(LFLAGS) -o $(AXI_BIN) legacy/test/tpu_axi_tb.v $(AXI_DESIGN)
 	@printf '[%s] ' "tpu_axi"; $(VVP) $(AXI_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: tpu_axi"; exit 1; }
 	@# AXI4-Lite MASTER DMA engine vs an AXI slave-memory BFM.
@@ -403,7 +413,7 @@ unittests:
 	@printf '[%s] ' "cdc_async_fifo"; $(VVP) $(BUILD_DIR)/cdc_async_fifo_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: cdc_async_fifo"; exit 1; }
 	@# Two-clock SoC: autonomous program fetch (AXI master DMA) + CDC + core execution.
-	@$(IVERILOG) $(IFLAGS) -o $(SOC_BIN) test/tpu_soc_tb.v $(SOC_DESIGN)
+	@$(IVERILOG) $(LFLAGS) -o $(SOC_BIN) legacy/test/tpu_soc_tb.v $(SOC_DESIGN)
 	@printf '[%s] ' "tpu_soc"; $(VVP) $(SOC_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: tpu_soc"; exit 1; }
 	@# ---- P2 productization building blocks (ECC / reset-CDC / DFT-MBIST / power-ICG) ----
