@@ -1,10 +1,14 @@
 # TPU PPA Report (ECP5)
 
-> **Naming.** "TPU" here = the **internal scalar TPU v2.0 tensor core** (conv2d / matmul /
-> the four tensor units on ECP5), a real subcomponent — **not** the project. The project is
-> **AIPU** (the GLM-5.2-FP8 accelerator); the FP8 compute die's PPA is characterized on real
-> sky130 cells in [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md). This report is the legacy scalar
-> core on FPGA.
+> **Naming & scope.** "TPU" here = the **legacy scalar TPU v2.0 tensor core** (conv2d / matmul /
+> the four tensor units on ECP5), a real subcomponent — **not** the project. This core has been
+> moved **off the product path** into **`legacy/`** (`legacy/src/` + `legacy/test/`); the GLM
+> datapath instantiates none of it. **`main` develops exactly one thing — the GLM-5.2-FP8
+> accelerator at rung-① (FPGA prove-it)** (built + gated by `make all`); the legacy core stays
+> buildable via **`make legacy`**. The project is **AIPU** (the GLM-5.2-FP8 accelerator), and the
+> **product** PPA is the GLM FP8 path — the FP8 compute die's PPA is characterized on real sky130
+> cells in [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md). **This report characterizes the legacy
+> scalar core on FPGA**, kept for reference; it is not the product PPA.
 
 Power / Performance / Area (PPA) characterization of the Verilog TPU and its four
 tensor units, mapped to the **Lattice ECP5** FPGA cell library with the open-source
@@ -180,7 +184,7 @@ from LUT4):
 carry-chain traversal-warning lines and runs ~15 min; the reproducible target
 reports TPU **area only** and runs `ltp` on the four tensor units (the actionable
 pipeline candidates). Re-measure manually with
-`yosys -p "read_verilog -sv -I src <all src>; synth_ecp5 -top TPU; ltp"` if needed.
+`yosys -p "read_verilog -sv -I legacy/src <all legacy/src>; synth_ecp5 -top TPU; ltp"` if needed.
 
 ### 3.1 Routed fmax — MEASURED (nextpnr-ecp5 place & route)
 
@@ -219,7 +223,7 @@ numbers above are measured on the smallest ECP5 that fits each block.
 
 ```sh
 source <oss-cad-suite>/environment
-yosys -q -p "read_verilog -sv -I src fpga/<h>.v src/<unit>.v; synth_ecp5 -top <h> -json <h>.json"
+yosys -q -p "read_verilog -sv -I legacy/src fpga/<h>.v legacy/src/<unit>.v; synth_ecp5 -top <h> -json <h>.json"
 nextpnr-ecp5 --json <h>.json --25k --package CABGA256 --speed 6 --freq 50 --textcfg /dev/null
 ```
 

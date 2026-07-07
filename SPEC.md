@@ -1,8 +1,24 @@
-# TPU v2.0 — Architecture Specification
+# TPU v2.0 — Architecture Specification (LEGACY)
 
-Status: production-design target (supersedes the v1.5 toy core).
-Audience: RTL implementers and verification engineers.
-Companion document: [`docs/ISA.md`](docs/ISA.md) (instruction encodings, register model, illegal-opcode behavior). The two documents are normative and must stay consistent; this file is the source of truth for microarchitecture and sizes, `ISA.md` for encodings.
+> **LEGACY DOCUMENT — this is NOT the GLM product spec.** This file specifies the
+> legacy scalar **TPU v2.0** core (output-stationary systolic GEMM, 2-D conv,
+> LUT-exp softmax, and attention units, with fixed-point Q-formats and cycle
+> latencies). That core has been **moved out of main's active RTL into `legacy/`**
+> (`legacy/src/` + `legacy/test/`); the GLM datapath instantiates **none** of these
+> modules. `main` now develops exactly one thing — the **GLM-5.2-FP8 accelerator at
+> rung ① (FPGA prove-it)**: the offline, single-user (B=1) box that proves the full
+> 753B-family GLM runs bit-exact on real low-end FPGA silicon at ~5–8 tok/s [EST].
+> Rungs ②③ (custom board at ~15–40 tok/s [EST], then a volume SoC at ~40+ tok/s
+> [EST]) are the roadmap, not main's current code — see
+> [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md). The GLM prove-it gate is
+> **`make all`** (unittests + lint + synth-glm + formal); this legacy core stays
+> buildable via **`make legacy`**. Every module filename (`*.v`, `tpu_defs.vh`)
+> named below now lives under `legacy/src/`, and every testbench under
+> `legacy/test/`. Content preserved unchanged as a design record.
+
+Status: legacy design record — the scalar TPU v2.0 core (supersedes the v1.5 toy core), off the GLM product path.
+Audience: RTL implementers and verification engineers working on the legacy core.
+Companion document: [`docs/ISA.md`](docs/ISA.md) — the legacy TPU ISA reference (instruction encodings, register model, illegal-opcode behavior). The two documents are normative for the legacy core and must stay consistent; this file is the source of truth for microarchitecture and sizes, `ISA.md` for encodings.
 
 ---
 
@@ -213,16 +229,16 @@ Each unit: synchronous reset on all state; `start`/`busy`/`done` handshake; read
 **Independence rule (the v1.5 fix):** no golden model may share arithmetic with the DUT. v1.5's attention golden mirrored the DUT's `>>8` truncation and so never caught the overflow. In v2.0 **every tensor golden is a `real`-typed behavioral model** (floating matmul/conv/exp/softmax) quantized only at the boundary, compared to a documented tolerance for the LUT-approximated ops (softmax/attention) and bit-exactly for the exact ops (GEMM/conv with round+saturate, which the reference also applies *as a separate final quantization step*, not as the accumulation method).
 
 Layers:
-1. **Per-unit self-checking TBs** (`test/<unit>_tb.v`): each tensor and scalar unit standalone. Directed corner cases (zero, negative, max→saturation, identity) + constrained-random (seeded `$random`, ≥1000 vectors/unit). Assert `done` timing == spec latency, assert `sat` flag fires exactly when the reference saturates.
+1. **Per-unit self-checking TBs** (`legacy/test/<unit>_tb.v`): each tensor and scalar unit standalone. Directed corner cases (zero, negative, max→saturation, identity) + constrained-random (seeded `$random`, ≥1000 vectors/unit). Assert `done` timing == spec latency, assert `sat` flag fires exactly when the reference saturates.
 2. **Hazard/pipeline TB:** back-to-back scalar dependencies (forwarding), load-use stalls, tensor `busy` stalls (tensor op immediately followed by a dependent TLOAD), illegal opcode, `r0`-write-ignored, LOADI seeding (no hierarchical pokes needed).
-3. **System integration TB** (`test/tpu_tb.v`, evolves the current one): a small **program** that uses LOADI to seed state, runs a GEMM then a RELU-on-tile then a SOFTMAX then an ATTENTION, and checks final tiles against an end-to-end `real` reference. Covers every opcode and the full datapath. Keeps `$dumpfile/$dumpvars` → real VCD.
+3. **System integration TB** (`legacy/test/tpu_tb.v`, evolves the current one): a small **program** that uses LOADI to seed state, runs a GEMM then a RELU-on-tile then a SOFTMAX then an ATTENTION, and checks final tiles against an end-to-end `real` reference. Covers every opcode and the full datapath. Keeps `$dumpfile/$dumpvars` → real VCD.
 4. **Coverage intent:** every opcode issued; every hazard kind (RAW-EX, RAW-MEM, load-use, tensor-busy); edge cases (overflow/saturation, zero, negative, all-equal softmax, one-hot). Aim near-exhaustive for the small tensor sizes (e.g. exhaustive over small int8 ranges for GEMM with bounded random sampling).
 
 **Toolchain gates (must all pass):**
-- `iverilog -g2012 -Wall -I src` compiles design + each TB clean.
+- `iverilog -g2012 -Wall -I legacy/src` compiles design + each TB clean.
 - `vvp` runs every TB to `ALL N TESTS PASSED` (`$fatal` on any failure).
-- `verilator --lint-only -Wall -Isrc <files>` clean (file names == module names to satisfy `DECLFILENAME`, or scoped `lint_off`).
-- `yosys -p "read_verilog -sv -I src <files>; hierarchy -top TPU; proc; opt; stat"` elaborates with no latches / no unresolved hierarchy.
+- `verilator --lint-only -Wall -Ilegacy/src <files>` clean (file names == module names to satisfy `DECLFILENAME`, or scoped `lint_off`).
+- `yosys -p "read_verilog -sv -I legacy/src <files>; hierarchy -top TPU; proc; opt; stat"` elaborates with no latches / no unresolved hierarchy.
 
 ---
 
@@ -289,15 +305,15 @@ scope for these units (see `docs/ROADMAP.md`).
 
 **2nd-size proofs.** Each unit is verified at a second in-range size against an
 independent `real`-typed golden, in addition to its exhaustive default-size TB:
-`gemm_systolic_tb` (N=2, N=3), `test/conv2d_param_tb.v` (6×6∗3 → 4×4),
-`test/softmax_param_tb.v` (LEN=4 and LEN=16), `test/attention_param_tb.v` (SEQ=2,
+`gemm_systolic_tb` (N=2, N=3), `legacy/test/conv2d_param_tb.v` (6×6∗3 → 4×4),
+`legacy/test/softmax_param_tb.v` (LEN=4 and LEN=16), `legacy/test/attention_param_tb.v` (SEQ=2,
 D=2). `make unittests` builds and runs all of them.
 
 ---
 
-## 10. AXI4-Lite slave wrapper (`src/tpu_axi.v`)
+## 10. AXI4-Lite slave wrapper (`legacy/src/tpu_axi.v`)
 
-`src/tpu_axi.v` (module `tpu_axi`) wraps the verified `TPU` core (module `TPU`,
+`legacy/src/tpu_axi.v` (module `tpu_axi`) wraps the verified `TPU` core (module `TPU`,
 unchanged) as a drop-in, SoC-integratable **AXI4-Lite SLAVE** IP. The core is
 instantiated and wrapped — **never edited**.
 
@@ -339,8 +355,8 @@ offsets read 0 / drop writes and return `SLVERR` (`2'b10`).
 
 **Synthesis & test.** Synchronous reset on every state element, no inferred latch, no
 combinational loops; passes `verilator --lint-only -Wall` (top `tpu_axi`) and yosys
-`check -assert` (top `tpu_axi`). `make axi` builds and runs the BFM testbench
-(`test/tpu_axi_tb.v`), which drives a real program through the bus channels and
+`check -assert` (top `tpu_axi`). `make axi` (a legacy target, off `make all`) builds and runs the BFM testbench
+(`legacy/test/tpu_axi_tb.v`), which drives a real program through the bus channels and
 checks it against independent goldens.
 
 **Scope.** This is a **slave-only** wrapper: it cannot autonomously fetch from

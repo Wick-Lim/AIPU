@@ -57,7 +57,7 @@ by-construction and every lever keeps the **decoded token byte-identical** (veri
 | **L5** ✅ | memory-fabric trim | *(assessed — already spent)* the 4 controllers (ddr5_xbar, kv_cache_pager, expert_cache_ctrl/pf) were **already trimmed** (6b2c82f, 899ea64): minimal-width regs, verilator-clean; QDEPTH off-limits (NVMe/PCIe latency-hide) | small | none | ✔ (except QDEPTH) | med | **no change (already minimal)** |
 | **L6** ⚠ | bit-serial FP8 MAC | 1-bit/cycle multiply → tiny multiplier | large per-PE | **16–32×** | ✖ **OVERSHOOTS budget** (compute becomes the bottleneck) | high | **high — skip** unless a deeper-idle regime is proven |
 | **L7** ⚠ | tail precision trade | bf16 tail → fp16/bf12 | moderate | none | n/a | med | **NOT byte-identical** (fidelity trade) — separate decision |
-| **L8** | repo dead-code quarantine | move the 44 non-chip modules (legacy TPU, bf16 golden, redundant `batched_moe`) out of the build | **0 on the chip** | — | ✔ | low | none (hygiene only) |
+| **L8** ◐ | repo dead-code quarantine | *(legacy TPU DONE)* the legacy scalar **TPU v2.0** core (16 src + 19 TBs: `tpu_top`/`soc`/`axi`, decoder, regfile, `gemm_systolic`, `conv2d_unit`, `vector_alu`, …) is **isolated to `legacy/`**, off the GLM datapath — **`make all` is now GLM-only** (the prove-it gate; `make legacy` still builds the old core). Remainder (bf16 golden, redundant `batched_moe`) still in-tree | **0 on the chip** | — | ✔ | low (TPU done) | none (hygiene only) |
 
 ## Phased roadmap
 

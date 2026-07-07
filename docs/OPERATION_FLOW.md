@@ -2,7 +2,9 @@
 
 How the whole accelerator runs one real GLM-5.2-FP8 token, from power-up through a decoded
 token, across every committed RTL block. Grounded in main @ current state (PE_M 4/4, grouped-MoE
-union-skip, cycle-accurate emulation). This is the *operational* view; per-block detail lives in
+union-skip, cycle-accurate emulation) — **main develops exactly the GLM-5.2-FP8 accelerator at
+rung-① (the offline FPGA prove-it demo); the full product at rungs ②③ is roadmap, not code in main
+now** (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). This is the *operational* view; per-block detail lives in
 [`ACCEL_GLM52.md`](ACCEL_GLM52.md) / [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md).
 
 The one fact that shapes everything: **the workload is NVMe/PCIe-bandwidth-bound.** The 753 GB model

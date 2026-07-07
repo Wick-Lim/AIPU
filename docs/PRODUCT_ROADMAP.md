@@ -5,9 +5,13 @@ datapath + memory system + ultra-perf batching stack, **bit-exact and mechanism-
 small-but-faithful slice**, with honest gaps documented. It answers *"does the architecture work,
 and how fast can it go?"* — **yes**, and the levers are measured.
 
-`main` now develops the **product**: a manufacturable accelerator that **runs the published
-`zai-org/GLM-5.2-FP8` reliably**. The mindset shifts from *demonstrate + measure a mechanism* to
-*run the real model correctly, at full scale, robustly, and ship it.*
+`main` now develops the **GLM-5.2-FP8 accelerator at rung ① — the FPGA prove-it track**: a
+manufacturable design whose near-term goal is a **working FPGA demo** proving the published
+`zai-org/GLM-5.2-FP8` runs **reliably on real low-end FPGA silicon, offline and bit-exact**. The
+**full product** — the funded custom board (rung ②) and the volume ASIC/SoC (rung ③) — is the
+**roadmap documented below**, not the code `main` develops right now. The mindset shifts from
+*demonstrate + measure a mechanism* to *run the real model correctly, at full scale, robustly, and
+ship it.*
 
 > **What the product IS: a LOCAL, single-user personal box that works with the ethernet unplugged.**
 > One box, one user, running the full 753 B model **locally** — it **works fully offline / air-gapped:

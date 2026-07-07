@@ -175,7 +175,16 @@ infrastructure and the golden uses matching fp32 reduce so they agree within tol
 | 21 | Sampling (temp/top-k/top-p/multinomial) | `sampler` (+`softmax_unit`) | **fp32** logits | **New** |
 | — | Expert streaming + cache append/gather | `tpu_soc`/`axi_master_dma`/`cdc_async_fifo` | AXI burst | **Reuse** |
 
-**Reused (already 3-gate verified):** `gemm_ml`, `gemm_systolic`, `softmax_unit`,
+> **⚠️ Correction (as-built vs early plan).** The "Reuse" column below was the *early mapping* idea
+> — reuse the scalar-TPU tensor units. The **built** GLM FP8 datapath does **not** instantiate them:
+> it uses its own `glm_matmul_fp8` / `glm_softmax` / `mla_attn_fp8` / `swiglu_expert_fp8` /
+> `moe_router_fp8` / `glm_act` etc. The listed scalar-TPU modules (`gemm_ml`, `gemm_systolic`,
+> `softmax_unit`, `attention_unit`, `scatter_gather`, `fused_ops_unit`, `tpu_soc`, `tpu_axi`,
+> `tile_memory`, `tpu_defs.vh`) are **LEGACY**, now isolated under [`legacy/`](../legacy/) and off the
+> product path (`make legacy`). Read the "Reuse" rows as historical planning, not the current build.
+
+**Early-plan "reuse" (now LEGACY, under `legacy/` — the GLM build uses its own `glm_*`/fp8 units):**
+`gemm_ml`, `gemm_systolic`, `softmax_unit`,
 `attention_unit`, `scatter_gather`, `fused_ops_unit`, `tpu_soc`, `tpu_axi`,
 `axi_master_dma`, `cdc_async_fifo`, `tile_memory`, `tpu_defs.vh`.
 **New:** `rmsnorm_unit`, `rope_interleave_unit`, `mla_attn`, `dsa_indexer` (+`topk_select`),

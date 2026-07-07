@@ -5,8 +5,8 @@ demo. **Why it matters:** the FPGA class sets the box's size / thermal / **BOM /
 and the per-seat price is what makes the [`ICP.md`](ICP.md) real. Everything downstream is bounded
 by the number this track returns.*
 
-**Product frame:** local, single-user box (B=1). This **is** the **rung-① "prove-it"** plan of the
-staged [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — the cheap, near-term proof that the *same* verified
+**Product frame:** local, single-user box (B=1). This **is** what `main` develops right now — the
+**rung-① "prove-it"** plan for the **GLM-5.2-FP8 accelerator** on the staged [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — the cheap, near-term proof that the *same* verified
 RTL runs the real model's tokens on real FPGA silicon (**~5–8 tok/s [EST]**, slow but bit-exact). The
 **Sipeed Tang Mega 138K Pro** (**Gowin GW5AT-138**, ~138 K LUT, on-board DDR3) is used here as the
 **toolchain / bring-up board** for the synth + P&R flow; the real rung-① prove-it target is a **low-end

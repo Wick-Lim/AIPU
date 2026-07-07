@@ -1,7 +1,13 @@
 # TPU Roadmap — what is intentionally NOT done yet (toward v3)
 
-This document is the **honest counterpart** to the README/SPEC: it lists the things
-the current design (v2.0 core + parameterization + AXI4-Lite slave + PPA flow)
+> **⚠️ LEGACY doc.** This is the roadmap for the old **5-stage scalar TPU v2.0 core**, now
+> isolated under [`legacy/`](../legacy/) and off the product path (`make legacy`). It is **not**
+> the GLM-5.2-FP8 accelerator roadmap — that is [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md), and
+> `main` develops the GLM box at rung ① (FPGA prove-it, see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
+> Kept for the legacy core's history.
+
+This document is the **honest counterpart** to the legacy README/SPEC: it lists the things
+the legacy scalar-TPU design (v2.0 core + parameterization + AXI4-Lite slave + PPA flow)
 **deliberately does not do**, and why each was scoped out. None of these are bugs or
 oversights — each is a bounded next step with a stated reason for deferral. The aim
 is **no overclaiming**: the items below are *not* implemented and *no* result is
@@ -64,7 +70,7 @@ increments, and a sticky `err` on non-OKAY responses, exposing an internal sink
 (READ) / source (WRITE) stream. It is verified against an AXI4-Lite slave-memory BFM
 (wait states, in/out-of-range) — `make unittests` → `[axi_master_dma] ALL 7 TESTS`.
 
-`src/tpu_soc.v` integrates it: on a host `DMA_CTRL.START` it autonomously **fetches a
+`legacy/src/tpu_soc.v` integrates it: on a host `DMA_CTRL.START` it autonomously **fetches a
 program from external memory** over the master port and runs it on the core — no
 host single-stepping. See item below for the full two-clock SoC.
 
@@ -78,7 +84,7 @@ full/empty); verified across asynchronous 7ns/11ns clocks streaming 300 words wi
 fill-to-full/drain-to-empty and never-violate safety — `[cdc_async_fifo] ALL 309
 TESTS`.
 
-`src/tpu_soc.v` (`make soc`) is a genuine **two-clock SoC**: an `ACLK` bus domain
+`legacy/src/tpu_soc.v` (`make soc`) is a genuine **two-clock SoC**: an `ACLK` bus domain
 (AXI slave + `axi_master_dma` + FIFO write/read sides) and an independent `CCLK` core
 domain (the unchanged `TPU` + an instruction sequencer), bridged by **two** async CDC
 FIFOs (instruction `ACLK→CCLK`, result `CCLK→ACLK`) plus single-bit 2-FF
@@ -89,7 +95,7 @@ from external memory, executes it across the clock boundary, and the host reads 
 correct `RESULT` back (`12`, `63`) — `[tpu_soc] ALL 21 TESTS`. No latches, lint and
 `check -assert` clean for `top=tpu_soc`.
 
-These resolve the former "slave-only / single-clock" limitation of `src/tpu_axi.v`
+These resolve the former "slave-only / single-clock" limitation of `legacy/src/tpu_axi.v`
 (which remains as the simple single-clock control wrapper).
 
 ---
@@ -105,7 +111,7 @@ rows `≤ 8` columns; softmax already spans `ceil(LEN/4)` lines as a 1-D reducti
 Larger tiles (a 16×16 GEMM, `D = 8` attention) need **multi-line TM rows** — a row
 spanning `ceil(N/LINE_LANES)` consecutive lines.
 
-**That packing now exists and is verified.** `src/gemm_ml.v` is an output-stationary
+**That packing now exists and is verified.** `legacy/src/gemm_ml.v` is an output-stationary
 GEMM whose matrix rows span `LINES_PER_ROW = ceil(N/LINE_LANES)` TM lines: row `r`
 occupies the lines at `base + r·LINES_PER_ROW`, element `k` at line
 `base + r·LINES_PER_ROW + k/LINE_LANES`, lane `k % LINE_LANES`. Its load FSM reads

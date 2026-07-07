@@ -1,6 +1,13 @@
-# TPU v2.0 — Instruction Set Architecture Reference
+# TPU v2.0 — Instruction Set Architecture Reference (LEGACY)
 
-Companion to [`../SPEC.md`](../SPEC.md). This document is normative for **encodings, register model, and illegal-opcode behavior**. Sizes/Q-formats/microarchitecture are in `SPEC.md`. All opcodes and field positions live in a single source of truth: `src/tpu_defs.vh`.
+> **LEGACY — not the GLM product.** This is the instruction set of the legacy 5-stage
+> scalar **TPU v2.0** core, now moved out of main's active build into
+> [`legacy/`](../legacy/) (`legacy/src/` + `legacy/test/`). `main` develops the
+> GLM-5.2-FP8 accelerator at rung-① (FPGA prove-it); the GLM datapath instantiates none
+> of these modules. Kept for reference — build the legacy core with `make legacy`
+> (`make all` is the GLM prove-it gate, not this core).
+
+Companion to [`../SPEC.md`](../SPEC.md) (the legacy TPU v2.0 architecture spec). This document is normative for **encodings, register model, and illegal-opcode behavior**. Sizes/Q-formats/microarchitecture are in `SPEC.md`. All opcodes and field positions live in a single source of truth: `legacy/src/tpu_defs.vh`.
 
 ---
 
@@ -55,7 +62,7 @@ To load a full 32-bit constant, use `LOADI` (low 20 bits, sign-extended) followe
 
 ## 3. Opcode map
 
-Opcodes are 8-bit; grouped by class. Every opcode below is defined in `src/tpu_defs.vh`.
+Opcodes are 8-bit; grouped by class. Every opcode below is defined in `legacy/src/tpu_defs.vh`.
 
 | opcode | name | fmt | operation (semantics) | writes |
 |---|---|---|---|---|
@@ -133,4 +140,4 @@ TSTORE r3, _, imm=8..11     ; DMEM[...] = C
 RDSTATUS r6           ; r6 = status (check sat bit)
 ```
 
-The system testbench (`test/tpu_tb.v`) drives exactly this style of program and checks the resulting `TM`/`DMEM` against an independent `real`-typed reference (see `SPEC.md` §6).
+The system testbench (`legacy/test/tpu_tb.v`) drives exactly this style of program and checks the resulting `TM`/`DMEM` against an independent `real`-typed reference (see `SPEC.md` §6).
