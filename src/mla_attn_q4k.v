@@ -2,10 +2,10 @@
 `include "glm_fp.vh"
 `include "glm_fp_pipe_lat.vh"
 //============================================================================
-// mla_attn_fp8.v  --  GLM-5.2 MLA latent attention, ONE query token (decode),
-//                     FP8-NATIVE WEIGHT PROJECTIONS.            (ACCEL_GLM52 §4.1,§6)
+// mla_attn_q4k.v  --  GLM-5.2 MLA latent attention, ONE query token (decode),
+//                     Q4_K-NATIVE WEIGHT PROJECTIONS.           (ACCEL_GLM52 §4.1,§6)
 //----------------------------------------------------------------------------
-// FUNCTION  (the FP8 sibling of mla_attn.v -- identical FSM/dataflow/latency
+// FUNCTION  (the Q4_K sibling of mla_attn.v -- identical FSM/dataflow/latency
 //   structure; ONLY the SEVEN WEIGHT-MATRIX GEMMs change numerics)
 //
 //   This is the SAME large orchestrator FSM as mla_attn.v.  Every stage, buffer,
@@ -13,8 +13,10 @@
 //   is the GEMM datapath used for the seven LARGE LINEAR WEIGHT projections:
 //
 //     W_dq, W_uq, W_dkv, W_kr(W_krope), W_uk, W_uv, W_o
-//        -> glm_matmul_fp8  (official GLM-5.2-FP8 numerics), exactly like
-//           swiglu_expert_fp8 wires glm_matmul_fp8.
+//        -> glm_matmul_q4k  (official GGML Q4_K numerics: published UD-Q4_K_XL
+//           weights dequantized EXACTLY to fp32  w = (d*sc)*q - (dmin*m)  with NO
+//           re-quantization, bf16 activations fed direct), exactly like
+//           swiglu_expert_q4k wires glm_matmul_q4k.
 //
 //   EVERYTHING ELSE STAYS bf16, UNCHANGED FROM mla_attn.v (RMSNorm, decoupled
 //   RoPE, the per-head q.K SCORE matmul (ACTIVATION x ACTIVATION, bf16 engine),
@@ -25,20 +27,20 @@
 //----------------------------------------------------------------------------
 //   PE_M (default 1 == byte-identical to the original single-token MLA decode) is
 //   the number of QUERY-TOKEN ROWS pushed through the SAME projection weights in
-//   one pass.  glm_matmul_fp8 / glm_matmul_pipe are already PE_M-ready: each
-//   streams PE_M activation lanes (a_col[16*PE_M], a_shift[8*PE_M]) against ONE
-//   weight column (w_row, SHARED) and emits PE_M*PE_N results, time-sharing the
-//   weight stream + the dequant multipliers.  So widening PE_M costs activation-
+//   one pass.  glm_matmul_q4k / glm_matmul_pipe are already PE_M-ready: each
+//   streams PE_M bf16 activation lanes (a_col[16*PE_M]) against ONE
+//   weight column (w_q Q4_K codes, SHARED) and emits PE_M*PE_N results, time-sharing
+//   the weight stream + the dequant.  So widening PE_M costs activation-
 //   lane area + per-row attention state but adds ZERO extra weight bandwidth: the
-//   w_req / w_sel / w_grp / w_k request stream and the w_col / w_scale responses
+//   w_req / w_sel / w_grp / w_k request stream and the w_q / w_scale responses
 //   are IDENTICAL to PE_M=1 -- ONE Flash fetch feeds all B rows.
 //
 //   WHICH PROJECTIONS BATCH OVER QUERY ROWS:
 //     * W_dq, W_uq, W_dkv, W_kr, W_o : activation is per-query-row (x / qlora_n /
 //       ctx).  These BATCH: B rows' activations stream against the one shared
-//       weight column, each row carrying its OWN dynamic per-vector pow2 a_shift
-//       (from its own activation's exp-max).  Row r's projection output is
-//       BIT-IDENTICAL to a PE_M=1 run on row r (glm_matmul_fp8 accumulates every
+//       weight column, each row carrying its OWN bf16 activation fed DIRECT
+//       (no a_shift, no activation quant).  Row r's projection output is
+//       BIT-IDENTICAL to a PE_M=1 run on row r (glm_matmul_q4k accumulates every
 //       (row,col) independently).
 //     * W_uk, W_uv : the activation is ckv_n = RMSNorm(c_kv[key]), a CACHE-KEY
 //       latent that is SHARED across all query rows (it depends only on the key,
@@ -61,7 +63,7 @@
 //     the per-row QUERY RoPE rotation (qrot[r]) -- and the per-row current-token
 //     k_rope coverage pass -- which then flows through the ALREADY-per-row score /
 //     softmax / weighted-V context / W_o.  So row r's output is EXACTLY the single-
-//     token mla_attn_fp8 result for (x_r, pos_r, s_len).  rope_interleave_unit
+//     token mla_attn_q4k result for (x_r, pos_r, s_len).  rope_interleave_unit
 //     captures pos at start and pos affects ONLY its angle datapath (never its FSM
 //     timing), so the PE_M replicas stay in perfect lockstep off ONE shared control
 //     handshake even with different pos_r.  At PE_M=1 (or all pos_r equal) every
@@ -90,11 +92,11 @@
 //     row-0-shared datapath.
 //
 //   At PE_M=1 every PE_M-indexed construct constant-folds to the original single-
-//   row datapath -> the committed test/mla_attn_fp8_tb.v instantiates this
-//   unchanged (identical ports) and passes byte-identically.
+//   row datapath -> at PE_M=1 the ports are identical to the committed single-row
+//   module and the datapath folds byte-identically.
 //----------------------------------------------------------------------------
 // STYLE: sync active-high reset; NO latch; NO comb loop; deterministic,
-//   handshake-driven latency (absorbs the FP8 matmul's own latency via out_valid).
+//   handshake-driven latency (absorbs the Q4_K matmul's own latency via out_valid).
 //============================================================================
 module mla_attn_q4k #(
     parameter integer MODEL_DIM = 128,
@@ -261,7 +263,7 @@ module mla_attn_q4k #(
     //   row r element k = x_vec[16*(MODEL_DIM*r + k) +: 16]
     input  wire [MODEL_DIM*16*PE_M-1:0] x_vec,     // PE_M * MODEL_DIM bf16
 
-    // ---- weight pull (combinational responder; FP8 codes + block scales) -- SHARED by all rows ----
+    // ---- weight pull (combinational responder; Q4_K 4-bit codes + super-block scales) -- SHARED by all rows ----
     output reg                         w_req,
     output reg  [3:0]                  w_sel,      // 0..6 projection select
     output reg  [GRPW-1:0]             w_grp,      // output tile-group index
@@ -299,9 +301,9 @@ module mla_attn_q4k #(
     integer rr;        // PE_M row loop variable (sequential blocks)
 
     //========================================================================
-    // DYNAMIC per-vector pow2 ACTIVATION SCALE (a_shift) -- pure exp maxes.
-    //   a_shift = clamp(134 - emax) so the max element's scaled exp becomes 7.
-    //   emax==0 (all-zero vector) -> a_shift = 0.  Identical to swiglu_expert_fp8.
+    // ACTIVATIONS: bf16, fed DIRECT to glm_matmul_q4k -- Q4_K quantizes ONLY the
+    //   weights, so there is NO activation quant and NO a_shift (unlike the FP8
+    //   sibling).  Identical bf16 activation handling to swiglu_expert_q4k.
     //========================================================================
 
     //========================================================================
@@ -462,7 +464,7 @@ module mla_attn_q4k #(
 
     //========================================================================
     // SHARED GEMV ENGINES.  PE_M activation rows, ONE shared weight stream.
-    //   The SEVEN WEIGHT projections go to the FP8 engine (glm_matmul_fp8); the
+    //   The SEVEN WEIGHT projections go to the Q4_K engine (glm_matmul_q4k); the
     //   q.K SCORE pass (ACTIVATION x ACTIVATION) goes to the bf16 engine
     //   (glm_matmul_pipe).  Both PE_M wide, PE_N tile width.  out_valid / c_out
     //   are muxed on gv_score (stable across a pass).
@@ -474,7 +476,7 @@ module mla_attn_q4k #(
     // this GEMV pass is a q.K SCORE (-> bf16 engine) rather than a weight pass.
     reg                  gv_score;
 
-    // ---- FP8 weight-projection engine ----
+    // ---- Q4_K weight-projection engine (legacy fp8_* net names) ----
     wire                 fp8_busy, fp8_ov;
     wire [16*PE_M*PE_N-1:0] fp8_c;
     // ---- bf16 score (activation x activation) engine ----
@@ -729,10 +731,9 @@ module mla_attn_q4k #(
     end
 
     //------------------------------------------------------------------------
-    // DYNAMIC ACTIVATION SHIFT : combinational max bf16 exponent over the active
-    // A-source vector PER ROW, then dyn_shift.  Stable across all tile-groups of a
-    // pass; latched by the FP8 matmul at its start.  (Score pass uses the bf16
-    // engine -> a_shift unused.)  AS_CKVN is shared -> identical across rows.
+    // (No activation shift: Q4_K feeds bf16 activations DIRECT to glm_matmul_q4k.
+    //  The FP8 sibling's per-row a_shift / dyn_shift machinery is GONE.  The score
+    //  pass uses the bf16 engine; AS_CKVN is shared -> identical across rows.)
     //------------------------------------------------------------------------
 
     // combinational: assembled K lanes for the bf16 score engine (SHARED across

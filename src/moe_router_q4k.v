@@ -5,10 +5,10 @@
 /* verilator lint_off DECLFILENAME */
 //============================================================================
 // moe_router_q4k.v  --  GLM-5.2 / DeepSeek-v3 MoE ROUTER, Q4_K-NATIVE GATE GEMV
-//                       (the FP8 sibling of moe_router.v)        (§5,§6)
+//                       (the Q4_K sibling of moe_router.v)       (§5,§6)
 //----------------------------------------------------------------------------
 // FUNCTION  (IDENTICAL math/ordering to moe_router.v; only the GATE GEMV numerics
-//   change to the official zai-org/GLM-5.2-FP8 weight format)
+//   change to the official GGML Q4_K weight format)
 //
 //       logits = x @ W_g          (W_g : HIDDEN x N_EXPERT, GEMV, K=HIDDEN)
 //       gate   = sigmoid(logits)  (elementwise, N_EXPERT)
@@ -17,14 +17,15 @@
 //       w_j    = (gate_j / s) * SCALE      for each selected j
 //       OUTPUT : {idx_j, bf16(w_j)}  for the TOPK routed experts.
 //
-//   THE FP8 SPLIT (this module's whole reason to exist):
-//     * The router gate GEMV (logits = x @ W_g) runs through glm_matmul_fp8 --
-//       the official GLM-5.2-FP8 numerics: W_g is E4M3 (8-bit) carrying a
-//       [128,128] BLOCK scale (DeepSeek-V3 weight_block_size=[128,128]); the
-//       activation x is bf16 and DYNAMICALLY quantized to E4M3 with a per-vector
-//       (per-token) power-of-two scale; products are 4x4-mantissa fp8 muls,
-//       fp32-accumulated per K-block, block-scaled, then de-scaled to bf16.
-//       This is the SAME drop-in glm_matmul_fp8 wiring as swiglu_expert_fp8.
+//   THE Q4_K SPLIT (this module's whole reason to exist):
+//     * The router gate GEMV (logits = x @ W_g) runs through glm_matmul_q4k --
+//       the official GGML Q4_K numerics: W_g is published GGML Q4_K
+//       (unsloth/GLM-5.2-GGUF UD-Q4_K_XL) -- per output column a super-block of
+//       4-bit codes q with fp16 d/dmin + packed 6-bit block scales/mins,
+//       dequantized EXACTLY to fp32  w = (d*sc)*q - (dmin*m)  with NO
+//       re-quantization; the activation x is bf16 fed DIRECT (no a_shift, no
+//       activation quant); products are fp32 MACs accumulated in K order, then
+//       rounded to bf16.  SAME drop-in glm_matmul_q4k wiring as swiglu_expert_q4k.
 //     * The "tail" stays bf16, EXACTLY as moe_router.v (these are NOT weight
 //       matmuls, so they are NOT quantized): the sigmoid (glm_act), the top-K
 //       (topk_select), and the renormalize-then-x2.5 (the K gate weights sum to
@@ -38,16 +39,16 @@
 // PE_M BATCHING (B token rows share ONE gate-weight fetch)        (ULTRA_PERF#2)
 //   PE_M (default 1 == byte-identical to the original single-token router) is the
 //   number of token ROWS routed through the SAME gate matrix W_g in one pass.
-//   glm_matmul_fp8 is already PE_M-ready: it streams PE_M activation lanes
-//   (a_col[16*PE_M], a_shift[8*PE_M]) against ONE weight tile (w_row[8*N_EXPERT],
+//   glm_matmul_q4k is already PE_M-ready: it streams PE_M bf16 activation lanes
+//   (a_col[16*PE_M]) against ONE weight tile (w_q[4*N_EXPERT] Q4_K codes,
 //   shared) and emits PE_M*N_EXPERT results, time-sharing the weight stream and
-//   the dequant multipliers.  So widening PE_M here costs activation-lane area
+//   the dequant.  So widening PE_M here costs activation-lane area
 //   and a per-row TAIL (sigmoid/topk/renorm) but adds ZERO extra weight
-//   bandwidth: the w_req / w_k request stream and the w_col / w_scale response
+//   bandwidth: the w_req / w_k request stream and the w_q / w_scale response
 //   are IDENTICAL to PE_M=1 -- ONE fetch of W_g feeds all B rows.
 //
-//   Each row carries its OWN dynamic activation scale (xsh[r] from that row's own
-//   token), exactly as a PE_M=1 run on that row would, and glm_matmul_fp8
+//   Each row streams its OWN bf16 activation (that row's own token) DIRECT --
+//   no per-row scale -- exactly as a PE_M=1 run on that row would, and glm_matmul_q4k
 //   accumulates every (row,expert) independently -> row r's logits are
 //   BIT-IDENTICAL to the PE_M=1 router run on row r's activation.  The bf16 tail
 //   is REPLICATED per row (one sigmoid lane-group, one topk_select, one renorm
@@ -61,26 +62,21 @@
 //   committed TB instantiates it unchanged).
 //
 //----------------------------------------------------------------------------
-// DYNAMIC ACTIVATION QUANT (per-vector pow2 scale; activation_scheme=dynamic)
-//   glm_matmul_fp8 takes a per-row signed-8 pow2 exponent a_shift and prescales
-//   the bf16 activation by 2^a_shift before E4M3 encode (undoing 2^-a_shift at
-//   dequant -- exact, a free exponent add).  Each token ROW r needs ONE a_shift
-//   for its whole x vector.  We pick it (same rule as swiglu_expert_fp8) so the
-//   LARGEST-magnitude element of that row lands near E4M3's top of range:
-//   a_shift = clamp_{[-128,127]}( 134 - emax )  (emax = max bf16 exp field;
-//   emax==0 all-zero vector -> a_shift = 0).  Each row's xsh is reduced
-//   combinationally by its own balanced exponent-max tree and latched at start --
-//   a pure exponent max, no multiplier.
+// ACTIVATIONS (bf16, fed DIRECT -- Q4_K quantizes ONLY the weights)
+//   Unlike the FP8 path there is NO activation quant and NO a_shift: each token
+//   row's bf16 x vector streams straight into glm_matmul_q4k, which multiplies it
+//   against the fp32-dequantized weights.  The ONLY quantized operand is W_g
+//   (published GGML Q4_K, dequantized exactly per super-block -- no re-quant).
 //
 //----------------------------------------------------------------------------
 // DATAFLOW / FSM  (deterministic, handshake-driven off the matmul out_valid;
 //   NO hardcoded matmul latency.  IDENTICAL FSM to moe_router.v; only the
 //   data-bearing lanes / tail fan out with PE_M.)
 //   S_IDLE : wait `start` (x_vec latched per-row into xbuf; per-row xsh latched).
-//   S_MMP  : prime -- glm_matmul_fp8.start asserted the prior cycle.
-//   S_MM   : stream K=HIDDEN beats into the FP8 GEMV.  Each beat presents
+//   S_MMP  : prime -- glm_matmul_q4k.start asserted the prior cycle.
+//   S_MM   : stream K=HIDDEN beats into the Q4_K GEMV.  Each beat presents
 //              a_col = {x_r[k] : r in 0..PE_M-1}  and the WEIGHT-PULL request
-//              (w_req/w_k) so the system answers w_col = FP8 column k of W_g
+//              (w_req/w_k) so the system answers w_q = Q4_K column k of W_g
 //              combinationally that cycle -- ONE column shared by all PE_M rows.
 //   S_MMW  : wait the GEMV drain; on out_valid fire one sigmoid beat covering all
 //            PE_M*N_EXPERT logit lanes.
@@ -97,7 +93,7 @@
 // STYLE
 //   synchronous ACTIVE-HIGH reset; NO latch (every reg assigned on every path);
 //   NO combinational loop (all FP feedback rides pipeline registers).  Reuses
-//   glm_matmul_fp8 + glm_act + topk_select + glm_fp(_pipe) UNCHANGED.
+//   glm_matmul_q4k + glm_act + topk_select + glm_fp(_pipe) UNCHANGED.
 //============================================================================
 module moe_router_q4k #(
     parameter integer HIDDEN  = 128,           // model hidden size (scales to 6144)
@@ -122,10 +118,10 @@ module moe_router_q4k #(
     //   row r element k = x_vec[16*(HIDDEN*r + k) +: 16]
     input  wire [16*HIDDEN*PE_M-1:0]  x_vec,      // PE_M bf16 tokens, packed
 
-    // ---- gate-weight pull (mirror swiglu_expert_fp8's w_req/w_k/w_col + scales) ---
+    // ---- gate-weight pull (mirror swiglu_expert_q4k's w_req/w_k/w_q + scales) ---
     //   The router drives, every K-beat, a request for column `w_k` of W_g; the
-    //   system answers COMBINATIONALLY the same cycle with the N_EXPERT FP8 E4M3
-    //   lanes:  w_col[8*e +: 8] = W_g[ w_k , e ]   (e = expert 0..N_EXPERT-1).
+    //   system answers COMBINATIONALLY the same cycle with the N_EXPERT Q4_K 4-bit
+    //   code lanes:  w_q[4*e +: 4] = W_g[ w_k , e ]   (e = expert 0..N_EXPERT-1).
     //   This request/response is INDEPENDENT of PE_M -- the B rows share it.
     output wire                       w_req,      // need a W_g column this cycle
     output wire [$clog2(KMAX+1)-1:0]  w_k,        // reduction index k (= row of W_g)
@@ -183,7 +179,7 @@ module moe_router_q4k #(
     reg [KW-1:0] kcnt;               // K beat counter (GEMV stream)
 
     // ===================================================================
-    //  (1) FP8 GEMV : logits = x @ W_g   (PE_M token rows, PE_N=N_EXPERT logits)
+    //  (1) Q4_K GEMV : logits = x @ W_g   (PE_M token rows, PE_N=N_EXPERT logits)
     //      One shared W_g column stream; PE_M activation lanes fan out.
     // ===================================================================
     reg          mm_start;
