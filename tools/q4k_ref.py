@@ -89,6 +89,37 @@ def matmul_q4k_col(a_row_f32, wdeq_col_f32):
         acc = np.float32(acc + np.float32(a_row_f32[k]) * np.float32(wdeq_col_f32[k]))
     return bf16_round(acc)
 
+# ------------------------------------------------- other UD-Q4_K_XL k-quants ----
+# UD-Q4_K_XL is a DYNAMIC mix: most tensors Q4_K, sensitive ones kept at higher
+# precision (Q6_K / Q8_0 / F16). Same GEMM contract (dequant exactly -> fp32 MAC);
+# only the per-weight dequant differs. All bit-exact to ggml.
+
+def dequantize_block_q6_K(d_h, ql, qh, sc):
+    """One Q6_K super-block (256 weights, 210 B: ql[128] qh[64] int8 sc[16] + fp16 d)
+    -> 256 fp32, exactly as ggml dequantize_row_q6_K.
+      q = ((ql&0xF)|((qh>>k&3)<<4)) - 32 (signed 6-bit), w = d * sc[is] * q."""
+    d = np.float32(np.frombuffer(np.uint16(d_h).tobytes(), dtype=np.float16)[0])
+    y = np.empty(QK_K, dtype=np.float32)
+    qlb, qhb, scb, yb = 0, 0, 0, 0
+    for _ in range(0, QK_K, 128):
+        for l in range(32):
+            is_ = l // 16
+            q1 = np.int8(((ql[qlb+l+ 0] & 0xF) | (((qh[qhb+l] >> 0) & 3) << 4)) - 32)
+            q2 = np.int8(((ql[qlb+l+32] & 0xF) | (((qh[qhb+l] >> 2) & 3) << 4)) - 32)
+            q3 = np.int8(((ql[qlb+l+ 0] >>  4) | (((qh[qhb+l] >> 4) & 3) << 4)) - 32)
+            q4 = np.int8(((ql[qlb+l+32] >>  4) | (((qh[qhb+l] >> 6) & 3) << 4)) - 32)
+            y[yb+l+ 0] = d * np.float32(np.int8(sc[scb+is_+0])) * np.float32(q1)
+            y[yb+l+32] = d * np.float32(np.int8(sc[scb+is_+2])) * np.float32(q2)
+            y[yb+l+64] = d * np.float32(np.int8(sc[scb+is_+4])) * np.float32(q3)
+            y[yb+l+96] = d * np.float32(np.int8(sc[scb+is_+6])) * np.float32(q4)
+        yb += 128; qlb += 64; qhb += 32; scb += 8
+    return y
+
+def dequantize_block_q8_0(d_h, qs):
+    """One Q8_0 block (32 weights: fp16 d + 32 int8) -> 32 fp32. w = d * qs."""
+    d = np.float32(np.frombuffer(np.uint16(d_h).tobytes(), dtype=np.float16)[0])
+    return np.array([d * np.float32(np.int8(q)) for q in qs], dtype=np.float32)
+
 # ---------------------------------------------------------------- self-test ----
 def _pack_6bit_scales(scs, mns):
     """Inverse of get_scale_min_k4: pack 8 6-bit scales + 8 6-bit mins -> 12 bytes.
