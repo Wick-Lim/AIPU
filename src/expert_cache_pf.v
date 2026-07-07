@@ -1,8 +1,20 @@
 `timescale 1ns/1ps
 /* verilator lint_off DECLFILENAME */
 //============================================================================
-// expert_cache_pf.v  --  GLM-5.2-FP8 MoE EXPERT-WEIGHT HBM CACHE + PREFETCH
+// expert_cache_pf.v  --  GLM-5.2 Q4_K MoE EXPERT-WEIGHT HBM CACHE + PREFETCH
 //                        (expert_cache_ctrl PLUS a best-effort prefetch engine)
+//----------------------------------------------------------------------------
+// WEIGHT FORMAT (Q4_K retarget -- BYTE-AGNOSTIC, doc-only):
+//   A resident cache slot holds ONE expert's weights.  Under the GGUF
+//   UD-Q4_K_XL image those weights are Q4_K super-blocks (~0.5625 B/weight)
+//   instead of FP8 (~1.0156 B/weight) -- ~44% fewer bytes per expert.  For a
+//   FIXED GDDR6 cache size that ~doubles how many experts fit resident, so the
+//   effective SLOTS budget for a given GB roughly doubles (bump SLOTS to suit).
+//   This module is a TAG/SLOT/ID controller: it tracks WHICH expert id lives in
+//   WHICH slot (valid/tag/rank/freq arrays, LRU/LFU eviction, Flash-DMA refill)
+//   and NEVER touches weight bytes -- the bytes are served by the Flash/DDR
+//   stub.  The Q4_K retarget is therefore parameter/doc ONLY; NO RTL logic here
+//   changes (byte-agnostic, per docs/Q4K_SYSTEM_PLAN.md §2.3).
 //----------------------------------------------------------------------------
 // This is expert_cache_ctrl (src/expert_cache_ctrl.v) -- tag lookup + EXACT
 // move-to-front LRU + miss->Flash-DMA->refill FSM + hit/miss counters -- with

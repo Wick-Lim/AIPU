@@ -19,7 +19,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests spec-slow cache-study formal formal-ind bitacc lint host-test synth-glm synth-glm-compact sim-glm-compact cdc coverage clean
+.PHONY: all unittests q4k spec-slow cache-study formal formal-ind bitacc lint host-test synth-glm synth-glm-q4k synth-glm-compact sim-glm-compact cdc coverage clean
 
 # `all` is the GLM-5.2-FP8 prove-it gate (main's product): every per-unit TB, the
 # whole-chip structural sign-off, and the memory-controller formal proofs.
@@ -329,7 +329,36 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/kv_ecc_ring_sim test/kv_ecc_ring_tb.v src/kv_ecc_ring.v src/ecc_secded.v
 	@printf '[%s] ' "kv_ecc_ring"; $(VVP) $(BUILD_DIR)/kv_ecc_ring_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: kv_ecc_ring"; exit 1; }
+	@# ---- Q4_K local-device track (GGUF UD-Q4_K_XL bring-up; both tracks live -- see docs/Q4K_SYSTEM_PLAN.md) ----
+	@$(MAKE) --no-print-directory q4k
 	@echo "unittests: all per-unit TBs passed"
+
+# Q4_K local-device sub-gate (docs/Q4K_SYSTEM_PLAN.md 4.1): the four verified Q4_K unit TBs
+# (q4k_prim / glm_matmul_q4k / swiglu_expert_q4k / moe_router_q4k), bit-exact to ggml goldens.
+# Wired into `unittests` above; runnable standalone as `make q4k`. Expected: 18/160/240/40.
+q4k:
+	@mkdir -p $(BUILD_DIR)
+	@# q4k_prim: fp16->fp32 + get_scale_min_k4 primitives (q4k.vh) vs ggml golden.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/q4k_prim_sim test/q4k_prim_tb.v
+	@printf '[%s] ' "q4k_prim"; $(VVP) $(BUILD_DIR)/q4k_prim_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: q4k_prim"; exit 1; }
+	@# glm_matmul_q4k: Q4_K GEMM core, bit-exact to ggml dequantize_row_q4_K.
+	@python3 tools/q4k_matmul_gen.py >/dev/null            # -> build/q4k_vec.txt
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_matmul_q4k_sim test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v
+	@printf '[%s] ' "glm_matmul_q4k"; $(VVP) $(BUILD_DIR)/glm_matmul_q4k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_matmul_q4k"; exit 1; }
+	@# swiglu_expert_q4k: MoE expert (gate/up/down + silu) on the Q4_K core.
+	@python3 tools/swiglu_q4k_gen.py >/dev/null            # -> build/swiglu_q4k_vec.txt
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/swiglu_expert_q4k_sim test/swiglu_expert_q4k_tb.v \
+	    src/swiglu_expert_q4k.v src/glm_matmul_q4k.v src/glm_act.v
+	@printf '[%s] ' "swiglu_expert_q4k"; $(VVP) $(BUILD_DIR)/swiglu_expert_q4k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: swiglu_expert_q4k"; exit 1; }
+	@# moe_router_q4k: gating GEMV -> sigmoid -> top-K -> renorm on the Q4_K core.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/moe_router_q4k_sim test/moe_router_q4k_tb.v \
+	    src/moe_router_q4k.v src/glm_matmul_q4k.v src/glm_act.v src/topk_select.v src/glm_fp_pipe.v
+	@printf '[%s] ' "moe_router_q4k"; $(VVP) $(BUILD_DIR)/moe_router_q4k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: moe_router_q4k"; exit 1; }
+	@echo "q4k: all four Q4_K unit TBs passed"
 
 # Single-package system study: regenerate the calibrated GLM-scale routing traces, then run
 # the cache hit-rate + batching + prefetch sims through the real RTL (these need the generated
@@ -539,6 +568,26 @@ GLM_CDC_SRCS := src/glm_fp8_system_cdc.v src/glm_fp8_system.v src/cdc_async_fifo
 synth-glm:
 	$(YOSYS) -q -p "read_verilog -sv -I src $(GLM_CDC_SRCS); \
 	                hierarchy -top glm_fp8_system_cdc -check; proc; opt; check -assert; stat"
+
+# ---- Whole-chip structural gate for the GLM-5.2 Q4_K product top (plan §1.4) ----
+# SIBLING of `synth-glm`: the same structural elaboration + `check -assert` sign-off,
+# but on the Q4_K two-clock chip top `glm_q4k_system_cdc` and the *_q4k.v hierarchy
+# beneath it (the compute die glm_model_q4k + weight_loader_q4k, with the byte-
+# agnostic memory-system / CDC leaves shared unchanged).  Fails (non-zero exit) on
+# any unresolved hierarchy, combinational loop, multiple driver, or inferred latch
+# anywhere in the Q4_K datapath.  `synth-glm` (FP8) is left UNTOUCHED.
+GLM_Q4K_CDC_SRCS := src/glm_q4k_system_cdc.v src/glm_q4k_system.v src/cdc_async_fifo.v \
+	src/reset_sync.v src/glm_model_q4k.v src/ddr5_xbar.v src/weight_loader_q4k.v \
+	src/expert_cache_pf.v src/expert_cache_ctrl.v src/kv_cache_pager.v \
+	src/glm_decoder_block_q4k.v src/mla_attn_q4k.v src/swiglu_expert_q4k.v \
+	src/moe_router_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v \
+	src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v \
+	src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v \
+	src/glm_fp_pipe.v
+
+synth-glm-q4k:
+	$(YOSYS) -q -p "read_verilog -sv -I src $(GLM_Q4K_CDC_SRCS); \
+	                hierarchy -top glm_q4k_system_cdc -check; proc; opt; check -assert; stat"
 
 # ---- COMPACT SYNTH VARIANT (FPGA miniaturization; Tang Mega 138K / GW5AT-138) --
 # Same structural elaboration+sign-off as `synth-glm`, but overrides the five

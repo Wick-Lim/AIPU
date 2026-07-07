@@ -5,7 +5,7 @@
 //                                                  (SYSTEM_SINGLE_PACKAGE.md §mem)
 //----------------------------------------------------------------------------
 // WHY THIS EXISTS
-//   A single DDR5 channel delivers only ~51 GB/s; the single-package GLM-5.2-FP8
+//   A single DDR5 channel delivers only ~51 GB/s; the single-package GLM-5.2 Q4_K
 //   system needs ~400-600 GB/s.  That bandwidth is realized by running N_CH=8-12
 //   channels IN PARALLEL.  Today the repo's fetch path (expert_cache_pf) is
 //   effectively single-channel.  This module is the RTL fabric that makes the
@@ -13,6 +13,17 @@
 //   independent channel pipelines so that up to N_CH reads are in flight at once
 //   -> aggregate read throughput ~ N_CH x a single channel.  No new math: this
 //   is banking + arbitration + in-flight tag tracking only.
+//
+//   WEIGHT FORMAT (Q4_K retarget -- BYTE-AGNOSTIC, doc-only):
+//     The addresses this fabric stripes are now Q4_K super-block byte-offsets
+//     (GGUF UD-Q4_K_XL, ~0.5625 B/weight) instead of FP8 (~1.0156 B/weight) --
+//     a ~38% smaller weight image overall.  A smaller image means FEWER beats
+//     per tile / per expert, so the SAME aggregate N_CH x channel bandwidth
+//     moves MORE tokens/s.  The fabric is byte-agnostic: it moves addresses,
+//     tags and DATA_W=256 beats and never interprets weight bytes, so the Q4_K
+//     retarget is parameter/doc ONLY -- NO RTL logic here changes (a Q4_K
+//     super-block is 144 B; DATA_W=256 can stay two beats or widen as a tuning
+//     param, not a correctness change).  See docs/Q4K_SYSTEM_PLAN.md §2.4.
 //
 //----------------------------------------------------------------------------
 // BANKING SCHEME  (addr -> channel)
