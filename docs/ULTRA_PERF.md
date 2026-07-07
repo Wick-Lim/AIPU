@@ -7,6 +7,13 @@ accumulator, fmax fixes, predictor-prefetch [measured no-op]). Numbers marked **
 not measured. Compute is bit-exact to real GLM-5.2-FP8 (docs/BIT_ACCURACY.md); levers that change outputs are
 flagged **NOT bit-exact**.
 
+> **Local-device retarget (Q4_K).** `main` develops the **Q4_K local-inference track** — the target weight
+> store is the published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` (**467 GB**, ~38% smaller than the 753 GB FP8
+> checkpoint; the per-token hot / routed byte counts below scale down ~proportionally, so these tok/s [EST]
+> are conservative for Q4_K). The moat becomes **bit-exact to the published UD-Q4_K_XL GGUF (no
+> re-quantization; generally lossless per Unsloth)**; numerics are bit-exact to ggml. FP8 is preserved on
+> branch **`fp8`** + tag **`fp8-verified-baseline`** ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
+
 > **Naming note (storage backend).** The committed RTL identifiers — `flash_xbar`, `FLASH_LAT`,
 > `flash_req`, `flash_seq`, `flash_layout`, `flash_is_expert`, `flash_expert_id`, … — are kept
 > **as-is** and are *not* renamed. `flash_xbar` is the medium-agnostic **storage-read fabric**

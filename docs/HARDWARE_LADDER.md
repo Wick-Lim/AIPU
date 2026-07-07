@@ -9,6 +9,13 @@ by **how much money is in the build**. So the plan is: **prove it works cheap �
 > (`tok/s ≈ storage/DDR BW / [(1−h)·footprint] · K`), **not** measured silicon. Only rung ① is a
 > near-term buildable proof; ②③ are funding-gated projections.
 
+> **Local-device retarget (Q4_K).** `main` now develops the **Q4_K local-inference track** — the target
+> weight store is the published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` (**467 GB**, ~38% smaller than the
+> 753 GB FP8 checkpoint). Since the box is memory-bandwidth-bound, the smaller footprint lifts the roofline:
+> the per-token hot / routed byte counts below scale down ~proportionally (fewer bytes/token → more tok/s
+> at the same bandwidth), so the tok/s figures are conservative for Q4_K. FP8 is preserved on branch
+> **`fp8`** + tag **`fp8-verified-baseline`** ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
+
 ---
 
 ## The one thing that sets performance: **memory bandwidth, not compute**

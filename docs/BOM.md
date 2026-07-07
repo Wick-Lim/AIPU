@@ -11,6 +11,12 @@ quote. Prices are single-unit / low-volume unless noted.*
 > For **how the individual parts get locked** (FPGA → DDR4/NVMe/power combos, and the fit
 > measurement that gates them), see [`PART_SELECTION.md`](PART_SELECTION.md).
 
+> **Local-device retarget (Q4_K).** The local track targets the published `unsloth/GLM-5.2-GGUF :
+> UD-Q4_K_XL` (**467 GB**, ~38% smaller than the 753 GB FP8 checkpoint), so the memory/storage lines below
+> are **conservative**: the hot-set and routed bytes scale down ~proportionally, which eases the DDR and
+> NVMe sizing (a smaller hot-set cache and a 467 GB model still fits ~1 TB with room to spare). FP8 is
+> preserved on branch **`fp8`** + tag **`fp8-verified-baseline`** ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
+
 ---
 
 ## The cost shape (read this first)

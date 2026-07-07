@@ -14,6 +14,16 @@
 > Where a number is a system estimate it is tagged **[SYS-EST]**; where it is proven by
 > the buildable slice it is tagged **[BUILT]** (after the build) or **[DERIVED]** (mapped
 > but pending build).
+>
+> **Local-device retarget (Q4_K).** For the local appliance, `main` develops a **Q4_K
+> local-inference track**: the target weight store is the published
+> `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` (**467 GB**, ~38% smaller than the 753 GB FP8
+> checkpoint; the on-box footprint / hot-set / routed-expert bytes below scale down
+> ~proportionally), and the moat becomes **bit-exact to the published UD-Q4_K_XL GGUF (no
+> re-quantization; generally lossless per Unsloth)**. The FP8 datacenter-native baseline —
+> the datapath detailed in this doc — is preserved on branch **`fp8`** + tag
+> **`fp8-verified-baseline`**; the Q4_K numerics are bit-exact to ggml
+> ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
 
 ---
 
@@ -49,7 +59,7 @@ overridable from the real weights. Everything else above is exact.
 runs the full GLM-5.2-FP8 model **fully offline / air-gapped — nothing leaves because there is
 no path out** (the audit is literally "does it work with the ethernet unplugged?" — yes). The
 on-box residency described in this doc is exactly what makes that possible: the entire ~753 GB
-FP8 model lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a fast DDR hot-weight cache (rung-dependent — DDR4 on the prove-it FPGA, DDR5/HBM on the funded custom board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
+FP8 model (on the Q4_K local track, the **~467 GB** UD-Q4_K_XL GGUF) lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a fast DDR hot-weight cache (rung-dependent — DDR4 on the prove-it FPGA, DDR5/HBM on the funded custom board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
 (see `docs/USBC_PRODUCT_PLAN.md`), so after a **one-time provisioning** load (itself doable in a
 secure facility; new-model/weight updates are a physical re-provision) the card serves one user
 (**B=1**) with no internet and no cloud, ever. That unlocks frontier-model use in the

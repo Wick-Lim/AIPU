@@ -44,6 +44,17 @@ bounded-model-checked.
 > main's current code ([`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md),
 > [`NEXT_STEPS_PLAN.md`](NEXT_STEPS_PLAN.md)).
 
+> **Local-device retarget (Q4_K).** For a cost-constrained local appliance, `main` now develops the
+> **Q4_K local-inference track**: the target weight store is the published
+> [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF) — **467 GB, ~38%
+> smaller than the 753 GB FP8 checkpoint** (the hot-set / routed-expert bytes scale down
+> ~proportionally, and the BOM is memory-dominated). The moat moves — still verifiable — from *"bit-exact
+> to the published FP8 safetensors"* to **"bit-exact to the published UD-Q4_K_XL GGUF (no re-quantization;
+> generally lossless per Unsloth)"**, a file anyone can download and check. The **FP8** datacenter-native
+> baseline is preserved on branch **`fp8`** + tag **`fp8-verified-baseline`** — every FP8 evidence row
+> below still holds there. Numerics are bit-exact to ggml; tok/s stays **[EST]**. See
+> [`docs/Q4K_RETARGET.md`](docs/Q4K_RETARGET.md).
+
 ---
 
 ## What's proven — measured on real artifacts, not claimed
