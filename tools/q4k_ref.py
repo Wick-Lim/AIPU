@@ -62,6 +62,33 @@ def dequantize_row_q4_K(blocks):
     """blocks: iterable of (d_h, dmin_h, scales, qs). -> concatenated fp32 row."""
     return np.concatenate([dequantize_block_q4_K(*b) for b in blocks])
 
+# ---------------------------------------------------------------- matmul contract
+# The GEMM contract the hardware core (glm_matmul_q4k.v) computes, bit-exact:
+#   weights: published UD-Q4_K_XL, dequantized EXACTLY (above), NO re-quantization.
+#   activations: bf16 (same interface as glm_matmul_pipe).
+#   per output: out[m][n] = bf16( SUM_k fp32(a[m][k]) * w_deq[k][n] ), the fp32
+#   products sequentially fp32-accumulated in K order (the streaming order the RTL
+#   uses), then rounded to bf16 (round-to-nearest-even). Same accumulate structure
+#   as the proven bf16 glm_matmul_pipe -- only the weight source changes (Q4_K deq).
+
+def bf16_round(x):
+    """fp32 -> bf16 value (kept in fp32), round-to-nearest-even on the low 16 bits."""
+    u = int(np.frombuffer(np.float32(x).tobytes(), dtype=np.uint32)[0])
+    if (u & 0x7F800000) == 0x7F800000:      # inf/nan: truncate mantissa, keep
+        u2 = u & 0xFFFF0000
+    else:
+        lsb = (u >> 16) & 1
+        u2 = (u + 0x7FFF + lsb) & 0xFFFF0000
+    return np.float32(np.frombuffer(np.uint32(u2).tobytes(), dtype=np.float32)[0])
+
+def matmul_q4k_col(a_row_f32, wdeq_col_f32):
+    """One output = sequential fp32 dot of a bf16 activation row with a dequantized
+    Q4_K weight column, rounded to bf16. a_row_f32 entries are bf16-valued fp32."""
+    acc = np.float32(0.0)
+    for k in range(len(a_row_f32)):
+        acc = np.float32(acc + np.float32(a_row_f32[k]) * np.float32(wdeq_col_f32[k]))
+    return bf16_round(acc)
+
 # ---------------------------------------------------------------- self-test ----
 def _pack_6bit_scales(scs, mns):
     """Inverse of get_scale_min_k4: pack 8 6-bit scales + 8 6-bit mins -> 12 bytes.
