@@ -66,6 +66,28 @@ all: unittests lint synth-glm formal
 legacy: $(SIM_BIN) $(HAZARD_BIN)
 	$(VVP) $(SIM_BIN)
 	$(VVP) $(HAZARD_BIN)
+	@# legacy per-unit TBs (moved off the GLM `unittests` gate)
+	@set -e; for u in $(UNITS); do \
+	  extra=""; \
+	  if [ "$$u" = "attention_unit" ]; then extra="legacy/src/softmax_unit.v"; fi; \
+	  $(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/$${u}_sim legacy/test/$${u}_tb.v legacy/src/$$u.v $$extra; \
+	  printf '[%s] ' "$$u"; $(VVP) $(BUILD_DIR)/$${u}_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: $$u"; exit 1; }; \
+	done
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_param_sim legacy/test/conv2d_param_tb.v legacy/src/conv2d_unit.v
+	@printf '[%s] ' "conv2d_param"; $(VVP) $(BUILD_DIR)/conv2d_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: conv2d_param"; exit 1; }
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_evenk_sim legacy/test/conv2d_evenk_tb.v legacy/src/conv2d_unit.v
+	@printf '[%s] ' "conv2d_evenk"; $(VVP) $(BUILD_DIR)/conv2d_evenk_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: conv2d_evenk"; exit 1; }
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/gemm_ml_sim legacy/test/gemm_ml_tb.v legacy/src/gemm_ml.v
+	@printf '[%s] ' "gemm_ml"; $(VVP) $(BUILD_DIR)/gemm_ml_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: gemm_ml"; exit 1; }
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/attention_param_sim legacy/test/attention_param_tb.v legacy/src/attention_unit.v legacy/src/softmax_unit.v
+	@printf '[%s] ' "attention_param"; $(VVP) $(BUILD_DIR)/attention_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: attention_param"; exit 1; }
+	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/softmax_param_sim legacy/test/softmax_param_tb.v legacy/src/softmax_unit.v
+	@printf '[%s] ' "softmax_param"; $(VVP) $(BUILD_DIR)/softmax_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: softmax_param"; exit 1; }
+	@$(IVERILOG) $(LFLAGS) -o $(AXI_BIN) legacy/test/tpu_axi_tb.v $(AXI_DESIGN)
+	@printf '[%s] ' "tpu_axi"; $(VVP) $(AXI_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: tpu_axi"; exit 1; }
+	@$(IVERILOG) $(LFLAGS) -o $(SOC_BIN) legacy/test/tpu_soc_tb.v $(SOC_DESIGN)
+	@printf '[%s] ' "tpu_soc"; $(VVP) $(SOC_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' || { echo "FAILED: tpu_soc"; exit 1; }
 
 build: $(SIM_BIN)
 
@@ -109,28 +131,8 @@ unittests:
 	@# expert_predictor_tb reads the generated routing trace (tools/glm_trace.hex);
 	@# regenerate it so `unittests` is self-contained on a fresh clone (deterministic seed).
 	@python3 tools/route_trace.py --dump >/dev/null
-	@set -e; for u in $(UNITS); do \
-	  extra=""; \
-	  if [ "$$u" = "attention_unit" ]; then extra="src/softmax_unit.v"; fi; \
-	  $(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/$${u}_sim test/$${u}_tb.v src/$$u.v $$extra; \
-	  printf '[%s] ' "$$u"; $(VVP) $(BUILD_DIR)/$${u}_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: $$u"; exit 1; }; \
-	done
-	@# 2nd-size proof for the parameterized conv2d_unit (IMG_H=IMG_W=6,K=3).
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_param_sim legacy/test/conv2d_param_tb.v legacy/src/conv2d_unit.v
-	@printf '[%s] ' "conv2d_param"; $(VVP) $(BUILD_DIR)/conv2d_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: conv2d_param"; exit 1; }
-	@# EVEN-K proof for conv2d_unit (IMG_H=4,IMG_W=6,K=2): guards the pad=1 output-
-	@# pixel counter-width fix (NPIX_MAX = OH+2*PAD_MAX, not IMG_H*IMG_W).
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/conv2d_evenk_sim legacy/test/conv2d_evenk_tb.v legacy/src/conv2d_unit.v
-	@printf '[%s] ' "conv2d_evenk"; $(VVP) $(BUILD_DIR)/conv2d_evenk_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: conv2d_evenk"; exit 1; }
-	@# MULTI-LINE TM proof: gemm_ml at N=8 packs each matrix row across 2 TM lines
-	@# (tiles beyond LINE_LANES=4), bit-exact vs an independent golden.
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/gemm_ml_sim legacy/test/gemm_ml_tb.v legacy/src/gemm_ml.v
-	@printf '[%s] ' "gemm_ml"; $(VVP) $(BUILD_DIR)/gemm_ml_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: gemm_ml"; exit 1; }
 	@# ---- GLM-5.2 datapath units (bf16/fp32, fp32-golden verified) ----
+	@# (legacy scalar-TPU per-unit TBs moved to `make legacy`.)
 	@# rmsnorm_unit: bf16 in/out, fp32 reduce + rsqrt; the FP numerics foundation.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/rmsnorm_unit_sim test/rmsnorm_unit_tb.v src/rmsnorm_unit.v
 	@printf '[%s] ' "rmsnorm_unit"; $(VVP) $(BUILD_DIR)/rmsnorm_unit_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -391,19 +393,7 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mtp_head_sim test/mtp_head_tb.v src/mtp_head.v src/glm_decoder_block.v src/rmsnorm_unit.v src/mla_attn.v src/rope_interleave_unit.v src/glm_matmul_pipe.v src/dsa_indexer.v src/glm_softmax.v src/topk_select.v src/glm_act.v src/swiglu_expert.v src/moe_router.v src/glm_fp_pipe.v
 	@printf '[%s] ' "mtp_head"; $(VVP) $(BUILD_DIR)/mtp_head_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: mtp_head"; exit 1; }
-	@# 2nd-size proof for the parameterized attention_unit (SEQ=2,D=2); it
-	@# additionally needs softmax_unit (instantiated at SM_PAD lanes).
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/attention_param_sim legacy/test/attention_param_tb.v legacy/src/attention_unit.v legacy/src/softmax_unit.v
-	@printf '[%s] ' "attention_param"; $(VVP) $(BUILD_DIR)/attention_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: attention_param"; exit 1; }
-	@# 2nd-size proof for the parameterized softmax_unit (LEN=4 and LEN=16).
-	@$(IVERILOG) $(LFLAGS) -o $(BUILD_DIR)/softmax_param_sim legacy/test/softmax_param_tb.v legacy/src/softmax_unit.v
-	@printf '[%s] ' "softmax_param"; $(VVP) $(BUILD_DIR)/softmax_param_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: softmax_param"; exit 1; }
-	@# AXI4-Lite BFM testbench: drive the tpu_axi slave wrapper over the bus.
-	@$(IVERILOG) $(LFLAGS) -o $(AXI_BIN) legacy/test/tpu_axi_tb.v $(AXI_DESIGN)
-	@printf '[%s] ' "tpu_axi"; $(VVP) $(AXI_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: tpu_axi"; exit 1; }
+	@# (legacy attention_param / softmax_param / tpu_axi TBs -> `make legacy`.)
 	@# AXI4-Lite MASTER DMA engine vs an AXI slave-memory BFM.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/axi_master_dma_sim test/axi_master_dma_tb.v src/axi_master_dma.v
 	@printf '[%s] ' "axi_master_dma"; $(VVP) $(BUILD_DIR)/axi_master_dma_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -412,10 +402,7 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/cdc_async_fifo_sim test/cdc_async_fifo_tb.v src/cdc_async_fifo.v
 	@printf '[%s] ' "cdc_async_fifo"; $(VVP) $(BUILD_DIR)/cdc_async_fifo_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: cdc_async_fifo"; exit 1; }
-	@# Two-clock SoC: autonomous program fetch (AXI master DMA) + CDC + core execution.
-	@$(IVERILOG) $(LFLAGS) -o $(SOC_BIN) legacy/test/tpu_soc_tb.v $(SOC_DESIGN)
-	@printf '[%s] ' "tpu_soc"; $(VVP) $(SOC_BIN) | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: tpu_soc"; exit 1; }
+	@# (legacy tpu_soc TB -> `make legacy`.)
 	@# ---- P2 productization building blocks (ECC / reset-CDC / DFT-MBIST / power-ICG) ----
 	@# ecc_mem_wrap: SECDED-protected synchronous RAM (encode on write, decode+correct/detect on read) -- exhaustive single-correct + double-detect.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/ecc_mem_wrap_sim test/ecc_mem_wrap_tb.v src/ecc_mem_wrap.v src/ecc_secded.v
