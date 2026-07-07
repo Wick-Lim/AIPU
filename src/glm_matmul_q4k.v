@@ -56,10 +56,12 @@ module glm_matmul_q4k #(
     input  wire                       start,      // begin a tile
     input  wire [$clog2(KMAX+1)-1:0]  k_len,      // number of K beats this tile
 
-    // per-column Q4_K super-block params (latched at start)
-    input  wire [16*PE_N-1:0]         w_d,        // fp16 d    per column
-    input  wire [16*PE_N-1:0]         w_dmin,     // fp16 dmin per column
-    input  wire [96*PE_N-1:0]         w_scales,   // 96b packed 6-bit scales/mins per column
+    // per-column Q4_K super-block params (latched at start).  A column spans
+    // NSB = ceil(KMAX/256) super-blocks along K; super-block sb of column pj is at
+    // index (pj*NSB + sb).  (KMAX=256 -> NSB=1, one super-block per column.)
+    input  wire [16*PE_N*((KMAX+255)/256)-1:0] w_d,      // fp16 d    per (col, super-block)
+    input  wire [16*PE_N*((KMAX+255)/256)-1:0] w_dmin,   // fp16 dmin per (col, super-block)
+    input  wire [96*PE_N*((KMAX+255)/256)-1:0] w_scales, // 96b scales per (col, super-block)
 
     input  wire                       in_valid,   // a K-beat is presented
     input  wire [16*PE_M-1:0]         a_col,      // bf16 A[*][k], PE_M packed
@@ -69,19 +71,21 @@ module glm_matmul_q4k #(
     output reg                        out_valid,  // C tile valid (1 cycle)
     output reg  [16*PE_M*PE_N-1:0]    c_out       // bf16 C[pi][pj] packed
 );
-    localparam integer KW = $clog2(KMAX+1);
+    localparam integer KW  = $clog2(KMAX+1);
+    localparam integer NSB = (KMAX + 255) / 256;   // super-blocks along K
 
     // ---- latched tile params ----
-    reg [KW-1:0]        k_cnt;      // beats consumed
-    reg [KW-1:0]        k_len_r;
-    reg [16*PE_N-1:0]   d_r, dmin_r;
-    reg [96*PE_N-1:0]   scales_r;
+    reg [KW-1:0]              k_cnt;      // beats consumed
+    reg [KW-1:0]              k_len_r;
+    reg [16*PE_N*NSB-1:0]     d_r, dmin_r;
+    reg [96*PE_N*NSB-1:0]     scales_r;
 
     // ---- accumulators (fp32) ----
     reg [31:0] acc [0:PE_M*PE_N-1];
 
-    integer pi, pj, idx;
-    reg [2:0]  sub;                 // sub-block = k/32 (0..7)
+    integer pi, pj, idx, col;
+    reg [KW-1:0] sb;                // super-block = k / 256
+    reg [2:0]  sub;                 // sub-block within super-block = (k%256)/32 (0..7)
     reg [11:0] sm;                  // {min6, scale6}
     reg [31:0] d1, m1, wdeq, aprod;
 
@@ -101,12 +105,14 @@ module glm_matmul_q4k #(
                 scales_r<= w_scales;
                 for (idx = 0; idx < PE_M*PE_N; idx = idx + 1) acc[idx] <= 32'd0;
             end else if (busy && in_valid) begin
-                sub = k_cnt[7:5];                          // k / 32
+                sb  = k_cnt >> 8;                          // k / 256 (super-block)
+                sub = k_cnt[7:5];                          // (k%256) / 32 (sub-block)
                 // per-column dequant + per-cell fp32 MAC (sequential accumulate)
                 for (pj = 0; pj < PE_N; pj = pj + 1) begin
-                    sm   = q4k_scale_min({1'b0, sub}, scales_r[96*pj +: 96]);
-                    d1   = fp32_mul(fp16_to_fp32(d_r[16*pj +: 16]),    u7_to_fp32({1'b0, sm[5:0]}));
-                    m1   = fp32_mul(fp16_to_fp32(dmin_r[16*pj +: 16]), u7_to_fp32({1'b0, sm[11:6]}));
+                    col  = pj*NSB + sb;                    // (col, super-block) index
+                    sm   = q4k_scale_min({1'b0, sub}, scales_r[96*col +: 96]);
+                    d1   = fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),    u7_to_fp32({1'b0, sm[5:0]}));
+                    m1   = fp32_mul(fp16_to_fp32(dmin_r[16*col +: 16]), u7_to_fp32({1'b0, sm[11:6]}));
                     // w = d1*q - m1   (subtract = add with m1 sign flipped)
                     wdeq = fp32_add(fp32_mul(d1, u7_to_fp32({3'd0, w_q[4*pj +: 4]})),
                                     {~m1[31], m1[30:0]});

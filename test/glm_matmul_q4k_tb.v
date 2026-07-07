@@ -5,15 +5,16 @@
 module glm_matmul_q4k_tb;
     localparam integer PE_M = 2;
     localparam integer PE_N = 2;
-    localparam integer KMAX = 256;
+    localparam integer KMAX = 1024;
+    localparam integer NSB  = (KMAX + 255) / 256;   // 4
 
     reg clk = 0; always #5 clk = ~clk;
     reg rst = 1;
 
-    reg                   start = 0;
-    reg  [8:0]            k_len = 0;
-    reg  [16*PE_N-1:0]    w_d = 0, w_dmin = 0;
-    reg  [96*PE_N-1:0]    w_scales = 0;
+    reg                        start = 0;
+    reg  [$clog2(KMAX+1)-1:0]  k_len = 0;
+    reg  [16*PE_N*NSB-1:0]     w_d = 0, w_dmin = 0;
+    reg  [96*PE_N*NSB-1:0]     w_scales = 0;
     reg                   in_valid = 0;
     reg  [16*PE_M-1:0]    a_col = 0;
     reg  [ 4*PE_N-1:0]    w_q = 0;
@@ -27,7 +28,7 @@ module glm_matmul_q4k_tb;
         .busy(busy), .out_valid(out_valid), .c_out(c_out)
     );
 
-    integer fd, ntest, pm, pn, t, k, K, pi, pj, code, errors, checks;
+    integer fd, ntest, pm, pn, t, k, K, pi, pj, code, errors, checks, nsb_t, sb;
     reg [15:0] a_beat [0:PE_M-1];
     reg [3:0]  q_beat [0:PE_N-1];
     reg [15:0] exp_c  [0:PE_M*PE_N-1];
@@ -46,13 +47,17 @@ module glm_matmul_q4k_tb;
         @(negedge clk); rst = 0;
 
         for (t = 0; t < ntest; t = t + 1) begin
-            code = $fscanf(fd, "%d", K);
-            for (pj = 0; pj < PE_N; pj = pj + 1) begin code = $fscanf(fd, "%h", dtmp); w_d   [16*pj +: 16] = dtmp; end
-            for (pj = 0; pj < PE_N; pj = pj + 1) begin code = $fscanf(fd, "%h", dtmp); w_dmin[16*pj +: 16] = dtmp; end
-            for (pj = 0; pj < PE_N; pj = pj + 1) begin code = $fscanf(fd, "%h", stmp); w_scales[96*pj +: 96] = stmp; end
+            code = $fscanf(fd, "%d %d", K, nsb_t);
+            w_d = 0; w_dmin = 0; w_scales = 0;
+            for (pj = 0; pj < PE_N; pj = pj + 1) for (sb = 0; sb < nsb_t; sb = sb + 1) begin
+                code = $fscanf(fd, "%h", dtmp); w_d   [16*(pj*NSB + sb) +: 16] = dtmp; end
+            for (pj = 0; pj < PE_N; pj = pj + 1) for (sb = 0; sb < nsb_t; sb = sb + 1) begin
+                code = $fscanf(fd, "%h", dtmp); w_dmin[16*(pj*NSB + sb) +: 16] = dtmp; end
+            for (pj = 0; pj < PE_N; pj = pj + 1) for (sb = 0; sb < nsb_t; sb = sb + 1) begin
+                code = $fscanf(fd, "%h", stmp); w_scales[96*(pj*NSB + sb) +: 96] = stmp; end
 
             // start pulse (latches params)
-            @(negedge clk); start = 1; k_len = K[8:0]; in_valid = 0;
+            @(negedge clk); start = 1; k_len = K[$clog2(KMAX+1)-1:0]; in_valid = 0;
             @(negedge clk); start = 0;
 
             // stream K beats

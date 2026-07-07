@@ -26,13 +26,15 @@ def bf16_val(u16):  # bf16 bits -> fp32 value
     return np.float32(np.frombuffer(np.uint32(u16 << 16).tobytes(), dtype=np.float32)[0])
 
 def dequant_col(d_h, dmin_h, scales, qcol):
-    """dequantize a weight COLUMN (K entries, one 4-bit code each) given the column's
-    super-block d/dmin/scales. Bit-exact to ggml (per-weight)."""
-    d  = np.float32(np.frombuffer(np.uint16(d_h).tobytes(),   dtype=np.float16)[0])
-    mn = np.float32(np.frombuffer(np.uint16(dmin_h).tobytes(), dtype=np.float16)[0])
+    """dequantize a weight COLUMN (K entries) spanning NSB=ceil(K/256) super-blocks.
+    d_h/dmin_h are lists (one per super-block); scales is a list of 12-byte arrays.
+    Bit-exact to ggml (per-weight, super-block sb=k//256, sub-block (k%256)//32)."""
     out = np.empty(len(qcol), dtype=np.float32)
     for k, q in enumerate(qcol):
-        sc, m = get_scale_min_k4(k // 32, scales)
+        sb = k // 256
+        d  = np.float32(np.frombuffer(np.uint16(d_h[sb]).tobytes(),   dtype=np.float16)[0])
+        mn = np.float32(np.frombuffer(np.uint16(dmin_h[sb]).tobytes(), dtype=np.float16)[0])
+        sc, m = get_scale_min_k4((k % 256) // 32, scales[sb])
         d1 = d * np.float32(sc); m1 = mn * np.float32(m)
         out[k] = d1 * np.float32(q) - m1
     return out
@@ -41,31 +43,32 @@ def gen(ntest, PE_M, PE_N, seed=0):
     rng = np.random.default_rng(seed)
     lines = [f"{ntest} {PE_M} {PE_N}"]
     for t in range(ntest):
-        K = int(rng.choice([32, 64, 96, 128, 160, 200, 256]))
-        # per-column super-block params
-        d_h  = [_f32_to_f16bits(rng.uniform(0.003, 0.05))  for _ in range(PE_N)]
-        dm_h = [_f32_to_f16bits(rng.uniform(0.0,  0.02))   for _ in range(PE_N)]
+        K   = int(rng.choice([32, 64, 128, 200, 256, 288, 512, 600, 768]))
+        NSB = (K + 255) // 256
+        # per-(column, super-block) params, index (pj*NSB + sb)
+        d_h  = [[_f32_to_f16bits(rng.uniform(0.003, 0.05)) for _ in range(NSB)] for _ in range(PE_N)]
+        dm_h = [[_f32_to_f16bits(rng.uniform(0.0,  0.02))  for _ in range(NSB)] for _ in range(PE_N)]
         scales, sc96 = [], []
-        for _ in range(PE_N):
-            s = _pack_6bit_scales([int(v) for v in rng.integers(0,64,8)],
-                                  [int(v) for v in rng.integers(0,64,8)])
-            scales.append(s)
-            sc96.append(sum(b << (8*i) for i, b in enumerate(s)))
-        # activations (bf16) + quant codes
+        for pj in range(PE_N):
+            srow, s96row = [], []
+            for _ in range(NSB):
+                s = _pack_6bit_scales([int(v) for v in rng.integers(0,64,8)],
+                                      [int(v) for v in rng.integers(0,64,8)])
+                srow.append(s); s96row.append(sum(b << (8*i) for i, b in enumerate(s)))
+            scales.append(srow); sc96.append(s96row)
         A = [[bf16bits(v) for v in rng.uniform(-1.5, 1.5, K)] for _ in range(PE_M)]
         Q = [[int(v) for v in rng.integers(0, 16, K)] for _ in range(PE_N)]
-        # golden: dequant each column, fp32 MAC with bf16 acts
         wdeq = [dequant_col(d_h[pj], dm_h[pj], scales[pj], Q[pj]) for pj in range(PE_N)]
         Af   = [np.array([bf16_val(A[pi][k]) for k in range(K)], dtype=np.float32) for pi in range(PE_M)]
         C = []
         for pi in range(PE_M):
             for pj in range(PE_N):
                 C.append(bf16bits(matmul_q4k_col(Af[pi], wdeq[pj])))
-        # serialize
-        lines.append(str(K))
-        lines.append(" ".join(f"{x:04x}" for x in d_h))
-        lines.append(" ".join(f"{x:04x}" for x in dm_h))
-        lines.append(" ".join(f"{x:024x}" for x in sc96))
+        # serialize (params ordered col-outer, super-block-inner = RTL index pj*NSB+sb)
+        lines.append(f"{K} {NSB}")
+        lines.append(" ".join(f"{d_h[pj][sb]:04x}"  for pj in range(PE_N) for sb in range(NSB)))
+        lines.append(" ".join(f"{dm_h[pj][sb]:04x}" for pj in range(PE_N) for sb in range(NSB)))
+        lines.append(" ".join(f"{sc96[pj][sb]:024x}" for pj in range(PE_N) for sb in range(NSB)))
         for k in range(K):
             row = [f"{A[pi][k]:04x}" for pi in range(PE_M)] + [f"{Q[pj][k]:01x}" for pj in range(PE_N)]
             lines.append(" ".join(row))
