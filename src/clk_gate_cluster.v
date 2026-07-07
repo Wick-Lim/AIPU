@@ -73,6 +73,7 @@ module clk_gate_cluster #(
         .rst                     (rst),
         .boot_active             (1'b0),
         .stall                   (1'b0),
+        .throttle                (1'b0),       // DVFS/eco off in this cluster (documented default)
         .has_pending_work        (req),        // the work/activity signal
         .input_valid             (1'b0),
         .output_ready_downstream (1'b0),
