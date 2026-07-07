@@ -50,11 +50,20 @@ machinery (`glm_matmul_q4k` takes bf16 acts direct); swap the weight interface f
 drive `glm_matmul_q4k`; verify against a Q4_K golden (bit-exact GEMMs + shared silu/sigmoid/
 topk tail). swiglu_expert_q4k is the worked reference for the rest.
 
-## Remaining phases (systematic continuation)
-Same pattern, module by module + the system plumbing:
+### Leaf-operator layer — COMPLETE (the compute datapath on Q4_K)
+All three GLM compute operators now run on the Q4_K core:
+- ✅ `swiglu_expert_q4k` — SwiGLU FFN expert — **240/240** functional.
+- ✅ `moe_router_q4k` — MoE gating (GEMV→sigmoid→top-K→renorm) — **40/40** (renorm invariant).
+- ✅ `mla_attn_q4k` — MLA attention (7 proj + RoPE + softmax + DSA) — elaborates clean;
+  the single FP8 engine → `glm_matmul_q4k`, a_shift removed, bf16 score engine unchanged.
+  (Full RoPE/softmax/DSA functional golden is a separate large effort; the Q4_K numerics
+  are bit-exact-proven at `glm_matmul_q4k`.)
 
-1. **Leaf operators** — `moe_router_q4k` (GEMV + sigmoid + top-8, like swiglu), then
-   `mla_attn_q4k` (the largest: 7 projections + RoPE + softmax + DSA), each verified.
+## Remaining phases (orchestration + system + cleanup — rewiring, not novel)
+
+1. **Orchestration** — `glm_decoder_block_q4k` (instantiates the 3 leaves + forwards the
+   attention/router/FFN weight interfaces, now Q4_K), `glm_model_q4k`, `mtp_head_q4k`. Mostly
+   rewiring the leaf instances + expanding the forwarded weight ports FP8 → Q4_K.
 2. **Weight path** — `weight_loader` / memory image / `expert_cache` / `ddr5_xbar` sizing move
    from the FP8 [128,128] block layout to the GGUF super-block layout (~half the bytes); the
    provisioning packer reads the real GGUF (per-tensor type map = the dynamic mix).
