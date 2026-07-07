@@ -293,18 +293,19 @@
     <div class="flag">
       <div class="top">
         <div class="stamp">▍ New result</div>
-        <h3>The biggest unknown — "can the compute die even fit an FPGA?" — moved from open to bounded.</h3>
+        <h3>The biggest unknown — "can the die fit a real FPGA?" — now has a named target part, a measured demand that fits it, and a priced proof.</h3>
       </div>
       <div class="body">
         <div>
-          <p>The FPGA fit sets the box's BOM, and the BOM sets the per-seat price the whole business rests on. It had been <b>unmeasured</b>: the baseline synthesis flow timed out mapping the FP8 accumulators. This cycle it was broken — a Gowin-targeted synthesis maps the FP8 datapath by <b>inferring hardware DSP blocks</b> instead of LUTs.</p>
-          <p style="margin-top:12px">The remaining blocker was then pinned to a <b>single accumulator-capacity parameter</b>, turning the whole-system fit from an open mystery into a <b>bounded vendor-flow task</b> — a known next step, not a research risk.</p>
+          <p>The FPGA fit sets the box's BOM, and the BOM sets the per-seat price the whole business rests on. One FP8 compute unit already <b>maps to real FPGA silicon</b> (~17.8 K LUT-equiv + 20 hardware DSP, 77 s) — the baseline flow's "timeout" was a tool limit, not a design one.</p>
+          <p style="margin-top:12px">This cycle it got concrete: the target part is named — a <b>Kintex UltraScale+ XCKU3P</b> (600 DSP48E2, DDR4 + PCIe). The compact whole-system's <b>measured multiply demand — 346 multipliers — fits that DSP budget with headroom</b>, and the buildable proof is <b>priced: a ~$958 dev board</b> (≈$500 used), not a research program. What remains is the routed fit + Fmax on the vendor tool — a bounded task on named hardware.</p>
         </div>
         <div class="metrics">
-          <div class="r"><span class="l">Compute unit maps</span><span class="v ok">✓ 77 s</span></div>
-          <div class="r"><span class="l">≈ LUT-equiv</span><span class="v">17.8 K</span></div>
-          <div class="r"><span class="l">DSP inferred</span><span class="v">20</span></div>
-          <div class="r"><span class="l">Whole-system fit</span><span class="v no">vendor flow</span></div>
+          <div class="r"><span class="l">Target FPGA</span><span class="v ok">XCKU3P · 600 DSP</span></div>
+          <div class="r"><span class="l">Compute-unit map</span><span class="v ok">✓ 77 s · 20 DSP</span></div>
+          <div class="r"><span class="l">Whole-sys ×-demand</span><span class="v ok">346 / 600 · fits</span></div>
+          <div class="r"><span class="l">Buildable proof</span><span class="v">~$958 board</span></div>
+          <div class="r"><span class="l">Routed fit + Fmax</span><span class="v no">Vivado · next</span></div>
         </div>
       </div>
     </div>
