@@ -422,7 +422,7 @@ unittests:
 	    || { echo "FAILED: icg_cell"; exit 1; }
 	@# clk_gate_cluster (task C7): icg_cell + clk_en_ctrl gating a real leaf -- gated == free-running (bit-exact),
 	@# idle => clock frozen, scan_enable => transparent, req=1 => enable=1 safety invariant.
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/clk_gate_cluster_sim test/clk_gate_cluster_tb.v src/clk_gate_cluster.v src/icg_cell.v src/clk_en_ctrl.v src/register_file.v
+	@$(IVERILOG) $(IFLAGS) -I legacy/src -o $(BUILD_DIR)/clk_gate_cluster_sim test/clk_gate_cluster_tb.v src/clk_gate_cluster.v src/icg_cell.v src/clk_en_ctrl.v legacy/src/register_file.v
 	@printf '[%s] ' "clk_gate_cluster"; $(VVP) $(BUILD_DIR)/clk_gate_cluster_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: clk_gate_cluster"; exit 1; }
 	@# kv_ecc_ring (task C6): lane-partitioned SECDED ring for wide (ragged, non-64-aligned) KV rows --
