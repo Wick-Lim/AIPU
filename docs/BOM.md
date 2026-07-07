@@ -8,6 +8,8 @@ quote. Prices are single-unit / low-volume unless noted.*
 > **Why this exists.** The FPGA-fit track ([`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)) sets the FPGA class;
 > the FPGA class + memory + storage set the BOM; the BOM sets the per-seat price; the per-seat price is
 > what makes the [`ICP.md`](ICP.md) economics real. This doc closes that chain with actual numbers.
+> For **how the individual parts get locked** (FPGA → DDR4/NVMe/power combos, and the fit
+> measurement that gates them), see [`PART_SELECTION.md`](PART_SELECTION.md).
 
 ---
 
