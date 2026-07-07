@@ -38,6 +38,10 @@ bigger/newer chip = more money.** That single fact produces the ladder.
 | **② Custom board** | mid FPGA (Versal / HBM-class) DDR5 multi-ch | DDR5 8–12 ch or HBM (~300–600 GB/s) + multi-NVMe | **~15–40** | ~$3–6 k | seed | post-raise |
 | **③ SoC / ASIC** | custom silicon (HBM stacks + many-channel PHY) | HBM / on-package (~TB/s) | **~40+**, lower $/seat, lower power | high NRE, low unit | Series B+ / volume | at scale |
 
+*Per-rung parts, box BOM, and per-seat economics: [`BOM.md`](BOM.md). Short version — the BOM is
+memory/storage/board-dominated, the FPGA is a minority, and a rung-② ~$3–6 k box is ~50–100× cheaper than
+an 8×H100 self-host for the offline-753B use case.*
+
 Each rung is **the same verified RTL** (bit-exact FP8 datapath); only the memory interface it drives
 changes. Nothing about the model or its correctness changes across rungs — **just the bandwidth the
 silicon can feed it.**

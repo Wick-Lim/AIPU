@@ -259,6 +259,8 @@ smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (
 
 ## 8. BOM & pricing [EST]
 
+*Canonical per-rung BOM + per-seat economics: [`BOM.md`](BOM.md). Summary below.*
+
 | Component | Rung ① prove-it (budget FPGA) | Rung ② product (custom board) |
 |---|---|---|
 | FPGA (largest uncertainty) | ~$0.5–1.5 k (low/mid, e.g. KU3P / GW5AT-class) | ~$3–8 k (Versal / Agilex / HBM-class) |
