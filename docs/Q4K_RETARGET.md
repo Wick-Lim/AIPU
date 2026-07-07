@@ -38,14 +38,23 @@ fp32 through the full MAC).
 - `src/glm_matmul_q4k.v` — the Q4_K-native GEMM core (drop-in sibling of `glm_matmul_fp8`).
 - `test/q4k_prim_tb.v`, `test/glm_matmul_q4k_tb.v` — the verification gates.
 
-## Remaining phases (integration — the large lift)
-The numerics core is done + verified; making the whole accelerator *run* on Q4_K is the
-integration, comparable in size to the original FP8 datapath build:
+## Progress
+- ✅ **Numerics** (Q4_K/Q6_K/Q8_0 dequant goldens; `q4k.vh`) — bit-exact to ggml.
+- ✅ **`glm_matmul_q4k`** — arbitrary-K, multi-super-block GEMM core, **480/480 bit-exact**.
+- ✅ **`swiglu_expert_q4k`** — first datapath operator (MoE expert: gate/up/down + silu + merge)
+  on Q4_K, **240/240** functional vs golden. **Proves the retarget pattern end-to-end.**
 
-1. **Datapath rewire** — the `glm_*_fp8` modules (decoder_block, mla_attn, moe_router,
-   swiglu_expert, glm_model, mtp_head, soc/system tops) instantiate `glm_matmul_fp8`; retarget
-   them to `glm_matmul_q4k` and its Q4_K weight interface (4-bit codes + fp16 d/dmin + 6-bit
-   scales super-block), each verified against a Q4_K golden.
+**The pattern** (each `*_fp8` operator → `*_q4k`): keep the FSM; drop the FP8 activation-shift
+machinery (`glm_matmul_q4k` takes bf16 acts direct); swap the weight interface from FP8
+(8-bit codes + bf16 block scales) to Q4_K (4-bit codes + per-pass super-block d/dmin/scales);
+drive `glm_matmul_q4k`; verify against a Q4_K golden (bit-exact GEMMs + shared silu/sigmoid/
+topk tail). swiglu_expert_q4k is the worked reference for the rest.
+
+## Remaining phases (systematic continuation)
+Same pattern, module by module + the system plumbing:
+
+1. **Leaf operators** — `moe_router_q4k` (GEMV + sigmoid + top-8, like swiglu), then
+   `mla_attn_q4k` (the largest: 7 projections + RoPE + softmax + DSA), each verified.
 2. **Weight path** — `weight_loader` / memory image / `expert_cache` / `ddr5_xbar` sizing move
    from the FP8 [128,128] block layout to the GGUF super-block layout (~half the bytes); the
    provisioning packer reads the real GGUF (per-tensor type map = the dynamic mix).
