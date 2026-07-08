@@ -122,6 +122,45 @@ module glm_act_tb;
 
     wire                 sl_out_valid;
     wire [LANES*16-1:0]  sl_y_out;
+    // ---- serialized-wrapper equivalence DUTs (HW_LANES resource knob) ----
+    //   HW_LANES=1 (chunks=LANES) and HW_LANES=3 (NON-divisor of LANES=4:
+    //   exercises the zero-pad tail path).  Driven ONE-SHOT (in_valid, then wait
+    //   for out_valid) -- the wrapper's contract with its real callers.  Outputs
+    //   must match the full-width DUT BIT-EXACT on every recorded beat.
+    reg                  ser_iv;
+    reg  [LANES*16-1:0]  ser_x;
+    wire                 sg1_ov, sg3_ov, sl1_ov, sl3_ov;
+    wire [LANES*16-1:0]  sg1_y,  sg3_y,  sl1_y,  sl3_y;
+    glm_act #(.MODE(0), .LANES(LANES), .X_SAT(X_SAT), .HW_LANES(1)) dut_sig_hw1 (
+        .clk(clk), .rst(rst), .in_valid(ser_iv), .x_in(ser_x),
+        .out_valid(sg1_ov), .y_out(sg1_y));
+    glm_act #(.MODE(0), .LANES(LANES), .X_SAT(X_SAT), .HW_LANES(3)) dut_sig_hw3 (
+        .clk(clk), .rst(rst), .in_valid(ser_iv), .x_in(ser_x),
+        .out_valid(sg3_ov), .y_out(sg3_y));
+    glm_act #(.MODE(1), .LANES(LANES), .X_SAT(X_SAT), .HW_LANES(1)) dut_silu_hw1 (
+        .clk(clk), .rst(rst), .in_valid(ser_iv), .x_in(ser_x),
+        .out_valid(sl1_ov), .y_out(sl1_y));
+    glm_act #(.MODE(1), .LANES(LANES), .X_SAT(X_SAT), .HW_LANES(3)) dut_silu_hw3 (
+        .clk(clk), .rst(rst), .in_valid(ser_iv), .x_in(ser_x),
+        .out_valid(sl3_ov), .y_out(sl3_y));
+
+    // capture the four serialized outputs (latencies differ: HW=1 -> 4 chunks,
+    // HW=3 -> 2 chunks); ser_seen accumulates until all four have landed.
+    reg [3:0]           ser_seen;
+    reg [LANES*16-1:0]  c_sg1, c_sg3, c_sl1, c_sl3;
+    always @(posedge clk) begin
+        if (rst) begin
+            ser_seen <= 4'b0;
+            c_sg1 <= 0; c_sg3 <= 0; c_sl1 <= 0; c_sl3 <= 0;
+        end else begin
+            if (ser_iv) ser_seen <= 4'b0;
+            if (sg1_ov) begin c_sg1 <= sg1_y; ser_seen[0] <= 1'b1; end
+            if (sg3_ov) begin c_sg3 <= sg3_y; ser_seen[1] <= 1'b1; end
+            if (sl1_ov) begin c_sl1 <= sl1_y; ser_seen[2] <= 1'b1; end
+            if (sl3_ov) begin c_sl3 <= sl3_y; ser_seen[3] <= 1'b1; end
+        end
+    end
+
     glm_act #(.MODE(1), .LANES(LANES), .X_SAT(X_SAT)) dut_silu (
         .clk(clk), .rst(rst), .in_valid(in_valid), .x_in(x_in),
         .out_valid(sl_out_valid), .y_out(sl_y_out));
@@ -222,6 +261,8 @@ module glm_act_tb;
     reg  [15:0] sgq   [0:MAXN-1];     // captured sigmoid DUT output
     reg  [15:0] slq   [0:MAXN-1];     // captured silu    DUT output
     integer     n_in;                 // elements pushed
+    integer     ser_beats;            // serialized-replay beats compared
+    reg [LANES*16-1:0] exp_beat;      // expected (full-width) beat in replay
     integer     n_out_sg;             // elements captured (sigmoid)
     integer     n_out_sl;             // elements captured (silu)
 
@@ -458,6 +499,36 @@ module glm_act_tb;
                      errors, test_count);
             $fatal(1, "glm_act mismatch");
         end
+
+        // ---------- HW_LANES (serialized) equivalence replay ----------
+        //   Replay EVERY recorded beat one-shot through the HW_LANES=1 / =3
+        //   wrappers of both modes; each must reproduce the full-width DUT's
+        //   captured bf16 outputs BIT-EXACT (this is the result-invariance
+        //   proof for the ACT_HW resource knob, incl. the non-divisor pad path).
+        ser_beats = 0;
+        for (i = 0; i < n_in; i = i + LANES) begin
+            @(negedge clk);
+            ser_x  = {xq[i+3], xq[i+2], xq[i+1], xq[i]};
+            ser_iv = 1'b1;
+            @(negedge clk);
+            ser_iv = 1'b0;
+            while (ser_seen != 4'b1111) @(negedge clk);
+            exp_beat = {sgq[i+3], sgq[i+2], sgq[i+1], sgq[i]};
+            if (c_sg1 !== exp_beat || c_sg3 !== exp_beat) begin
+                $display("FAIL: serialized SIGMOID mismatch at elem %0d: full=%h hw1=%h hw3=%h",
+                         i, exp_beat, c_sg1, c_sg3);
+                $fatal(1, "glm_act HW_LANES sigmoid mismatch");
+            end
+            exp_beat = {slq[i+3], slq[i+2], slq[i+1], slq[i]};
+            if (c_sl1 !== exp_beat || c_sl3 !== exp_beat) begin
+                $display("FAIL: serialized SILU mismatch at elem %0d: full=%h hw1=%h hw3=%h",
+                         i, exp_beat, c_sl1, c_sl3);
+                $fatal(1, "glm_act HW_LANES silu mismatch");
+            end
+            ser_beats = ser_beats + 1;
+        end
+        $display("GLM_ACT HW_LANES serialize: %0d beats x {sigmoid,silu} x {HW=1,HW=3} bit-exact to full width",
+                 ser_beats);
         $display("GLM_ACT worst abs-err = %g, worst rel-err = %g (ABS_TOL=%g REL_TOL=%g)",
                  worst_abserr, worst_relerr, ABS_TOL, REL_TOL);
         $display("  (worst at mode=%0d x=%h)", worst_mode, worst_x);

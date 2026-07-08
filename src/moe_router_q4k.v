@@ -102,6 +102,7 @@ module moe_router_q4k #(
     parameter [31:0]  SCALE   = 32'h40200000,  // routed_scaling_factor 2.5 (fp32)
     parameter integer KMAX    = 16384,         // >= HIDDEN (matmul K counter)
     parameter integer PE_M    = 1,             // token ROWS (batch B) sharing one W_g fetch
+    parameter integer ACT_HW  = 0,             // sigmoid HW lanes (0 = full) -- result-invariant resource knob (glm_act HW_LANES)
     // IDXW DERIVED ($clog2(N_EXPERT)); exposed only to size the index port.
     // Do NOT override -- always leave default.
     parameter integer IDXW    = (N_EXPERT <= 1) ? 1 : $clog2(N_EXPERT)
@@ -227,7 +228,7 @@ module moe_router_q4k #(
     reg  [16*MN-1:0]   act_x_in;     // logits fed to sigmoid
     wire               act_ov;
     wire [16*MN-1:0]   act_y;        // sigmoid(logits), bf16
-    glm_act #(.MODE(0), .LANES(MN)) u_sigmoid (  // MODE=0 => SIGMOID
+    glm_act #(.MODE(0), .LANES(MN), .HW_LANES(ACT_HW)) u_sigmoid (  // MODE=0 => SIGMOID
         .clk(clk), .rst(rst),
         .in_valid(act_in_valid), .x_in(act_x_in),
         .out_valid(act_ov), .y_out(act_y)

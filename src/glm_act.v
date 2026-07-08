@@ -116,7 +116,7 @@
 //     (no combinational loop -- exp/rsqrt are feed-forward glm_fp functions).
 //   * bf16 in, bf16 out, RNE on the final narrow.
 //============================================================================
-module glm_act #(
+module glm_act_core #(
     parameter integer MODE  = 0,                 // 0 = SIGMOID, 1 = SILU
     parameter integer LANES = 4,
     parameter [31:0]  X_SAT = 32'h41800000       // 16.0 fp32 (saturation rail)
@@ -574,4 +574,119 @@ module glm_act #(
             end
         end
     endfunction
+endmodule
+
+//============================================================================
+// glm_act -- public wrapper: same interface/params as always, plus HW_LANES,
+//   a RESULT-INVARIANT resource knob (like PE_N / DDR_NCH / CACHE_SLOTS).
+//
+//   HW_LANES = 0 (default) or >= LANES : ONE full-LANES-wide glm_act_core --
+//     structurally the pre-wrapper unit, byte-identical outputs AND latency.
+//   HW_LANES in [1, LANES-1] : ONE HW_LANES-wide core; the LANES-wide beat is
+//     streamed through it in ceil(LANES/HW_LANES) back-to-back chunks and the
+//     outputs are reassembled.  The activation is ELEMENTWISE (lane j depends
+//     only on x_in[j]) and every element passes the IDENTICAL 6-stage pipeline,
+//     so every bf16 output bit is UNCHANGED -- only the in_valid->out_valid
+//     latency grows (LAT=6 -> ~LAT+1+chunks).  Both Q4_K users (moe_router_q4k
+//     S_GATES/S_GWAIT, swiglu_expert_q4k S_UPW/S_GUW) issue ONE beat and wait
+//     on out_valid before the next, so no backpressure port is needed; a beat
+//     arriving while one is in flight is ignored by construction (the callers
+//     never do this).
+//
+//   WHY: each core lane carries the full fp32 exp/recip pipeline (~2-3K LUTs).
+//   The router instantiates LANES = N_EXPERT*PE_M (48K LUTs at the compact
+//   config -- larger than all of attention); the two SwiGLU units are PE_M*TN
+//   wide (18K each).  Serializing lanes is the honest resource knob: the fit
+//   config sets ACT_HW=1, the default config keeps 0 (full width, unchanged).
+//
+//   IMPLEMENTATION NOTE: the chunk stream uses CONSTANT-width shifts of a
+//   holding register (xhold >>= HW*16, ybuf = {chunk, ybuf >> HW*16}) -- no
+//   variable part-selects, so static-bounds analysis (Vivado Synth 8-524) has
+//   nothing to reject and no index can ever leave the vector.
+//============================================================================
+module glm_act #(
+    parameter integer MODE     = 0,              // 0 = SIGMOID, 1 = SILU
+    parameter integer LANES    = 4,
+    parameter [31:0]  X_SAT    = 32'h41800000,   // 16.0 fp32 (saturation rail)
+    parameter integer HW_LANES = 0               // 0 / >=LANES: full-width core
+)(
+    input  wire                clk,
+    input  wire                rst,
+    input  wire                in_valid,
+    input  wire [LANES*16-1:0] x_in,
+    output wire                out_valid,
+    output wire [LANES*16-1:0] y_out
+);
+    generate
+    if (HW_LANES <= 0 || HW_LANES >= LANES) begin : g_full
+        // ---- full width: exactly the pre-wrapper unit (same latency) ----
+        glm_act_core #(.MODE(MODE), .LANES(LANES), .X_SAT(X_SAT)) u_core (
+            .clk(clk), .rst(rst),
+            .in_valid(in_valid), .x_in(x_in),
+            .out_valid(out_valid), .y_out(y_out)
+        );
+    end else begin : g_ser
+        // ---- serialized: one HW_LANES-wide core, NCH back-to-back chunks ----
+        localparam integer HW   = HW_LANES;
+        localparam integer NCH  = (LANES + HW - 1) / HW;    // chunks per beat
+        localparam integer PADW = NCH * HW * 16;            // padded hold width
+        localparam integer CW   = $clog2(NCH + 1);          // counter width
+
+        reg  [PADW-1:0]  xhold;      // input hold; consumed low-chunk-first
+        reg  [PADW-1:0]  ybuf;       // output assembly ({chunk, >>} = in-order)
+        reg  [CW-1:0]    icnt;       // chunks fed
+        reg  [CW-1:0]    ocnt;       // chunks collected
+        reg              running;
+        reg              c_iv;
+        reg  [HW*16-1:0] c_x;
+        wire             c_ov;
+        wire [HW*16-1:0] c_y;
+        reg              ov_r;
+
+        glm_act_core #(.MODE(MODE), .LANES(HW), .X_SAT(X_SAT)) u_core (
+            .clk(clk), .rst(rst),
+            .in_valid(c_iv), .x_in(c_x),
+            .out_valid(c_ov), .y_out(c_y)
+        );
+
+        always @(posedge clk) begin
+            if (rst) begin
+                xhold <= {PADW{1'b0}};  ybuf <= {PADW{1'b0}};
+                icnt  <= {CW{1'b0}};    ocnt <= {CW{1'b0}};
+                running <= 1'b0;  c_iv <= 1'b0;
+                c_x   <= {(HW*16){1'b0}};
+                ov_r  <= 1'b0;
+            end else begin
+                ov_r <= 1'b0;
+                c_iv <= 1'b0;
+                if (in_valid && !running) begin
+                    // latch + zero-pad the beat; chunk 0 issues next cycle.
+                    // (pad lanes compute sigmoid(0) and are discarded below.)
+                    xhold   <= {{(PADW-LANES*16){1'b0}}, x_in};
+                    icnt    <= {CW{1'b0}};
+                    ocnt    <= {CW{1'b0}};
+                    running <= 1'b1;
+                end else if (running && icnt != NCH[CW-1:0]) begin
+                    // feed chunks back-to-back (the core pipelines every cycle)
+                    c_iv  <= 1'b1;
+                    c_x   <= xhold[HW*16-1:0];
+                    xhold <= xhold >> (HW*16);
+                    icnt  <= icnt + 1'b1;
+                end
+                if (c_ov) begin
+                    // insert at the top, shift down: after NCH inserts chunk i
+                    // sits at slice i -- in-order little-endian reassembly.
+                    ybuf <= {c_y, ybuf[PADW-1:HW*16]};
+                    ocnt <= ocnt + 1'b1;
+                    if (ocnt == NCH[CW-1:0] - 1'b1) begin
+                        ov_r    <= 1'b1;
+                        running <= 1'b0;
+                    end
+                end
+            end
+        end
+        assign out_valid = ov_r;
+        assign y_out     = ybuf[LANES*16-1:0];
+    end
+    endgenerate
 endmodule

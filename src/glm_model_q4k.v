@@ -90,6 +90,8 @@ module glm_model_q4k #(
     parameter integer LM_TN      = 4,
     // ---- PE_M : query tokens decoded in lockstep (batch B) ----
     parameter integer PE_M       = 1,
+    // ---- ACT_HW : activation HW lanes (0 = full) -- result-invariant knob ----
+    parameter integer ACT_HW     = 0,
     parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions via pos_vec (P1.3a)
     parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents via s_len_vec (P1.3d)
     parameter integer PER_ROW_SEQ = 0,  // 1 = per-row sequence ids via seq_vec (A2; kc_seq out)
@@ -273,6 +275,7 @@ module glm_model_q4k #(
         .TOPK_ATTN(TOPK_ATTN), .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
         .N_EXPERT(N_EXPERT), .TOPK(TOPK), .INTER_MOE(INTER_MOE),
         .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M),
+        .ACT_HW(ACT_HW),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
         .PER_ROW_SEQ(PER_ROW_SEQ)
     ) u_block (

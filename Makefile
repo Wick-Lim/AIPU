@@ -19,7 +19,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-smoke spec-slow formal formal-ind lint host-test synth-glm fit-harness cdc coverage clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow formal formal-ind lint host-test synth-glm fit-harness cdc coverage clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, and the memory-controller formal proofs.
@@ -272,6 +272,18 @@ model-q4k:
 	@printf '[%s] ' "glm_model_q4k_full"; $(VVP) $(BUILD_DIR)/glm_model_q4k_full_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_model_q4k_full"; exit 1; }
 	@echo "model-q4k: assembled glm_model_q4k full forward == numpy golden (BIT-EXACT logits+argmax+h_state)"
+
+# Result-invariance gate for the ACT_HW resource knob: the SAME committed-slice
+# golden vectors, decoded with the glm_act lane-serialized datapath (ACT_HW=1).
+# ALL tests passing == byte-identical tokens/logits with the compact fit config's
+# activation serialization (the claim fpga/synth_ku3p.tcl relies on).
+model-q4k-acthw:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_ACT_HW=1 -o $(BUILD_DIR)/glm_model_q4k_acthw_sim $(MODEL_Q4K_SRCS)
+	@printf '[%s] ' "glm_model_q4k_full(ACT_HW=1)"; $(VVP) $(BUILD_DIR)/glm_model_q4k_acthw_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_model_q4k_full ACT_HW=1"; exit 1; }
+	@echo "model-q4k-acthw: ACT_HW=1 (serialized glm_act) == same golden BIT-EXACT -> knob is result-invariant"
 
 # Mixed-type (Q6_K / Q8_0 / F16) consumer sub-gate: the two per-type dequant-primitive
 # TBs (q6k_prim / q8_0_prim) + the integrated mixed-column GEMM (glm_matmul_mixed) that

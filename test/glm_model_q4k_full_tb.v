@@ -51,6 +51,16 @@ module glm_model_q4k_full_tb;
     localparam DIR = "build/mq4k";
 `endif
 
+    // ---- ACT_HW under test: 0 = full-width glm_act (the shipping default).
+    //   Overriding with -DTB_ACT_HW=n runs the SAME golden vectors through the
+    //   lane-serialized activation datapath -- ALL tests passing IS the
+    //   result-invariance proof for the ACT_HW resource knob. ----
+`ifdef TB_ACT_HW
+    localparam integer ACT_HW = `TB_ACT_HW;
+`else
+    localparam integer ACT_HW = 0;
+`endif
+
     // ---- derived widths (mirror the DUT) ----
     localparam integer IDXW   = (S_MAX <= 1) ? 1 : $clog2(S_MAX);
     localparam integer QK_DIM = NOPE + ROPE;
@@ -362,7 +372,7 @@ module glm_model_q4k_full_tb;
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN)
+        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW)
     ) dut (
         .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done),
         .token_id(token_id), .pos(pos), .pos_vec({POSW{1'b0}}),

@@ -53,7 +53,7 @@ read_xdc $REPO/fpga/constraints.xdc
 # glm_fp_pipe_lat.vh) live in src/ next to the .v, so Vivado resolves them from the
 # including file's dir; -include_dirs makes it explicit.
 set GEN {-generic PE_N=2 -generic DDR_NCH=2 -generic KV_RESIDENT=8 \
-         -generic EFIFO_DEPTH=8 -generic CACHE_SLOTS=2}
+         -generic EFIFO_DEPTH=8 -generic CACHE_SLOTS=2 -generic ACT_HW=1}
 
 # ============================================================================
 # (1) SYNTH-ONLY resource fit of the RAW product top (no pins required)

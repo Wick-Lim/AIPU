@@ -61,6 +61,7 @@ module bringup_harness #(
     parameter integer TN         = 4,
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 4,
+    parameter integer ACT_HW     = 1,     // compact fit: serialize glm_act lanes (result-invariant; default cfg: 0=full)
     // ---- memory-system config ----
     parameter integer CACHE_SLOTS = 2,    // compact (default cfg: 4)
     parameter integer FLASH_LAT   = 8,
@@ -241,7 +242,7 @@ module bringup_harness #(
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN), .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT),
+        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW), .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT),
         .KV_CTX(KV_CTX), .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),

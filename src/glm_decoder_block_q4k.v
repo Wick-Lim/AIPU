@@ -129,6 +129,9 @@ module glm_decoder_block_q4k #(
     parameter integer BLK        = 128,
     // ---- PE_M : residual-hidden ROWS (batch B) sharing one weight fetch ----
     parameter integer PE_M       = 1,
+    // ---- ACT_HW : activation HW lanes (0 = full width) -- result-invariant
+    //      resource knob threaded to glm_act (router sigmoid + both silus) ----
+    parameter integer ACT_HW     = 0,
     // ---- derived (do NOT override) ----
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -354,7 +357,7 @@ module glm_decoder_block_q4k #(
     wire [TOPK*16*PE_M-1:0]    rt_sel_weight;
     moe_router_q4k #(
         .HIDDEN(MODEL_DIM), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
-        .SCALE(RSCALE), .KMAX(FF_KMAX_M), .PE_M(PE_M)
+        .SCALE(RSCALE), .KMAX(FF_KMAX_M), .PE_M(PE_M), .ACT_HW(ACT_HW)
     ) u_router (
         .clk(clk), .rst(rst), .start(rt_start), .busy(rt_busy), .done(rt_done),
         .x_vec(nrm_vec),
@@ -386,7 +389,7 @@ module glm_decoder_block_q4k #(
     wire [FF_KWD-1:0]    ed_wk;
     swiglu_expert_q4k #(
         .HIDDEN(MODEL_DIM), .INTER(INTER_DENSE), .TN(TN), .KMAX(FF_KMAX_D),
-        .PE_M(PE_M)
+        .PE_M(PE_M), .ACT_HW(ACT_HW)
     ) u_dense (
         .clk(clk), .rst(rst), .start(ed_start), .busy(ed_busy), .done(ed_done),
         .x_vec(nrm_vec),
@@ -410,7 +413,7 @@ module glm_decoder_block_q4k #(
     wire [FF_KWM-1:0]    em_wk;
     swiglu_expert_q4k #(
         .HIDDEN(MODEL_DIM), .INTER(INTER_MOE), .TN(TN), .KMAX(FF_KMAX_M),
-        .PE_M(PE_M)
+        .PE_M(PE_M), .ACT_HW(ACT_HW)
     ) u_moe (
         .clk(clk), .rst(rst), .start(em_start), .busy(em_busy), .done(em_done),
         .x_vec(nrm_vec),

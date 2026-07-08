@@ -138,6 +138,7 @@ module glm_q4k_system #(
     parameter integer TN         = 4,
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 4,
+    parameter integer ACT_HW     = 0,   // activation HW lanes (0 = full) -- result-invariant knob
     // ---- memory-system config ----
     parameter integer CACHE_SLOTS = 4,      // GDDR6 expert-cache slots (slice)
     parameter integer FLASH_LAT   = 8,      // Flash fetch latency (doc; TB models)
@@ -436,7 +437,7 @@ module glm_q4k_system #(
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN)
+        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW)
     ) u_model (
         .clk(die_clk), .rst(rst),
         .start(mdl_start), .busy(mdl_busy), .done(mdl_done),

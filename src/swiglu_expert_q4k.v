@@ -24,7 +24,8 @@ module swiglu_expert_q4k #(
     parameter integer INTER  = 64,    // FFN inter size (MoE 2048 / dense 12288)
     parameter integer TN     = 4,     // output-tile width = matmul PE_N
     parameter integer KMAX   = 256,   // >= max(HIDDEN, INTER); matmul counter / NSB
-    parameter integer PE_M   = 1      // token ROWS (batch B) sharing one weight fetch
+    parameter integer PE_M   = 1,    // token ROWS (batch B) sharing one weight fetch
+    parameter integer ACT_HW = 0     // silu HW lanes (0 = full) -- result-invariant resource knob (glm_act HW_LANES)
 )(
     input  wire                     clk,
     input  wire                     rst,        // sync, active-high
@@ -116,7 +117,7 @@ module swiglu_expert_q4k #(
     reg  [16*MTN-1:0] act_x_in;
     wire              act_ov;
     wire [16*MTN-1:0] act_y;
-    glm_act #(.MODE(1), .LANES(MTN)) u_silu (
+    glm_act #(.MODE(1), .LANES(MTN), .HW_LANES(ACT_HW)) u_silu (
         .clk(clk), .rst(rst),
         .in_valid(act_in_valid), .x_in(act_x_in),
         .out_valid(act_ov), .y_out(act_y)

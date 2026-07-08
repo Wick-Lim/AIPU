@@ -108,6 +108,7 @@ module glm_q4k_system_cdc #(
     parameter integer TN         = 4,
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 4,
+    parameter integer ACT_HW     = 0,   // activation HW lanes (0 = full) -- result-invariant knob
     // ---- memory-system config ----
     parameter integer CACHE_SLOTS = 4,
     parameter integer FLASH_LAT   = 8,
@@ -435,7 +436,7 @@ module glm_q4k_system_cdc #(
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN),
+        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW),
         .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT), .KV_CTX(KV_CTX),
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
