@@ -81,13 +81,40 @@ script).
 - **RAM**: compact-system P&R is memory-heavy; if `route_design` OOMs on the Docker
   allocation, raise Docker Desktop memory or run synth-only first.
 
-## Results — TEMPLATE, fill in after running
+## Results — MEASURED (Vivado ML 2026.1, 2026-07, compact config + `ACT_HW=1`)
+Product top `glm_q4k_system_cdc`, `xcku3p-ffvb676-2-e`, synth-only utilization
+(`util_synth.rpt`); harness P&R **completed** (place + route clean), timing from
+`timing.rpt`.
+
 | Resource | Used | Avail (XCKU3P) | Util % |
 |---|---|---|---|
-| CLB LUT | `TBD` | ~162K | `TBD` |
-| CLB Register (FF) | `TBD` | ~325K | `TBD` |
-| Block RAM (36Kb) | `TBD` | ~360 | `TBD` |
-| DSP48E2 | `TBD` | **600** | `TBD` |
-| Fmax `core_clk` | `TBD` MHz | (target from constraints.xdc) | — |
-| Fmax `host_clk` | `TBD` MHz | — | — |
-| **Fits XCKU3P?** | `TBD` | | |
+| CLB LUT | **141,710** (138,242 logic + 3,468 LUTRAM) | 162,720 | **87.1%** |
+| CLB Register (FF) | 99,597 | 325,440 | 30.6% |
+| Block RAM (36Kb) | 0 | 360 | 0% (all storage in LUTRAM/FF) |
+| DSP48E2 | 421 | 1,368 | 30.8% |
+| **Fits XCKU3P?** | **YES** — places and routes | | |
+| Routed WNS `core_clk` @5ns | **−93.1 ns** | | |
+| **Achieved Fmax `core_clk`** | **~10.2 MHz** (1/98.4ns) | 200 MHz target | |
+| Hold (WHS) | +0.010 ns (met) | | |
+
+**Fit history (the iteration the README predicted):**
+1. Round 1–2: `mla_attn_q4k` static part-select bounds (Synth 8-524, fixed
+   result-invariantly) → Docker VM OOM at Technology Mapping (fixed: 32 GB VM).
+2. Round 3: synthesized **220.8K → 216.1K LUTs post-opt = 136% of KU3P**, DRC
+   UTLZ-1 at placement. Hierarchical report: the three `glm_act` instances were
+   **84.2K LUTs (38% of the chip)** — each lane replicates the full 6-stage fp32
+   exp/recip pipeline (router sigmoid alone 48.3K > all of attention 43.8K).
+3. Round 4: **`ACT_HW=1`** (lane-serialized `glm_act`, result-invariant — same
+   1155-test golden passes bit-exact) → **141.7K LUTs, fits at 87.1%**, full P&R.
+
+**Honest read of the Fmax number.** The RTL was written bit-exact-first: fp32
+ops are combinational `glm_fp.vh` function chains, so single-cycle cones run
+deep — the critical path is `mla_attn_q4k → rope_interleave_unit y_out` with
+**382 logic levels** (9 serial DSP multiplies + 72 CARRY8), 98.4 ns; 34K
+endpoints fail the 5 ns target. ~10 MHz still decodes bit-exact tokens (fine
+for a first bring-up correctness demo), but reaching the 200 MHz-class clock
+the tok/s roofline assumes is a **pipelining campaign**: latency-only
+repipelining of the deep fp32 cones (rope, softmax, rmsnorm, dequant+MAC),
+stage by stage, re-proving bit-exactness with the same goldens each time — the
+`glm_act` S2a/S2b split and `glm_fp_pipe` are the in-repo pattern for exactly
+this transformation.
