@@ -19,7 +19,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k spec-slow formal formal-ind lint host-test synth-glm cdc coverage clean
+.PHONY: all unittests q4k mixedtype spec-slow formal formal-ind lint host-test synth-glm cdc coverage clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, and the memory-controller formal proofs.
@@ -229,7 +229,43 @@ q4k:
 	    src/moe_router_q4k.v src/glm_matmul_q4k.v src/glm_act.v src/topk_select.v src/glm_fp_pipe.v
 	@printf '[%s] ' "moe_router_q4k"; $(VVP) $(BUILD_DIR)/moe_router_q4k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: moe_router_q4k"; exit 1; }
-	@echo "q4k: all four Q4_K unit TBs passed"
+	@# ---- mixed-type (Q6_K / Q8_0 / F16) consumer sub-gate ----
+	@$(MAKE) --no-print-directory mixedtype
+	@echo "q4k: all four Q4_K unit TBs + mixed-type (Q6_K/Q8_0/F16) sub-gate passed"
+
+# Mixed-type (Q6_K / Q8_0 / F16) consumer sub-gate: the two per-type dequant-primitive
+# TBs (q6k_prim / q8_0_prim) + the integrated mixed-column GEMM (glm_matmul_mixed) that
+# drives one tile whose PE_N columns carry different w_type -- exercising the w_type mux,
+# all four decoders, the high-precision buses, and accumulator reset.  All bit-exact to
+# tools/q4k_ref.py via the tools/q4k_mixed_gen.py goldens, plus weight_loader_q4k_mixed
+# which proves the LOADER's mixed-type DMA feed (not just the GEMM front-end) bit-exact
+# over a mixed sequence of consecutive different-type tiles.  Folded into `q4k` above (hence
+# `unittests`); runnable standalone as `make mixedtype`.  Expected: 91220 / 10816 / 32 / 192.
+mixedtype:
+	@mkdir -p $(BUILD_DIR)
+	@# emit + self-test the goldens (s8 / per-type dequant / mixed GEMM + prim vectors);
+	@# the generator's 86,984-check self-test vs q4k_ref gates the emit (nonzero exit fails).
+	@python3 tools/q4k_mixed_gen.py >/dev/null            # -> build/{s8_fp32,q4k_deq,q4k_mixed,q6k_prim,q8_0_prim,f16_prim}_vec.txt
+	@# q6k_prim: s8_to_fp32 (exhaustive) + Q6_K raw/code + F16 dequant prims (q4k_mixed.vh) vs ggml golden.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/q6k_prim_sim test/q6k_prim_tb.v
+	@printf '[%s] ' "q6k_prim"; $(VVP) $(BUILD_DIR)/q6k_prim_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: q6k_prim"; exit 1; }
+	@# q8_0_prim: Q8_0 raw/code dequant prim (q4k_mixed.vh) vs ggml golden.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/q8_0_prim_sim test/q8_0_prim_tb.v
+	@printf '[%s] ' "q8_0_prim"; $(VVP) $(BUILD_DIR)/q8_0_prim_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: q8_0_prim"; exit 1; }
+	@# glm_matmul_mixed: one GEMM tile with Q4_K/Q6_K/Q8_0/F16 columns -> the w_type mux +
+	@# all four decoders + accumulator reset, bit-exact vs q4k_ref matmul_q4k_col.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_matmul_mixed_sim test/glm_matmul_mixed_tb.v src/glm_matmul_q4k.v
+	@printf '[%s] ' "glm_matmul_mixed"; $(VVP) $(BUILD_DIR)/glm_matmul_mixed_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_matmul_mixed"; exit 1; }
+	@# weight_loader_q4k_mixed: the LOADER's mixed-type DMA feed (Q6_K/Q8_0/F16 per-type
+	@# header packing + code stream + desc_wtype geometry) driving glm_matmul_q4k, over a
+	@# MIXED SEQUENCE of consecutive different-type tiles, bit-exact vs q4k_ref matmul.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/weight_loader_q4k_mixed_sim test/weight_loader_q4k_mixed_tb.v src/weight_loader_q4k.v src/glm_matmul_q4k.v
+	@printf '[%s] ' "weight_loader_q4k_mixed"; $(VVP) $(BUILD_DIR)/weight_loader_q4k_mixed_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: weight_loader_q4k_mixed"; exit 1; }
+	@echo "mixedtype: Q6_K/Q8_0/F16 prim TBs + mixed-column GEMM + loader->GEMM mixed-feed passed (bit-exact vs q4k_ref)"
 
 # spec-slow: the speculative-decode top harnesses. They run the full model forward
 #   many times (K x accept/reject/mixed scenarios) -> minutes-long in iverilog, so they

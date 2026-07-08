@@ -106,4 +106,31 @@ function automatic [31:0] u7_to_fp32(input [6:0] x);
     end
 endfunction
 
+//----------------------------------------------------------------------------
+// s8_to_fp32 : exact SIGNED int8 (-128..127) -> fp32.  The one new primitive the
+//   mixed UD-Q4_K_XL types need: Q6_K/Q8_0 carry SIGNED int8 scales and codes,
+//   whereas the Q4_K path's u7_to_fp32 above is UNSIGNED (0..127, unchanged).
+//   Same highest-set-bit normalize idiom as u7_to_fp32 but two's-complement.
+//   == numpy float32(int8(x)).  Verified exhaustively (all 256 bytes) and at the
+//   corners: -128->0xC3000000, -1->0xBF800000, 127->0x42FE0000, 32->0x42000000,
+//   -32->0xC2000000, 0->0.  No latch, no comb loop, bounded for-loop.
+function automatic [31:0] s8_to_fp32(input [7:0] x);
+    reg        sgn;
+    reg [7:0]  mag;            // |x|, 0..128 (0x80 -> 128 fits 8 bits)
+    integer    i, p;
+    reg [30:0] sh;             // {23'd0,mag}<<(<=23): needs 31 bits
+    begin
+        if (x == 8'd0) begin
+            s8_to_fp32 = 32'd0;
+        end else begin
+            sgn = x[7];
+            mag = x[7] ? (~x + 8'd1) : x;                 // two's-comp magnitude
+            p = 0;
+            for (i = 0; i < 8; i = i + 1) if (mag[i]) p = i;   // highest set bit
+            sh = {23'd0, mag} << (23 - p);                // leading 1 -> bit 23
+            s8_to_fp32 = {sgn, (8'd127 + p[7:0]), sh[22:0]};
+        end
+    end
+endfunction
+
 `endif // Q4K_VH

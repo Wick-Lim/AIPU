@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 `include "glm_fp.vh"
-`include "q4k.vh"
+`include "q4k.vh"         // fp16_to_fp32, u7_to_fp32, s8_to_fp32, q4k_scale_min (leaf prims)
 /* verilator lint_off DECLFILENAME */
 //============================================================================
 // glm_matmul_q4k.v  --  GLM-5.2 Q4_K-NATIVE GEMM datapath (local-device target)
@@ -71,23 +71,42 @@ module glm_matmul_q4k #(
 
     output reg                        busy,
     output reg                        out_valid,  // C tile valid (1 cycle)
-    output reg  [16*PE_M*PE_N-1:0]    c_out       // bf16 C[pi][pj] packed
+    output reg  [16*PE_M*PE_N-1:0]    c_out,      // bf16 C[pi][pj] packed
+
+    // ---- ADDED: mixed-type (Q6_K/Q8_0/F16) selector + high-precision buses ----
+    //   All four are OPTIONAL: a Q4_K-only caller may leave them unconnected.  The
+    //   per-column w_type is LATCHED at start (off the per-beat MAC critical path);
+    //   a tile is one type so the loader broadcasts one type to all columns.  The
+    //   decode `case` below routes Q6_K/Q8_0/F16 to their primitive but keeps Q4_K
+    //   as the DEFAULT branch -- which matches w_type==2'b00 AND any undriven (x/z)
+    //   w_type -- so an unconnected w_type reads ONLY the pre-existing Q4_K buses
+    //   above and yields the byte-identical proven Q4_K result (zero regression).
+    input  wire [ 2*PE_N-1:0]                   w_type,  // per col: 0=Q4_K 1=Q6_K 2=Q8_0 3=F16
+    input  wire [16*PE_N-1:0]                   w_hp,    // per beat: Q6_K[5:0]/Q8_0[7:0]/F16[15:0]
+    input  wire [128*PE_N*((KMAX+255)/256)-1:0] w_q6_sc, // Q6_K 16xint8 scales / (col, super-block)
+    input  wire [16*PE_N*((KMAX+31)/32)-1:0]    w_q8_d   // Q8_0 fp16 d / (col, 32-weight block)
 );
     localparam integer KW  = $clog2(KMAX+1);
     localparam integer NSB = (KMAX + 255) / 256;   // super-blocks along K
+    localparam integer NB8 = (KMAX + 31)  / 32;    // Q8_0 32-weight blocks along K (== 8*NSB)
+    localparam [1:0] WT_Q4K = 2'd0, WT_Q6K = 2'd1, WT_Q80 = 2'd2, WT_F16 = 2'd3;
 
     // ---- latched tile params ----
     reg [KW-1:0]              k_cnt;      // beats consumed
     reg [KW-1:0]              k_len_r;
     reg [16*PE_N*NSB-1:0]     d_r, dmin_r;
     reg [96*PE_N*NSB-1:0]     scales_r;
+    reg [2*PE_N-1:0]          wtype_r;    // per-column weight type (latched at start)
+    reg [128*PE_N*NSB-1:0]    q6sc_r;     // Q6_K 16xint8 scales / (col, super-block)
+    reg [16*PE_N*NB8-1:0]     q8d_r;      // Q8_0 fp16 d / (col, 32-weight block)
 
     // ---- accumulators (fp32) ----
     reg [31:0] acc [0:PE_M*PE_N-1];
 
-    integer pi, pj, idx, col;
+    integer pi, pj, idx, col, blk;
     reg [KW-1:0] sb;                // super-block = k / 256
     reg [2:0]  sub;                 // sub-block within super-block = (k%256)/32 (0..7)
+    reg [3:0]  sidx;                // Q6_K scale index within super-block = (k%256)/16 (0..15)
     reg [11:0] sm;                  // {min6, scale6}
     reg [31:0] d1, m1, wdeq, aprod;
 
@@ -105,19 +124,50 @@ module glm_matmul_q4k #(
                 d_r     <= w_d;
                 dmin_r  <= w_dmin;
                 scales_r<= w_scales;
+                wtype_r <= w_type;     // per-tile type select (off the per-beat path)
+                q6sc_r  <= w_q6_sc;    // Q6_K scales (unread when the tile is Q4_K)
+                q8d_r   <= w_q8_d;     // Q8_0 d      (unread when the tile is Q4_K)
                 for (idx = 0; idx < PE_M*PE_N; idx = idx + 1) acc[idx] <= 32'd0;
             end else if (busy && in_valid) begin
                 sb  = k_cnt >> 8;                          // k / 256 (super-block)
                 sub = k_cnt[7:5];                          // (k%256) / 32 (sub-block)
-                // per-column dequant + per-cell fp32 MAC (sequential accumulate)
+                // per-column w_type-selected dequant + per-cell fp32 MAC (sequential
+                // accumulate).  Each type produces ONE fp32 wdeq that feeds the SAME
+                // MAC below; the w_type case is the ONLY per-column front-end change.
                 for (pj = 0; pj < PE_N; pj = pj + 1) begin
                     col  = pj*NSB + sb;                    // (col, super-block) index
-                    sm   = q4k_scale_min({1'b0, sub}, scales_r[96*col +: 96]);
-                    d1   = fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),    u7_to_fp32({1'b0, sm[5:0]}));
-                    m1   = fp32_mul(fp16_to_fp32(dmin_r[16*col +: 16]), u7_to_fp32({1'b0, sm[11:6]}));
-                    // w = d1*q - m1   (subtract = add with m1 sign flipped)
-                    wdeq = fp32_add(fp32_mul(d1, u7_to_fp32({3'd0, w_q[4*pj +: 4]})),
-                                    {~m1[31], m1[30:0]});
+                    case (wtype_r[2*pj +: 2])
+                        // ---- Q6_K : w = (d * f32(int8 sc[p>>4])) * f32(int8(code-32)) ----
+                        //   grouped (d*sc)*q to match numpy's left-assoc d*f32(sc)*f32(q);
+                        //   identical numerics to q4k_mixed.vh q6k_deq (inlined leaf prims).
+                        WT_Q6K: begin
+                            sidx = k_cnt[7:4];             // scale index within super-block = p>>4
+                            d1   = fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),
+                                            s8_to_fp32(q6sc_r[128*col + 8*sidx +: 8]));
+                            wdeq = fp32_mul(d1, s8_to_fp32({2'b00, w_hp[16*pj +: 6]} - 8'd32));
+                        end
+                        // ---- Q8_0 : w = d * f32(int8 qs)  (d per 32-weight block) ----
+                        WT_Q80: begin
+                            blk  = pj*NB8 + (k_cnt >> 5);  // 32-weight block index
+                            wdeq = fp32_mul(fp16_to_fp32(q8d_r[16*blk +: 16]),
+                                            s8_to_fp32(w_hp[16*pj +: 8]));
+                        end
+                        // ---- F16 : w = fp16_to_fp32(raw16)  (passthrough) ----
+                        WT_F16: begin
+                            wdeq = fp16_to_fp32(w_hp[16*pj +: 16]);
+                        end
+                        // ---- Q4_K (DEFAULT: 2'b00 and any undriven x/z) -- UNCHANGED ----
+                        //   w = (d*sc_b)*q - (dmin*m_b) : byte-identical to the proven path.
+                        default: begin
+                            sm   = q4k_scale_min({1'b0, sub}, scales_r[96*col +: 96]);
+                            d1   = fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),    u7_to_fp32({1'b0, sm[5:0]}));
+                            m1   = fp32_mul(fp16_to_fp32(dmin_r[16*col +: 16]), u7_to_fp32({1'b0, sm[11:6]}));
+                            // w = d1*q - m1   (subtract = add with m1 sign flipped)
+                            wdeq = fp32_add(fp32_mul(d1, u7_to_fp32({3'd0, w_q[4*pj +: 4]})),
+                                            {~m1[31], m1[30:0]});
+                        end
+                    endcase
+                    // ---- shared fp32 MAC (UNCHANGED, all types) ----
                     for (pi = 0; pi < PE_M; pi = pi + 1) begin
                         aprod = fp32_mul(bf16_to_fp32(a_col[16*pi +: 16]), wdeq);
                         acc[pi*PE_N + pj] <= fp32_add(acc[pi*PE_N + pj], aprod);

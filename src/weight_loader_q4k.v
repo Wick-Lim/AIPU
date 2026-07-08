@@ -72,6 +72,7 @@ module weight_loader_q4k #(
     parameter integer DATA_W = 256,      // memory data width (Q4_K super-block header + code beat)
     // ---- derived geometry (mirror glm_matmul_q4k) ----
     localparam integer NSB = (KMAX + 255) / 256,       // #super-blocks (== w_* banks per col)
+    localparam integer NB8 = (KMAX + 31)  / 32,        // #Q8_0 32-weight blocks (== 8*NSB)
     localparam integer KW  = $clog2(KMAX + 1),         // k_len width
     localparam integer SBW = $clog2(NSB + 1),          // super-block-count width
     localparam integer NSW = $clog2(NSB*PE_N + 1)      // header-word counter width
@@ -84,6 +85,7 @@ module weight_loader_q4k #(
     input  wire [ADDR_W-1:0]          desc_base,  // tile base address in weight mem
     input  wire [KW-1:0]              desc_klen,  // K length (#weight beats)
     input  wire [SBW-1:0]             desc_nsblk, // #super-blocks for this tile (<= NSB)
+    input  wire [1:0]                 desc_wtype, // 0=Q4_K 1=Q6_K 2=Q8_0 3=F16 (undriven->Q4_K)
 
     // ---- read-memory interface (TB models DDR5/Flash; mem_data valid t+1) ----
     output reg                        mem_en,     // combinational request strobe
@@ -98,6 +100,11 @@ module weight_loader_q4k #(
     output wire [16*PE_N*NSB-1:0]     mm_w_dmin,    // fp16 dmin per (col, super-block)
     output wire [96*PE_N*NSB-1:0]     mm_w_scales,  // 96b scales per (col, super-block)
     output wire                       mm_in_valid,
+    // ---- ADDED: mixed-type (Q6_K/Q8_0/F16) type broadcast + high-precision buses ----
+    output wire [ 2*PE_N-1:0]         mm_w_type,    // per-column type (tile is one type)
+    output wire [16*PE_N-1:0]         mm_w_hp,      // per beat: Q6_K/Q8_0/F16 code lane / col
+    output wire [128*PE_N*NSB-1:0]    mm_w_q6_sc,   // Q6_K 16xint8 scales per (col, super-block)
+    output wire [16*PE_N*NB8-1:0]     mm_w_q8_d,    // Q8_0 fp16 d per (col, 32-weight block)
 
     // ---- status ----
     output reg                        busy,
@@ -112,17 +119,34 @@ module weight_loader_q4k #(
                      S_STREAM = 3'd3,   // stream Q4_K code rows w_q[k] + in_valid
                      S_DONE   = 3'd4;   // signal completion
 
+    // weight-type enum (matches glm_matmul_q4k / the desc_wtype field)
+    localparam [1:0] WT_Q4K = 2'd0, WT_Q6K = 2'd1, WT_Q80 = 2'd2, WT_F16 = 2'd3;
+
+    // -----------------------------------------------------------------------
+    // GENERATE-TIME PRECONDITION (Q8_0 header-pack): the Q8_0 path co-packs the 8
+    // per-32-block fp16 d of a super-block into ONE header word and writes it as
+    // q8d_q[128*rd_slot +: 128] on the bus of width 16*PE_N*NB8.  That is lossless
+    // only when NB8 == 8*NSB, i.e. KMAX is a WHOLE multiple of 256 (no partial
+    // trailing super-block: a leftover <=224 K would make NB8 < 8*NSB and the
+    // 128-bit write would truncate).  All real configs use 256-multiple K (WL_KMAX
+    // defaults to 256); this elaboration-time assertion guards any other config.
+    if (KMAX % 256 != 0)
+        $fatal(1, "weight_loader_q4k: Q8_0 header-pack requires KMAX a whole multiple of 256 (NB8==8*NSB)");
+
     reg [2:0]                state;
 
     // latched descriptor
     reg [ADDR_W-1:0]         base_q;
     reg [KW-1:0]             klen_q;
     reg [SBW-1:0]            nsblk_q;
+    reg [1:0]                wtype_q;   // latched tile type (Q4_K default on reset/undriven)
 
     // assembled weight header buses (zero-filled for unused super-block banks)
     reg [16*PE_N*NSB-1:0]    d_q;
     reg [16*PE_N*NSB-1:0]    dmin_q;
     reg [96*PE_N*NSB-1:0]    scales_q;
+    reg [128*PE_N*NSB-1:0]   q6sc_q;    // Q6_K 16xint8 scales / (col, super-block)
+    reg [16*PE_N*NB8-1:0]    q8d_q;     // Q8_0 fp16 d / (col, 32-weight block)
 
     // header-phase counters / latency-1 capture pipeline
     reg [NSW-1:0]            hd_iss;     // #header reads issued (linear memory index)
@@ -137,8 +161,18 @@ module weight_loader_q4k #(
     reg [KW-1:0]             beat_cnt;   // #code-row beats driven to the GEMM
     reg                      code_pending; // mem_data this cycle is a valid w_q row
 
-    // total header words for this tile, and the code-region base address.
-    wire [NSW-1:0]           ns        = NSW'(nsblk_q) * NSW'(PE_N);
+    // total header words for this tile (type-parametric), and the code-region base.
+    //   F16 has NO header region (ns=0).  Q4_K/Q6_K/Q8_0 share the super-block-
+    //   granular header count nsblk*PE_N (Q8_0 packs its 8 per-32-block fp16 d into
+    //   one super-block header word).  Q4_K is the case DEFAULT, so an undriven
+    //   desc_wtype (x/z) selects the exact byte-identical Q4_K geometry.
+    reg  [NSW-1:0]           ns;
+    always @* begin
+        case (wtype_q)
+            WT_F16:  ns = {NSW{1'b0}};
+            default: ns = NSW'(nsblk_q) * NSW'(PE_N);
+        endcase
+    end
     wire [ADDR_W-1:0]        ns_ext    = {{(ADDR_W-NSW){1'b0}}, ns};
     wire [ADDR_W-1:0]        code_base = base_q + ns_ext;
     // bus slot (col-outer, super-block-inner, compile-time NSB stride) of the
@@ -156,6 +190,14 @@ module weight_loader_q4k #(
     assign mm_w_scales  = scales_q;
     assign mm_in_valid  = (state == S_STREAM) & code_pending & (beat_cnt < klen_q);
     assign mm_w_q       = mm_in_valid ? mem_data[4*PE_N-1:0] : {(4*PE_N){1'b0}};
+    // ---- ADDED mixed-type drives (Q4_K reads none of these -> byte-identical) ----
+    //   The tile type is broadcast to all PE_N columns (real tensors are uniform).
+    //   mm_w_hp carries the per-column 16-bit code lane (Q6_K low 6 / Q8_0 low 8 /
+    //   F16 all 16); mm_w_q above still carries the Q4_K 4-bit codes unchanged.
+    assign mm_w_type    = {PE_N{wtype_q}};
+    assign mm_w_hp      = mm_in_valid ? mem_data[16*PE_N-1:0] : {(16*PE_N){1'b0}};
+    assign mm_w_q6_sc   = q6sc_q;
+    assign mm_w_q8_d    = q8d_q;
 
     // -----------------------------------------------------------------------
     // Combinational read-request: present the next address on the bus so the
@@ -196,9 +238,12 @@ module weight_loader_q4k #(
             base_q       <= {ADDR_W{1'b0}};
             klen_q       <= {KW{1'b0}};
             nsblk_q      <= {SBW{1'b0}};
+            wtype_q      <= WT_Q4K;
             d_q          <= {(16*PE_N*NSB){1'b0}};
             dmin_q       <= {(16*PE_N*NSB){1'b0}};
             scales_q     <= {(96*PE_N*NSB){1'b0}};
+            q6sc_q       <= {(128*PE_N*NSB){1'b0}};
+            q8d_q        <= {(16*PE_N*NB8){1'b0}};
             hd_iss       <= {NSW{1'b0}};
             hd_cap       <= {NSW{1'b0}};
             pj_iss       <= {SBW{1'b0}};
@@ -217,10 +262,28 @@ module weight_loader_q4k #(
             //   distribute the packed header word into the three weight buses at its
             //   (pj*NSB+sb) bus slot.  d[15:0], dmin[31:16], scales[127:32].
             if (rd_v) begin
-                d_q     [16*rd_slot +: 16] <= mem_data[15:0];
-                dmin_q  [16*rd_slot +: 16] <= mem_data[31:16];
-                scales_q[96*rd_slot +: 96] <= mem_data[127:32];
-                hd_cap                     <= hd_cap + 1'b1;
+                // type-parametric header-word decode into the per-type bus at its
+                // (pj*NSB+sb) slot.  Q4_K is the DEFAULT branch (2'b00 + undriven
+                // x/z) -> byte-identical to the proven path.
+                case (wtype_q)
+                    // Q6_K word: {d[15:0], sc[16xint8 = 128b]} -> shared d bus + q6 bus
+                    WT_Q6K: begin
+                        d_q   [16*rd_slot  +: 16 ] <= mem_data[15:0];
+                        q6sc_q[128*rd_slot +: 128] <= mem_data[143:16];
+                    end
+                    // Q8_0 word: 8 fp16 d (one per 32-block co-packed in the super-block)
+                    WT_Q80: begin
+                        q8d_q [128*rd_slot +: 128] <= mem_data[127:0];
+                    end
+                    WT_F16: ;   // F16 has no header region (ns==0 -> rd_v never set here)
+                    // Q4_K: {d, dmin, scales} -- UNCHANGED
+                    default: begin
+                        d_q     [16*rd_slot +: 16] <= mem_data[15:0];
+                        dmin_q  [16*rd_slot +: 16] <= mem_data[31:16];
+                        scales_q[96*rd_slot +: 96] <= mem_data[127:32];
+                    end
+                endcase
+                hd_cap <= hd_cap + 1'b1;
             end
 
             case (state)
@@ -230,9 +293,12 @@ module weight_loader_q4k #(
                         base_q       <= desc_base;
                         klen_q       <= desc_klen;
                         nsblk_q      <= desc_nsblk;
+                        wtype_q      <= desc_wtype;              // latch tile type
                         d_q          <= {(16*PE_N*NSB){1'b0}};  // zero-fill unused banks
                         dmin_q       <= {(16*PE_N*NSB){1'b0}};
                         scales_q     <= {(96*PE_N*NSB){1'b0}};
+                        q6sc_q       <= {(128*PE_N*NSB){1'b0}};
+                        q8d_q        <= {(16*PE_N*NB8){1'b0}};
                         hd_iss       <= {NSW{1'b0}};
                         hd_cap       <= {NSW{1'b0}};
                         pj_iss       <= {SBW{1'b0}};
