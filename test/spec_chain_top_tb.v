@@ -6,8 +6,8 @@
 // WHAT IT BINDS (per the B8 brief):
 //
 //  (1) spec == greedy  (EXACT, the safety invariant):
-//      An INDEPENDENT reference (a SEPARATE PE_M=1 glm_model_fp8 + a SEPARATE
-//      mtp_head_fp8, both driven token-by-token off the SAME weight ROMs) replays
+//      An INDEPENDENT reference (a SEPARATE PE_M=1 glm_model_q4k + a SEPARATE
+//      mtp_head_q4k, both driven token-by-token off the SAME weight ROMs) replays
 //      the whole loop in software:
 //        * greedy rollout gtok[0..K]  : gtok[0]=argmax(model(cur_tok@pos)),
 //          gtok[j]=argmax(model(gtok[j-1]@pos))  (all rows share the pass base pos,
@@ -43,7 +43,7 @@
 //============================================================================
 
 // ---------------------------------------------------------------------------
-// MDL(P) : declare + combinationally answer ONE glm_model_fp8 pull bus (prefix P,
+// MDL(P) : declare + combinationally answer ONE glm_model_q4k pull bus (prefix P,
 //   e.g. m_ / v_ / r_).  Reads the shared per-layer model ROMs, keyed on P``db_layer.
 // ---------------------------------------------------------------------------
 `define MDL(P) \
@@ -51,147 +51,127 @@
   wire [LAYW-1:0] P``db_layer; wire P``idx_fresh; wire [LAYW-1:0] P``idx_win; \
   wire P``gn_req; wire P``gn_which; wire [DIMW-1:0] P``gn_idx; reg [15:0] P``gn_val; \
   wire P``aw_req; wire [3:0] P``aw_sel; wire [A_GRPW-1:0] P``aw_grp; wire [A_KCW-1:0] P``aw_k; \
-  reg [PE_N*8-1:0] P``aw_col; reg [16*PE_N*A_NB-1:0] P``aw_scale; \
+  reg [PE_N*4-1:0] P``aw_q; reg [16*PE_N*A_NSB-1:0] P``aw_d, P``aw_dmin; reg [96*PE_N*A_NSB-1:0] P``aw_scales; \
   wire P``kc_req; wire [IDXW-1:0] P``kc_idx; reg [KV_LORA*16-1:0] P``kc_ckv; reg [ROPE*16-1:0] P``kc_krope; reg P``kc_valid; \
-  wire P``rw_req; wire [R_KW-1:0] P``rw_k; reg [8*N_EXPERT-1:0] P``rw_col; reg [16*N_EXPERT*R_NB-1:0] P``rw_scale; \
+  wire P``rw_req; wire [R_KW-1:0] P``rw_k; reg [4*N_EXPERT-1:0] P``rw_q; reg [16*N_EXPERT*R_NSB-1:0] P``rw_d, P``rw_dmin; reg [96*N_EXPERT*R_NSB-1:0] P``rw_scales; \
   wire P``fw_req; wire [1:0] P``fw_sel; wire [FF_GWD-1:0] P``fw_grp; wire [FF_KWD-1:0] P``fw_k; \
   wire P``fw_shared; wire [EIDXW-1:0] P``fw_eidx; \
-  reg [8*TN-1:0] P``fw_col, P``fw_col_up; reg [16*TN*FF_NB_D-1:0] P``fw_scale_g, P``fw_scale_u; \
+  reg [4*TN-1:0] P``fw_q, P``fw_q_up; reg [16*TN*FF_NSB_D-1:0] P``fw_d_g, P``fw_dmin_g, P``fw_d_u, P``fw_dmin_u; reg [96*TN*FF_NSB_D-1:0] P``fw_scales_g, P``fw_scales_u; \
   wire P``fn_req; wire [DIMW-1:0] P``fn_idx; reg [15:0] P``fn_val; \
   wire P``lw_req; wire [VTW-1:0] P``lw_vtile; wire [DIMW-1:0] P``lw_k; reg [LM_TN*16-1:0] P``lw_col; \
-  integer P``ts, P``re, P``ft, P``fo, P``cd, P``ob, P``bj; reg [15:0] P``sca; reg P``dm; \
+  integer P``ts, P``re, P``ft, P``fo, P``cd; reg P``dm; \
   always @* P``em_val = EMB[P``em_tok][P``em_idx]; \
   always @* P``fn_val = GF[P``fn_idx]; \
   always @* begin P``lw_col = {LM_TN*16{1'b0}}; \
     if (!force_zero_lm) for (P``ts=0;P``ts<LM_TN;P``ts=P``ts+1) P``lw_col[16*P``ts+:16] = Wlm[P``lw_vtile*LM_TN + P``ts][P``lw_k]; end \
   always @* P``gn_val = P``gn_which ? G2[P``db_layer][P``gn_idx] : G1[P``db_layer][P``gn_idx]; \
   always @* begin \
-    P``aw_col = {PE_N*8{1'b0}}; P``aw_scale = {16*PE_N*A_NB{1'b0}}; \
+    P``aw_q = {PE_N*4{1'b0}}; P``aw_d = {16*PE_N*A_NSB{1'b0}}; P``aw_dmin = {16*PE_N*A_NSB{1'b0}}; P``aw_scales = {96*PE_N*A_NSB{1'b0}}; \
     for (P``ts=0;P``ts<PE_N;P``ts=P``ts+1) case (P``aw_sel) \
-    4'd0: if (P``aw_grp*PE_N+P``ts<Q_LORA)   P``aw_col[8*P``ts+:8]=W_dq [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
-    4'd1: if (P``aw_grp*PE_N+P``ts<HQK)      P``aw_col[8*P``ts+:8]=W_uq [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
-    4'd2: if (P``aw_grp*PE_N+P``ts<KV_LORA)  P``aw_col[8*P``ts+:8]=W_dkv[P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
-    4'd3: if (P``aw_grp*PE_N+P``ts<ROPE)     P``aw_col[8*P``ts+:8]=W_kr [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
-    4'd4: if (P``aw_grp*PE_N+P``ts<HNOPE)    P``aw_col[8*P``ts+:8]=W_uk [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
-    4'd5: if (P``aw_grp*PE_N+P``ts<HV)       P``aw_col[8*P``ts+:8]=W_uv [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
-    4'd6: if (P``aw_grp*PE_N+P``ts<MODEL_DIM)P``aw_col[8*P``ts+:8]=W_o  [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
-    default: P``aw_col[8*P``ts+:8]=8'h0; endcase \
-    case (P``aw_sel) 4'd0:P``sca=ScW_dq[P``db_layer]; 4'd1:P``sca=ScW_uq[P``db_layer]; 4'd2:P``sca=ScW_dkv[P``db_layer]; \
-    4'd3:P``sca=ScW_kr[P``db_layer]; 4'd4:P``sca=ScW_uk[P``db_layer]; 4'd5:P``sca=ScW_uv[P``db_layer]; \
-    4'd6:P``sca=ScW_o[P``db_layer]; default:P``sca=16'h3F80; endcase \
-    for (P``ts=0;P``ts<PE_N;P``ts=P``ts+1) P``aw_scale[16*P``ts+:16]=P``sca; \
+    4'd0: if (P``aw_grp*PE_N+P``ts<Q_LORA)   P``aw_q[4*P``ts+:4]=W_dq [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
+    4'd1: if (P``aw_grp*PE_N+P``ts<HQK)      P``aw_q[4*P``ts+:4]=W_uq [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
+    4'd2: if (P``aw_grp*PE_N+P``ts<KV_LORA)  P``aw_q[4*P``ts+:4]=W_dkv[P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
+    4'd3: if (P``aw_grp*PE_N+P``ts<ROPE)     P``aw_q[4*P``ts+:4]=W_kr [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
+    4'd4: if (P``aw_grp*PE_N+P``ts<HNOPE)    P``aw_q[4*P``ts+:4]=W_uk [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
+    4'd5: if (P``aw_grp*PE_N+P``ts<HV)       P``aw_q[4*P``ts+:4]=W_uv [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
+    4'd6: if (P``aw_grp*PE_N+P``ts<MODEL_DIM)P``aw_q[4*P``ts+:4]=W_o  [P``db_layer][P``aw_grp*PE_N+P``ts][P``aw_k]; \
+    default: P``aw_q[4*P``ts+:4]=4'h0; endcase \
+    for (P``ts=0;P``ts<PE_N;P``ts=P``ts+1) begin P``aw_d[16*P``ts+:16]=Q_D; P``aw_dmin[16*P``ts+:16]=Q_DM; P``aw_scales[96*P``ts+:96]=mk_sc96(P``aw_grp*PE_N+P``ts); end \
   end \
   always @* begin P``kc_ckv={KV_LORA*16{1'b0}}; P``kc_krope={ROPE*16{1'b0}}; \
     for (P``cd=0;P``cd<KV_LORA;P``cd=P``cd+1) P``kc_ckv[16*P``cd+:16]=CKV[P``db_layer][P``kc_idx][P``cd]; \
     for (P``cd=0;P``cd<ROPE;P``cd=P``cd+1)    P``kc_krope[16*P``cd+:16]=KRP[P``db_layer][P``kc_idx][P``cd]; end \
-  always @* begin P``rw_col={8*N_EXPERT{1'b0}}; P``rw_scale={16*N_EXPERT*R_NB{1'b0}}; \
-    for (P``re=0;P``re<N_EXPERT;P``re=P``re+1) begin P``rw_col[8*P``re+:8]=Wg[P``db_layer][P``rw_k][P``re]; P``rw_scale[16*P``re+:16]=ScWg[P``db_layer]; end end \
+  always @* begin P``rw_q={4*N_EXPERT{1'b0}}; P``rw_d={16*N_EXPERT*R_NSB{1'b0}}; P``rw_dmin={16*N_EXPERT*R_NSB{1'b0}}; P``rw_scales={96*N_EXPERT*R_NSB{1'b0}}; \
+    for (P``re=0;P``re<N_EXPERT;P``re=P``re+1) begin P``rw_q[4*P``re+:4]=Wg[P``db_layer][P``rw_k][P``re]; P``rw_d[16*P``re+:16]=Q_D; P``rw_dmin[16*P``re+:16]=Q_DM; P``rw_scales[96*P``re+:96]=mk_sc96(P``re); end end \
   always @* begin P``dm=(P``db_layer<N_DENSE)?1'b0:1'b1; \
-    P``fw_col={8*TN{1'b0}}; P``fw_col_up={8*TN{1'b0}}; P``fw_scale_g={16*TN*FF_NB_D{1'b0}}; P``fw_scale_u={16*TN*FF_NB_D{1'b0}}; \
-    P``ob=(P``fw_grp*TN)/BLK; \
+    P``fw_q={4*TN{1'b0}}; P``fw_q_up={4*TN{1'b0}}; \
+    P``fw_d_g={16*TN*FF_NSB_D{1'b0}}; P``fw_dmin_g={16*TN*FF_NSB_D{1'b0}}; P``fw_d_u={16*TN*FF_NSB_D{1'b0}}; P``fw_dmin_u={16*TN*FF_NSB_D{1'b0}}; \
+    P``fw_scales_g={96*TN*FF_NSB_D{1'b0}}; P``fw_scales_u={96*TN*FF_NSB_D{1'b0}}; \
     for (P``ft=0;P``ft<TN;P``ft=P``ft+1) begin P``fo=P``fw_grp*TN+P``ft; \
       if (P``dm==1'b0) begin \
-        if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_col[8*P``ft+:8]=Dd[P``db_layer][P``fo][P``fw_k]; end \
-        else begin if (P``fo<INTER_DENSE) begin P``fw_col[8*P``ft+:8]=Dg[P``db_layer][P``fo][P``fw_k]; P``fw_col_up[8*P``ft+:8]=Du[P``db_layer][P``fo][P``fw_k]; end end \
+        if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_q[4*P``ft+:4]=Dd[P``db_layer][P``fo][P``fw_k]; end \
+        else begin if (P``fo<INTER_DENSE) begin P``fw_q[4*P``ft+:4]=Dg[P``db_layer][P``fo][P``fw_k]; P``fw_q_up[4*P``ft+:4]=Du[P``db_layer][P``fo][P``fw_k]; end end \
       end else begin \
         if (P``fw_shared) begin \
-          if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_col[8*P``ft+:8]=SHd[P``db_layer][P``fo][P``fw_k]; end \
-          else if (P``fo<INTER_MOE) begin P``fw_col[8*P``ft+:8]=SHg[P``db_layer][P``fo][P``fw_k]; P``fw_col_up[8*P``ft+:8]=SHu[P``db_layer][P``fo][P``fw_k]; end \
+          if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_q[4*P``ft+:4]=SHd[P``db_layer][P``fo][P``fw_k]; end \
+          else if (P``fo<INTER_MOE) begin P``fw_q[4*P``ft+:4]=SHg[P``db_layer][P``fo][P``fw_k]; P``fw_q_up[4*P``ft+:4]=SHu[P``db_layer][P``fo][P``fw_k]; end \
         end else begin \
-          if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_col[8*P``ft+:8]=Md[P``db_layer][P``fw_eidx][P``fo][P``fw_k]; end \
-          else if (P``fo<INTER_MOE) begin P``fw_col[8*P``ft+:8]=Mg[P``db_layer][P``fw_eidx][P``fo][P``fw_k]; P``fw_col_up[8*P``ft+:8]=Mu[P``db_layer][P``fw_eidx][P``fo][P``fw_k]; end \
+          if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_q[4*P``ft+:4]=Md[P``db_layer][P``fw_eidx][P``fo][P``fw_k]; end \
+          else if (P``fo<INTER_MOE) begin P``fw_q[4*P``ft+:4]=Mg[P``db_layer][P``fw_eidx][P``fo][P``fw_k]; P``fw_q_up[4*P``ft+:4]=Mu[P``db_layer][P``fw_eidx][P``fo][P``fw_k]; end \
         end end end \
     for (P``ft=0;P``ft<TN;P``ft=P``ft+1) begin \
-      if (P``dm==1'b0) begin \
-        for (P``bj=0;P``bj<FF_NB_D;P``bj=P``bj+1) begin \
-          if (P``fw_sel==2'd2) P``fw_scale_g[16*(P``bj*TN+P``ft)+:16]=ScDd[P``db_layer][P``bj]; \
-          else begin P``fw_scale_g[16*(P``bj*TN+P``ft)+:16]=ScDg[P``db_layer][P``ob]; P``fw_scale_u[16*(P``bj*TN+P``ft)+:16]=ScDu[P``db_layer][P``ob]; end end \
-      end else begin \
-        if (P``fw_shared) begin \
-          if (P``fw_sel==2'd2) P``fw_scale_g[16*(0*TN+P``ft)+:16]=ScSHd[P``db_layer]; \
-          else begin P``fw_scale_g[16*(0*TN+P``ft)+:16]=ScSHg[P``db_layer]; P``fw_scale_u[16*(0*TN+P``ft)+:16]=ScSHu[P``db_layer]; end \
-        end else begin \
-          if (P``fw_sel==2'd2) P``fw_scale_g[16*(0*TN+P``ft)+:16]=ScMd[P``db_layer][P``fw_eidx]; \
-          else begin P``fw_scale_g[16*(0*TN+P``ft)+:16]=ScMg[P``db_layer][P``fw_eidx]; P``fw_scale_u[16*(0*TN+P``ft)+:16]=ScMu[P``db_layer][P``fw_eidx]; end \
-        end end end \
+      P``fw_d_g[16*P``ft+:16]=Q_D; P``fw_dmin_g[16*P``ft+:16]=Q_DM; \
+      P``fw_d_u[16*P``ft+:16]=Q_D; P``fw_dmin_u[16*P``ft+:16]=Q_DM; \
+      P``fw_scales_g[96*P``ft+:96]=mk_sc96(P``fw_grp*TN+P``ft); \
+      P``fw_scales_u[96*P``ft+:96]=mk_sc96(P``fw_grp*TN+P``ft); end \
   end \
   always @(posedge clk) begin if (rst) P``kc_valid<=1'b0; else P``kc_valid<=P``kc_req; end
 
 // ---------------------------------------------------------------------------
-// MTP(P) : declare + combinationally answer ONE mtp_head_fp8 pull bus (prefix P,
+// MTP(P) : declare + combinationally answer ONE mtp_head_q4k pull bus (prefix P,
 //   e.g. t_ / rm_).  Reads the single-layer MTP ROMs (m-prefixed).  force_zero_mtp
 //   zeroes every weight answer so the chained drafts become deterministic garbage.
 // ---------------------------------------------------------------------------
 `define MTP(P) \
   wire P``cn_req; wire [1:0] P``cn_which; wire [DIMW-1:0] P``cn_idx; reg [15:0] P``cn_val; \
-  wire P``pw_req; wire [PTW-1:0] P``pw_ptile; wire [CKIW-1:0] P``pw_k; reg [PROJ_TN*8-1:0] P``pw_col; reg [16*PROJ_TN*PROJ_NB-1:0] P``pw_scale; \
+  wire P``pw_req; wire [PTW-1:0] P``pw_ptile; wire [CKIW-1:0] P``pw_k; reg [PROJ_TN*4-1:0] P``pw_q; reg [16*PROJ_TN*PROJ_NSB-1:0] P``pw_d, P``pw_dmin; reg [96*PROJ_TN*PROJ_NSB-1:0] P``pw_scales; \
   wire P``gn_req; wire P``gn_which; wire [DIMW-1:0] P``gn_idx; reg [15:0] P``gn_val; \
   wire P``aw_req; wire [3:0] P``aw_sel; wire [A_GRPW-1:0] P``aw_grp; wire [A_KCW-1:0] P``aw_k; \
-  reg [PE_N*8-1:0] P``aw_col; reg [16*PE_N*A_NB-1:0] P``aw_scale; \
+  reg [PE_N*4-1:0] P``aw_q; reg [16*PE_N*A_NSB-1:0] P``aw_d, P``aw_dmin; reg [96*PE_N*A_NSB-1:0] P``aw_scales; \
   wire P``kc_req; wire [IDXW-1:0] P``kc_idx; reg [KV_LORA*16-1:0] P``kc_ckv; reg [ROPE*16-1:0] P``kc_krope; reg P``kc_valid; \
-  wire P``rw_req; wire [R_KW-1:0] P``rw_k; reg [8*N_EXPERT-1:0] P``rw_col; reg [16*N_EXPERT*R_NB-1:0] P``rw_scale; \
+  wire P``rw_req; wire [R_KW-1:0] P``rw_k; reg [4*N_EXPERT-1:0] P``rw_q; reg [16*N_EXPERT*R_NSB-1:0] P``rw_d, P``rw_dmin; reg [96*N_EXPERT*R_NSB-1:0] P``rw_scales; \
   wire P``fw_req; wire [1:0] P``fw_sel; wire [FF_GWD-1:0] P``fw_grp; wire [FF_KWD-1:0] P``fw_k; \
   wire P``fw_shared; wire [EIDXW-1:0] P``fw_eidx; \
-  reg [8*TN-1:0] P``fw_col, P``fw_col_up; reg [16*TN*FF_NB_D-1:0] P``fw_scale_g, P``fw_scale_u; \
+  reg [4*TN-1:0] P``fw_q, P``fw_q_up; reg [16*TN*FF_NSB_D-1:0] P``fw_d_g, P``fw_dmin_g, P``fw_d_u, P``fw_dmin_u; reg [96*TN*FF_NSB_D-1:0] P``fw_scales_g, P``fw_scales_u; \
   wire P``lw_req; wire [VTW-1:0] P``lw_vtile; wire [DIMW-1:0] P``lw_k; reg [LM_TN*16-1:0] P``lw_col; \
-  integer P``ts, P``re, P``ft, P``fo, P``cd, P``ob, P``pq, P``bj; reg [15:0] P``sca; \
+  integer P``ts, P``re, P``ft, P``fo, P``cd, P``pq; \
   always @* begin if (force_zero_mtp) P``cn_val=16'h0; \
     else case (P``cn_which) 2'd0: P``cn_val=mGA[P``cn_idx]; 2'd1: P``cn_val=mGB[P``cn_idx]; default: P``cn_val=mGF[P``cn_idx]; endcase end \
-  always @* begin P``pw_col={PROJ_TN*8{1'b0}}; P``pw_scale={16*PROJ_TN*PROJ_NB{1'b0}}; \
+  always @* begin P``pw_q={PROJ_TN*4{1'b0}}; P``pw_d={16*PROJ_TN*PROJ_NSB{1'b0}}; P``pw_dmin={16*PROJ_TN*PROJ_NSB{1'b0}}; P``pw_scales={96*PROJ_TN*PROJ_NSB{1'b0}}; \
     if (!force_zero_mtp) begin \
-      for (P``pq=0;P``pq<PROJ_TN;P``pq=P``pq+1) P``pw_col[8*P``pq+:8]=mWp[P``pw_ptile*PROJ_TN+P``pq][P``pw_k]; \
-      for (P``cd=0;P``cd<PROJ_NB;P``cd=P``cd+1) for (P``pq=0;P``pq<PROJ_TN;P``pq=P``pq+1) P``pw_scale[16*(P``cd*PROJ_TN+P``pq)+:16]=mScWp[P``cd]; end end \
+      for (P``pq=0;P``pq<PROJ_TN;P``pq=P``pq+1) begin P``pw_q[4*P``pq+:4]=mWp[P``pw_ptile*PROJ_TN+P``pq][P``pw_k]; \
+        P``pw_d[16*P``pq+:16]=Q_D; P``pw_dmin[16*P``pq+:16]=Q_DM; P``pw_scales[96*P``pq+:96]=mk_sc96(P``pw_ptile*PROJ_TN+P``pq); end end end \
   always @* begin if (force_zero_mtp) P``gn_val=16'h0; else P``gn_val = P``gn_which ? mG2[P``gn_idx] : mG1[P``gn_idx]; end \
-  always @* begin P``aw_col={PE_N*8{1'b0}}; P``aw_scale={16*PE_N*A_NB{1'b0}}; \
+  always @* begin P``aw_q={PE_N*4{1'b0}}; P``aw_d={16*PE_N*A_NSB{1'b0}}; P``aw_dmin={16*PE_N*A_NSB{1'b0}}; P``aw_scales={96*PE_N*A_NSB{1'b0}}; \
     if (!force_zero_mtp) begin \
       for (P``ts=0;P``ts<PE_N;P``ts=P``ts+1) case (P``aw_sel) \
-      4'd0: if (P``aw_grp*PE_N+P``ts<Q_LORA)   P``aw_col[8*P``ts+:8]=mW_dq [P``aw_grp*PE_N+P``ts][P``aw_k]; \
-      4'd1: if (P``aw_grp*PE_N+P``ts<HQK)      P``aw_col[8*P``ts+:8]=mW_uq [P``aw_grp*PE_N+P``ts][P``aw_k]; \
-      4'd2: if (P``aw_grp*PE_N+P``ts<KV_LORA)  P``aw_col[8*P``ts+:8]=mW_dkv[P``aw_grp*PE_N+P``ts][P``aw_k]; \
-      4'd3: if (P``aw_grp*PE_N+P``ts<ROPE)     P``aw_col[8*P``ts+:8]=mW_kr [P``aw_grp*PE_N+P``ts][P``aw_k]; \
-      4'd4: if (P``aw_grp*PE_N+P``ts<HNOPE)    P``aw_col[8*P``ts+:8]=mW_uk [P``aw_grp*PE_N+P``ts][P``aw_k]; \
-      4'd5: if (P``aw_grp*PE_N+P``ts<HV)       P``aw_col[8*P``ts+:8]=mW_uv [P``aw_grp*PE_N+P``ts][P``aw_k]; \
-      4'd6: if (P``aw_grp*PE_N+P``ts<MODEL_DIM)P``aw_col[8*P``ts+:8]=mW_o  [P``aw_grp*PE_N+P``ts][P``aw_k]; \
-      default: P``aw_col[8*P``ts+:8]=8'h0; endcase \
-      case (P``aw_sel) 4'd0:P``sca=mScW_dq; 4'd1:P``sca=mScW_uq; 4'd2:P``sca=mScW_dkv; \
-      4'd3:P``sca=mScW_kr; 4'd4:P``sca=mScW_uk; 4'd5:P``sca=mScW_uv; \
-      4'd6:P``sca=mScW_o; default:P``sca=16'h3F80; endcase \
-      for (P``ts=0;P``ts<PE_N;P``ts=P``ts+1) P``aw_scale[16*P``ts+:16]=P``sca; end end \
+      4'd0: if (P``aw_grp*PE_N+P``ts<Q_LORA)   P``aw_q[4*P``ts+:4]=mW_dq [P``aw_grp*PE_N+P``ts][P``aw_k]; \
+      4'd1: if (P``aw_grp*PE_N+P``ts<HQK)      P``aw_q[4*P``ts+:4]=mW_uq [P``aw_grp*PE_N+P``ts][P``aw_k]; \
+      4'd2: if (P``aw_grp*PE_N+P``ts<KV_LORA)  P``aw_q[4*P``ts+:4]=mW_dkv[P``aw_grp*PE_N+P``ts][P``aw_k]; \
+      4'd3: if (P``aw_grp*PE_N+P``ts<ROPE)     P``aw_q[4*P``ts+:4]=mW_kr [P``aw_grp*PE_N+P``ts][P``aw_k]; \
+      4'd4: if (P``aw_grp*PE_N+P``ts<HNOPE)    P``aw_q[4*P``ts+:4]=mW_uk [P``aw_grp*PE_N+P``ts][P``aw_k]; \
+      4'd5: if (P``aw_grp*PE_N+P``ts<HV)       P``aw_q[4*P``ts+:4]=mW_uv [P``aw_grp*PE_N+P``ts][P``aw_k]; \
+      4'd6: if (P``aw_grp*PE_N+P``ts<MODEL_DIM)P``aw_q[4*P``ts+:4]=mW_o  [P``aw_grp*PE_N+P``ts][P``aw_k]; \
+      default: P``aw_q[4*P``ts+:4]=4'h0; endcase \
+      for (P``ts=0;P``ts<PE_N;P``ts=P``ts+1) begin P``aw_d[16*P``ts+:16]=Q_D; P``aw_dmin[16*P``ts+:16]=Q_DM; P``aw_scales[96*P``ts+:96]=mk_sc96(P``aw_grp*PE_N+P``ts); end end end \
   always @* begin P``kc_ckv={KV_LORA*16{1'b0}}; P``kc_krope={ROPE*16{1'b0}}; \
     if (!force_zero_mtp) begin \
       for (P``cd=0;P``cd<KV_LORA;P``cd=P``cd+1) P``kc_ckv[16*P``cd+:16]=mCKV[P``kc_idx][P``cd]; \
       for (P``cd=0;P``cd<ROPE;P``cd=P``cd+1)    P``kc_krope[16*P``cd+:16]=mKRP[P``kc_idx][P``cd]; end end \
-  always @* begin P``rw_col={8*N_EXPERT{1'b0}}; P``rw_scale={16*N_EXPERT*R_NB{1'b0}}; \
-    if (!force_zero_mtp) for (P``re=0;P``re<N_EXPERT;P``re=P``re+1) begin P``rw_col[8*P``re+:8]=mWg[P``rw_k][P``re]; P``rw_scale[16*P``re+:16]=mScWg; end end \
+  always @* begin P``rw_q={4*N_EXPERT{1'b0}}; P``rw_d={16*N_EXPERT*R_NSB{1'b0}}; P``rw_dmin={16*N_EXPERT*R_NSB{1'b0}}; P``rw_scales={96*N_EXPERT*R_NSB{1'b0}}; \
+    if (!force_zero_mtp) for (P``re=0;P``re<N_EXPERT;P``re=P``re+1) begin P``rw_q[4*P``re+:4]=mWg[P``rw_k][P``re]; P``rw_d[16*P``re+:16]=Q_D; P``rw_dmin[16*P``re+:16]=Q_DM; P``rw_scales[96*P``re+:96]=mk_sc96(P``re); end end \
   always @* begin \
-    P``fw_col={8*TN{1'b0}}; P``fw_col_up={8*TN{1'b0}}; P``fw_scale_g={16*TN*FF_NB_D{1'b0}}; P``fw_scale_u={16*TN*FF_NB_D{1'b0}}; \
-    P``ob=(P``fw_grp*TN)/BLK; \
+    P``fw_q={4*TN{1'b0}}; P``fw_q_up={4*TN{1'b0}}; \
+    P``fw_d_g={16*TN*FF_NSB_D{1'b0}}; P``fw_dmin_g={16*TN*FF_NSB_D{1'b0}}; P``fw_d_u={16*TN*FF_NSB_D{1'b0}}; P``fw_dmin_u={16*TN*FF_NSB_D{1'b0}}; \
+    P``fw_scales_g={96*TN*FF_NSB_D{1'b0}}; P``fw_scales_u={96*TN*FF_NSB_D{1'b0}}; \
     if (!force_zero_mtp) begin \
       for (P``ft=0;P``ft<TN;P``ft=P``ft+1) begin P``fo=P``fw_grp*TN+P``ft; \
         if (cur_mode==1'b0) begin \
-          if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_col[8*P``ft+:8]=mDd[P``fo][P``fw_k]; end \
-          else begin if (P``fo<INTER_DENSE) begin P``fw_col[8*P``ft+:8]=mDg[P``fo][P``fw_k]; P``fw_col_up[8*P``ft+:8]=mDu[P``fo][P``fw_k]; end end \
+          if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_q[4*P``ft+:4]=mDd[P``fo][P``fw_k]; end \
+          else begin if (P``fo<INTER_DENSE) begin P``fw_q[4*P``ft+:4]=mDg[P``fo][P``fw_k]; P``fw_q_up[4*P``ft+:4]=mDu[P``fo][P``fw_k]; end end \
         end else begin \
           if (P``fw_shared) begin \
-            if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_col[8*P``ft+:8]=mSHd[P``fo][P``fw_k]; end \
-            else if (P``fo<INTER_MOE) begin P``fw_col[8*P``ft+:8]=mSHg[P``fo][P``fw_k]; P``fw_col_up[8*P``ft+:8]=mSHu[P``fo][P``fw_k]; end \
+            if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_q[4*P``ft+:4]=mSHd[P``fo][P``fw_k]; end \
+            else if (P``fo<INTER_MOE) begin P``fw_q[4*P``ft+:4]=mSHg[P``fo][P``fw_k]; P``fw_q_up[4*P``ft+:4]=mSHu[P``fo][P``fw_k]; end \
           end else begin \
-            if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_col[8*P``ft+:8]=mMd[P``fw_eidx][P``fo][P``fw_k]; end \
-            else if (P``fo<INTER_MOE) begin P``fw_col[8*P``ft+:8]=mMg[P``fw_eidx][P``fo][P``fw_k]; P``fw_col_up[8*P``ft+:8]=mMu[P``fw_eidx][P``fo][P``fw_k]; end \
+            if (P``fw_sel==2'd2) begin if (P``fo<MODEL_DIM) P``fw_q[4*P``ft+:4]=mMd[P``fw_eidx][P``fo][P``fw_k]; end \
+            else if (P``fo<INTER_MOE) begin P``fw_q[4*P``ft+:4]=mMg[P``fw_eidx][P``fo][P``fw_k]; P``fw_q_up[4*P``ft+:4]=mMu[P``fw_eidx][P``fo][P``fw_k]; end \
           end end end \
       for (P``ft=0;P``ft<TN;P``ft=P``ft+1) begin \
-        if (cur_mode==1'b0) begin \
-          for (P``bj=0;P``bj<FF_NB_D;P``bj=P``bj+1) begin \
-            if (P``fw_sel==2'd2) P``fw_scale_g[16*(P``bj*TN+P``ft)+:16]=mScDd[P``bj]; \
-            else begin P``fw_scale_g[16*(P``bj*TN+P``ft)+:16]=mScDg[P``ob]; P``fw_scale_u[16*(P``bj*TN+P``ft)+:16]=mScDu[P``ob]; end end \
-        end else begin \
-          if (P``fw_shared) begin \
-            if (P``fw_sel==2'd2) P``fw_scale_g[16*(0*TN+P``ft)+:16]=mScSHd; \
-            else begin P``fw_scale_g[16*(0*TN+P``ft)+:16]=mScSHg; P``fw_scale_u[16*(0*TN+P``ft)+:16]=mScSHu; end \
-          end else begin \
-            if (P``fw_sel==2'd2) P``fw_scale_g[16*(0*TN+P``ft)+:16]=mScMd[P``fw_eidx]; \
-            else begin P``fw_scale_g[16*(0*TN+P``ft)+:16]=mScMg[P``fw_eidx]; P``fw_scale_u[16*(0*TN+P``ft)+:16]=mScMu[P``fw_eidx]; end \
-          end end end end end \
+        P``fw_d_g[16*P``ft+:16]=Q_D; P``fw_dmin_g[16*P``ft+:16]=Q_DM; \
+        P``fw_d_u[16*P``ft+:16]=Q_D; P``fw_dmin_u[16*P``ft+:16]=Q_DM; \
+        P``fw_scales_g[96*P``ft+:96]=mk_sc96(P``fw_grp*TN+P``ft); \
+        P``fw_scales_u[96*P``ft+:96]=mk_sc96(P``fw_grp*TN+P``ft); end end end \
   always @* begin P``lw_col = {LM_TN*16{1'b0}}; \
     if (!force_zero_mtp && !force_zero_lm) for (P``pq=0;P``pq<LM_TN;P``pq=P``pq+1) P``lw_col[16*P``pq+:16] = mWlm[P``lw_vtile*LM_TN + P``pq][P``lw_k]; end \
   always @(posedge clk) begin if (rst) P``kc_valid<=1'b0; else P``kc_valid<=P``kc_req; end
@@ -210,11 +190,11 @@ module sct_engine #(
 );
     reg rst;
 
-    // ================= tiny faithful slice (== glm_model_fp8_pem_tb) =================
+    // ================= tiny faithful slice (== glm_model_q4k_pem_tb) =================
     // Tiny slice chosen to keep the FULL chain (main + K mtp + PE_M=K+1 verify)
     // simulable in iverilog: VOCAB / N_EXPERT / INTER_DENSE are reduced vs the
-    // pem TB (INTER_DENSE=32 => FF_NB_D=1; the responders loop over FF_NB_D so
-    // they stay correct for FF_NB_D 1 or 2).  All ratios still valid.
+    // pem TB (INTER_DENSE=16 => FF_NSB_D=1; every GEMM lives in one Q4_K super-
+    // block, so the responders broadcast the shared d/dmin/scales96 triple).  All ratios still valid.
     localparam integer MODEL_DIM  = 8;
     localparam integer L          = 1;
     localparam integer N_DENSE    = 1;
@@ -263,9 +243,9 @@ module sct_engine #(
     localparam integer FF_GWD = $clog2(((INTER_DENSE>MODEL_DIM)?INTER_DENSE:MODEL_DIM)/TN+1);
     localparam integer FF_KWD = $clog2(FF_KMAX_D+1);
     localparam integer R_KW   = $clog2(FF_KMAX_M+1);
-    localparam integer A_NB    = (A_KMAX   +BLK-1)/BLK;
-    localparam integer FF_NB_D = (FF_KMAX_D+BLK-1)/BLK;
-    localparam integer R_NB    = (FF_KMAX_M+BLK-1)/BLK;
+    localparam integer A_NSB    = (A_KMAX   +255)/256;  // Q4_K super-blocks
+    localparam integer FF_NSB_D = (FF_KMAX_D+255)/256;
+    localparam integer R_NSB    = (FF_KMAX_M+255)/256;
     localparam integer LAYW   = (L<=1)?1:$clog2(L);
     localparam integer TOKW   = (VOCAB<=1)?1:$clog2(VOCAB);
     localparam integer DIMW   = (MODEL_DIM<=1)?1:$clog2(MODEL_DIM);
@@ -277,7 +257,13 @@ module sct_engine #(
     localparam integer CKIW    = $clog2(CK);
     localparam integer NPTILE  = MODEL_DIM/PROJ_TN;
     localparam integer PTW     = (NPTILE<=1)?1:$clog2(NPTILE);
-    localparam integer PROJ_NB = (CK+BLK-1)/BLK;
+    localparam integer PROJ_NSB = (CK+255)/256;
+    // ---- Q4_K super-block params (arbitrary but self-consistent; shared by dut,
+    //   verify, ref_model + ref_mtp so token-for-token equivalence holds).  Global
+    //   fp16 d/dmin = 0.125; sub-block-0 scale6 chosen PER COLUMN by mk_sc96()
+    //   (min6=28) -> exercises the q4k_scale_min per-column extraction.
+    localparam [15:0] Q_D  = 16'h3000;   // fp16 0.125 (super-block d)
+    localparam [15:0] Q_DM = 16'h3000;   // fp16 0.125 (super-block dmin)
 
     integer test_count;
     integer errors;
@@ -288,69 +274,53 @@ module sct_engine #(
     reg [15:0] Wlm [0:VOCAB-1][0:MODEL_DIM-1];
     reg [15:0] G1 [0:L-1][0:MODEL_DIM-1];
     reg [15:0] G2 [0:L-1][0:MODEL_DIM-1];
-    reg [7:0] W_dq  [0:L-1][0:Q_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] W_uq  [0:L-1][0:HQK-1][0:Q_LORA-1];
-    reg [7:0] W_dkv [0:L-1][0:KV_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] W_kr  [0:L-1][0:ROPE-1][0:MODEL_DIM-1];
-    reg [7:0] W_uk  [0:L-1][0:HNOPE-1][0:KV_LORA-1];
-    reg [7:0] W_uv  [0:L-1][0:HV-1][0:KV_LORA-1];
-    reg [7:0] W_o   [0:L-1][0:MODEL_DIM-1][0:HV-1];
-    reg [15:0] ScW_dq[0:L-1], ScW_uq[0:L-1], ScW_dkv[0:L-1], ScW_kr[0:L-1],
-               ScW_uk[0:L-1], ScW_uv[0:L-1], ScW_o[0:L-1];
+    reg [3:0] W_dq  [0:L-1][0:Q_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] W_uq  [0:L-1][0:HQK-1][0:Q_LORA-1];
+    reg [3:0] W_dkv [0:L-1][0:KV_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] W_kr  [0:L-1][0:ROPE-1][0:MODEL_DIM-1];
+    reg [3:0] W_uk  [0:L-1][0:HNOPE-1][0:KV_LORA-1];
+    reg [3:0] W_uv  [0:L-1][0:HV-1][0:KV_LORA-1];
+    reg [3:0] W_o   [0:L-1][0:MODEL_DIM-1][0:HV-1];
     reg [15:0] CKV [0:L-1][0:S_MAX-1][0:KV_LORA-1];
     reg [15:0] KRP [0:L-1][0:S_MAX-1][0:ROPE-1];
-    reg [7:0]  Wg [0:L-1][0:MODEL_DIM-1][0:N_EXPERT-1];
-    reg [15:0] ScWg[0:L-1];
-    reg [7:0] Dg [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] Du [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] Dd [0:L-1][0:MODEL_DIM-1][0:INTER_DENSE-1];
-    reg [15:0] ScDg [0:L-1][0:FF_NB_D-1];
-    reg [15:0] ScDu [0:L-1][0:FF_NB_D-1];
-    reg [15:0] ScDd [0:L-1][0:FF_NB_D-1];
-    reg [7:0] Mg [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] Mu [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] Md [0:L-1][0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [7:0] SHg [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] SHu [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] SHd [0:L-1][0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [15:0] ScMg [0:L-1][0:N_EXPERT-1], ScMu [0:L-1][0:N_EXPERT-1], ScMd [0:L-1][0:N_EXPERT-1];
-    reg [15:0] ScSHg[0:L-1], ScSHu[0:L-1], ScSHd[0:L-1];
+    reg [3:0]  Wg [0:L-1][0:MODEL_DIM-1][0:N_EXPERT-1];
+    reg [3:0] Dg [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] Du [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] Dd [0:L-1][0:MODEL_DIM-1][0:INTER_DENSE-1];
+    reg [3:0] Mg [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] Mu [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] Md [0:L-1][0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
+    reg [3:0] SHg [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] SHu [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] SHd [0:L-1][0:MODEL_DIM-1][0:INTER_MOE-1];
 
-    // ================= single-layer MTP WEIGHT ROMs (== mtp_head_fp8_tb) =========
+    // ================= single-layer MTP WEIGHT ROMs (== mtp_head_q4k_tb) =========
     reg [15:0] mGA  [0:MODEL_DIM-1];
     reg [15:0] mGB  [0:MODEL_DIM-1];
     reg [15:0] mGF  [0:MODEL_DIM-1];
     reg [15:0] mWlm [0:VOCAB-1][0:MODEL_DIM-1];
-    reg [7:0]  mWp  [0:MODEL_DIM-1][0:CK-1];
-    reg [15:0] mScWp[0:PROJ_NB-1];
+    reg [3:0]  mWp  [0:MODEL_DIM-1][0:CK-1];
     reg [15:0] mG1 [0:MODEL_DIM-1];
     reg [15:0] mG2 [0:MODEL_DIM-1];
     reg [15:0] mCKV [0:S_MAX-1][0:KV_LORA-1];
     reg [15:0] mKRP [0:S_MAX-1][0:ROPE-1];
-    reg [7:0] mW_dq  [0:Q_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] mW_uq  [0:HQK-1][0:Q_LORA-1];
-    reg [7:0] mW_dkv [0:KV_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] mW_kr  [0:ROPE-1][0:MODEL_DIM-1];
-    reg [7:0] mW_uk  [0:HNOPE-1][0:KV_LORA-1];
-    reg [7:0] mW_uv  [0:HV-1][0:KV_LORA-1];
-    reg [7:0] mW_o   [0:MODEL_DIM-1][0:HV-1];
-    reg [15:0] mScW_dq, mScW_uq, mScW_dkv, mScW_kr, mScW_uk, mScW_uv, mScW_o;
-    reg [7:0]  mWg [0:MODEL_DIM-1][0:N_EXPERT-1];
-    reg [15:0] mScWg;
-    reg [7:0] mDg [0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] mDu [0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] mDd [0:MODEL_DIM-1][0:INTER_DENSE-1];
-    reg [15:0] mScDg [0:FF_NB_D-1];
-    reg [15:0] mScDu [0:FF_NB_D-1];
-    reg [15:0] mScDd [0:FF_NB_D-1];
-    reg [7:0] mMg [0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] mMu [0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] mMd [0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [7:0] mSHg [0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] mSHu [0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] mSHd [0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [15:0] mScMg [0:N_EXPERT-1], mScMu [0:N_EXPERT-1], mScMd [0:N_EXPERT-1];
-    reg [15:0] mScSHg, mScSHu, mScSHd;
+    reg [3:0] mW_dq  [0:Q_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] mW_uq  [0:HQK-1][0:Q_LORA-1];
+    reg [3:0] mW_dkv [0:KV_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] mW_kr  [0:ROPE-1][0:MODEL_DIM-1];
+    reg [3:0] mW_uk  [0:HNOPE-1][0:KV_LORA-1];
+    reg [3:0] mW_uv  [0:HV-1][0:KV_LORA-1];
+    reg [3:0] mW_o   [0:MODEL_DIM-1][0:HV-1];
+    reg [3:0]  mWg [0:MODEL_DIM-1][0:N_EXPERT-1];
+    reg [3:0] mDg [0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] mDu [0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] mDd [0:MODEL_DIM-1][0:INTER_DENSE-1];
+    reg [3:0] mMg [0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] mMu [0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] mMd [0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
+    reg [3:0] mSHg [0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] mSHu [0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] mSHd [0:MODEL_DIM-1][0:INTER_MOE-1];
 
     // ================= deterministic generators (== pem_tb / mtp_tb) =================
     function [15:0] gen_bf16; input integer seed; input integer band;
@@ -360,12 +330,18 @@ module sct_engine #(
         if (band==1) e=8'd125+h[6:4]; else e=8'd124+h[5:4];
         m=h[12:6]; gen_bf16={s,e,m};
     end endfunction
-    function [7:0] gen_e4m3; input integer seed; input integer band;
-        reg s; reg [3:0] e; reg [2:0] m; integer h; begin
-        h=(seed*2654435761)^(seed<<13)^(seed*40503);
-        s=h[3];
-        if (band==1) e = 4'd7 + {3'b0,h[4]}; else e = 4'd6 + {3'b0,h[4]};
-        m = h[12:10]; gen_e4m3 = {s,e,m};
+    function [3:0] gen_q4; input integer seed; input integer band;
+        integer hh; begin
+        hh=(seed*2654435761)^(seed<<13)^(seed*40503);
+        gen_q4 = hh[9:6] ^ hh[6:3];   // 4-bit Q4_K code, varied (band unused)
+    end endfunction
+    // Per-column Q4_K sub-block-0 scale: each output column gets a DISTINCT scale6
+    //   (1..15, never 0) so the dequant transform varies column-to-column; min6=28
+    //   fixed (with d=dmin=0.125 -> offset 3.5).  Legitimate Q4_K super-block param.
+    function [95:0] mk_sc96; input integer col; reg [95:0] v; integer s6; begin
+        s6 = (col % 15) + 1;
+        v = 96'd0; v[5:0] = s6[5:0]; v[37:32] = 6'd28;
+        mk_sc96 = v;
     end endfunction
     function [15:0] gen_scale; input integer seed;
         reg [7:0] e; reg [6:0] m; integer h; begin
@@ -380,37 +356,27 @@ module sct_engine #(
         for (GLY=0;GLY<L;GLY=GLY+1) begin
             for (i=0;i<MODEL_DIM;i=i+1) begin G1[GLY][i]=gen_bf16(sc,band); sc=sc+1; end
             for (i=0;i<MODEL_DIM;i=i+1) begin G2[GLY][i]=gen_bf16(sc,band); sc=sc+1; end
-            for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin W_dq[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin W_uq[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin W_dkv[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin W_kr[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin W_uk[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin W_uv[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin W_o[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScW_dq[GLY]=gen_scale(sc); sc=sc+1;  ScW_uq[GLY]=gen_scale(sc); sc=sc+1;
-            ScW_dkv[GLY]=gen_scale(sc); sc=sc+1; ScW_kr[GLY]=gen_scale(sc); sc=sc+1;
-            ScW_uk[GLY]=gen_scale(sc); sc=sc+1;  ScW_uv[GLY]=gen_scale(sc); sc=sc+1;
-            ScW_o[GLY]=gen_scale(sc); sc=sc+1;
+            for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin W_dq[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin W_uq[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin W_dkv[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin W_kr[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin W_uk[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin W_uv[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin W_o[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
             for (i=0;i<S_MAX;i=i+1) for (j=0;j<KV_LORA;j=j+1) begin CKV[GLY][i][j]=gen_bf16(sc,band); sc=sc+1; end
             for (i=0;i<S_MAX;i=i+1) for (j=0;j<ROPE;j=j+1)    begin KRP[GLY][i][j]=gen_bf16(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin Wg[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScWg[GLY]=gen_scale(sc); sc=sc+1;
-            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Dg[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Du[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin Dd[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDg[GLY][i]=gen_scale(sc); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDu[GLY][i]=gen_scale(sc); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDd[GLY][i]=gen_scale(sc); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin Wg[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Dg[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Du[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin Dd[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
             for (e=0;e<N_EXPERT;e=e+1) begin
-                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mg[GLY][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mu[GLY][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin Md[GLY][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                ScMg[GLY][e]=gen_scale(sc); sc=sc+1; ScMu[GLY][e]=gen_scale(sc); sc=sc+1; ScMd[GLY][e]=gen_scale(sc); sc=sc+1;
+                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mg[GLY][e][i][j]=gen_q4(sc,band); sc=sc+1; end
+                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mu[GLY][e][i][j]=gen_q4(sc,band); sc=sc+1; end
+                for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin Md[GLY][e][i][j]=gen_q4(sc,band); sc=sc+1; end
             end
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHg[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHu[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin SHd[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScSHg[GLY]=gen_scale(sc); sc=sc+1; ScSHu[GLY]=gen_scale(sc); sc=sc+1; ScSHd[GLY]=gen_scale(sc); sc=sc+1;
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHg[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHu[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin SHd[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
         end
         for (i=0;i<MODEL_DIM;i=i+1) begin GF[i]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<VOCAB;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Wlm[i][j]=gen_bf16(sc,band); sc=sc+1; end
@@ -422,41 +388,30 @@ module sct_engine #(
         for (i=0;i<MODEL_DIM;i=i+1) begin mGA[i]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<MODEL_DIM;i=i+1) begin mGB[i]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<MODEL_DIM;i=i+1) begin mGF[i]=gen_bf16(sc,band); sc=sc+1; end
-        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<CK;j=j+1) begin mWp[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<PROJ_NB;i=i+1) begin mScWp[i]=gen_scale(sc); sc=sc+1; end
+        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<CK;j=j+1) begin mWp[i][j]=gen_q4(sc,band); sc=sc+1; end
         for (i=0;i<MODEL_DIM;i=i+1) begin mG1[i]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<MODEL_DIM;i=i+1) begin mG2[i]=gen_bf16(sc,band); sc=sc+1; end
-        for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mW_dq[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin mW_uq[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin mW_dkv[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin mW_kr[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin mW_uk[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin mW_uv[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin mW_o[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        mScW_dq=gen_scale(sc); sc=sc+1;  mScW_uq=gen_scale(sc); sc=sc+1;
-        mScW_dkv=gen_scale(sc); sc=sc+1; mScW_kr=gen_scale(sc); sc=sc+1;
-        mScW_uk=gen_scale(sc); sc=sc+1;  mScW_uv=gen_scale(sc); sc=sc+1;
-        mScW_o=gen_scale(sc); sc=sc+1;
+        for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mW_dq[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin mW_uq[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin mW_dkv[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin mW_kr[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin mW_uk[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin mW_uv[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin mW_o[i][j]=gen_q4(sc,band); sc=sc+1; end
         for (i=0;i<S_MAX;i=i+1) for (j=0;j<KV_LORA;j=j+1) begin mCKV[i][j]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<S_MAX;i=i+1) for (j=0;j<ROPE;j=j+1)    begin mKRP[i][j]=gen_bf16(sc,band); sc=sc+1; end
-        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin mWg[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        mScWg=gen_scale(sc); sc=sc+1;
-        for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mDg[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mDu[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin mDd[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<FF_NB_D;i=i+1) begin mScDg[i]=gen_scale(sc); sc=sc+1; end
-        for (i=0;i<FF_NB_D;i=i+1) begin mScDu[i]=gen_scale(sc); sc=sc+1; end
-        for (i=0;i<FF_NB_D;i=i+1) begin mScDd[i]=gen_scale(sc); sc=sc+1; end
+        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin mWg[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mDg[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mDu[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin mDd[i][j]=gen_q4(sc,band); sc=sc+1; end
         for (e=0;e<N_EXPERT;e=e+1) begin
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mMg[e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mMu[e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin mMd[e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            mScMg[e]=gen_scale(sc); sc=sc+1; mScMu[e]=gen_scale(sc); sc=sc+1; mScMd[e]=gen_scale(sc); sc=sc+1;
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mMg[e][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mMu[e][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin mMd[e][i][j]=gen_q4(sc,band); sc=sc+1; end
         end
-        for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mSHg[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mSHu[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin mSHd[i][j]=gen_e4m3(sc,band); sc=sc+1; end
-        mScSHg=gen_scale(sc); sc=sc+1; mScSHu=gen_scale(sc); sc=sc+1; mScSHd=gen_scale(sc); sc=sc+1;
+        for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mSHg[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mSHu[i][j]=gen_q4(sc,band); sc=sc+1; end
+        for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin mSHd[i][j]=gen_q4(sc,band); sc=sc+1; end
         for (i=0;i<VOCAB;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin mWlm[i][j]=gen_bf16(sc,band); sc=sc+1; end
     end endtask
 
@@ -511,37 +466,47 @@ module sct_engine #(
         .m_db_layer(m_db_layer), .m_idx_fresh(m_idx_fresh), .m_idx_win(m_idx_win),
         .m_gn_req(m_gn_req), .m_gn_which(m_gn_which), .m_gn_idx(m_gn_idx), .m_gn_val(m_gn_val),
         .m_aw_req(m_aw_req), .m_aw_sel(m_aw_sel), .m_aw_grp(m_aw_grp), .m_aw_k(m_aw_k),
-        .m_aw_col(m_aw_col), .m_aw_scale(m_aw_scale),
+        .m_aw_q(m_aw_q), .m_aw_d(m_aw_d), .m_aw_dmin(m_aw_dmin), .m_aw_scales(m_aw_scales),
         .m_kc_req(m_kc_req), .m_kc_idx(m_kc_idx), .m_kc_ckv(m_kc_ckv), .m_kc_krope(m_kc_krope), .m_kc_valid(m_kc_valid),
-        .m_rw_req(m_rw_req), .m_rw_k(m_rw_k), .m_rw_col(m_rw_col), .m_rw_scale(m_rw_scale),
+        .m_rw_req(m_rw_req), .m_rw_k(m_rw_k),
+        .m_rw_q(m_rw_q), .m_rw_d(m_rw_d), .m_rw_dmin(m_rw_dmin), .m_rw_scales(m_rw_scales),
         .m_fw_req(m_fw_req), .m_fw_sel(m_fw_sel), .m_fw_grp(m_fw_grp), .m_fw_k(m_fw_k),
         .m_fw_shared(m_fw_shared), .m_fw_eidx(m_fw_eidx),
-        .m_fw_col(m_fw_col), .m_fw_col_up(m_fw_col_up), .m_fw_scale_g(m_fw_scale_g), .m_fw_scale_u(m_fw_scale_u),
+        .m_fw_q(m_fw_q), .m_fw_q_up(m_fw_q_up),
+        .m_fw_d_g(m_fw_d_g), .m_fw_dmin_g(m_fw_dmin_g), .m_fw_scales_g(m_fw_scales_g),
+        .m_fw_d_u(m_fw_d_u), .m_fw_dmin_u(m_fw_dmin_u), .m_fw_scales_u(m_fw_scales_u),
         .m_fn_req(m_fn_req), .m_fn_idx(m_fn_idx), .m_fn_val(m_fn_val),
         .m_lw_req(m_lw_req), .m_lw_vtile(m_lw_vtile), .m_lw_k(m_lw_k), .m_lw_col(m_lw_col),
         // ---- mtp head ----
         .t_cn_req(t_cn_req), .t_cn_which(t_cn_which), .t_cn_idx(t_cn_idx), .t_cn_val(t_cn_val),
-        .t_pw_req(t_pw_req), .t_pw_ptile(t_pw_ptile), .t_pw_k(t_pw_k), .t_pw_col(t_pw_col), .t_pw_scale(t_pw_scale),
+        .t_pw_req(t_pw_req), .t_pw_ptile(t_pw_ptile), .t_pw_k(t_pw_k),
+        .t_pw_q(t_pw_q), .t_pw_d(t_pw_d), .t_pw_dmin(t_pw_dmin), .t_pw_scales(t_pw_scales),
         .t_gn_req(t_gn_req), .t_gn_which(t_gn_which), .t_gn_idx(t_gn_idx), .t_gn_val(t_gn_val),
         .t_aw_req(t_aw_req), .t_aw_sel(t_aw_sel), .t_aw_grp(t_aw_grp), .t_aw_k(t_aw_k),
-        .t_aw_col(t_aw_col), .t_aw_scale(t_aw_scale),
+        .t_aw_q(t_aw_q), .t_aw_d(t_aw_d), .t_aw_dmin(t_aw_dmin), .t_aw_scales(t_aw_scales),
         .t_kc_req(t_kc_req), .t_kc_idx(t_kc_idx), .t_kc_ckv(t_kc_ckv), .t_kc_krope(t_kc_krope), .t_kc_valid(t_kc_valid),
-        .t_rw_req(t_rw_req), .t_rw_k(t_rw_k), .t_rw_col(t_rw_col), .t_rw_scale(t_rw_scale),
+        .t_rw_req(t_rw_req), .t_rw_k(t_rw_k),
+        .t_rw_q(t_rw_q), .t_rw_d(t_rw_d), .t_rw_dmin(t_rw_dmin), .t_rw_scales(t_rw_scales),
         .t_fw_req(t_fw_req), .t_fw_sel(t_fw_sel), .t_fw_grp(t_fw_grp), .t_fw_k(t_fw_k),
         .t_fw_shared(t_fw_shared), .t_fw_eidx(t_fw_eidx),
-        .t_fw_col(t_fw_col), .t_fw_col_up(t_fw_col_up), .t_fw_scale_g(t_fw_scale_g), .t_fw_scale_u(t_fw_scale_u),
+        .t_fw_q(t_fw_q), .t_fw_q_up(t_fw_q_up),
+        .t_fw_d_g(t_fw_d_g), .t_fw_dmin_g(t_fw_dmin_g), .t_fw_scales_g(t_fw_scales_g),
+        .t_fw_d_u(t_fw_d_u), .t_fw_dmin_u(t_fw_dmin_u), .t_fw_scales_u(t_fw_scales_u),
         .t_lw_req(t_lw_req), .t_lw_vtile(t_lw_vtile), .t_lw_k(t_lw_k), .t_lw_col(t_lw_col),
         // ---- verify model ----
         .v_em_req(v_em_req), .v_em_tok(v_em_tok), .v_em_idx(v_em_idx), .v_em_val(v_em_val),
         .v_db_layer(v_db_layer), .v_idx_fresh(v_idx_fresh), .v_idx_win(v_idx_win),
         .v_gn_req(v_gn_req), .v_gn_which(v_gn_which), .v_gn_idx(v_gn_idx), .v_gn_val(v_gn_val),
         .v_aw_req(v_aw_req), .v_aw_sel(v_aw_sel), .v_aw_grp(v_aw_grp), .v_aw_k(v_aw_k),
-        .v_aw_col(v_aw_col), .v_aw_scale(v_aw_scale),
+        .v_aw_q(v_aw_q), .v_aw_d(v_aw_d), .v_aw_dmin(v_aw_dmin), .v_aw_scales(v_aw_scales),
         .v_kc_req(v_kc_req), .v_kc_idx(v_kc_idx), .v_kc_ckv(v_kc_ckv), .v_kc_krope(v_kc_krope), .v_kc_valid(v_kc_valid),
-        .v_rw_req(v_rw_req), .v_rw_k(v_rw_k), .v_rw_col(v_rw_col), .v_rw_scale(v_rw_scale),
+        .v_rw_req(v_rw_req), .v_rw_k(v_rw_k),
+        .v_rw_q(v_rw_q), .v_rw_d(v_rw_d), .v_rw_dmin(v_rw_dmin), .v_rw_scales(v_rw_scales),
         .v_fw_req(v_fw_req), .v_fw_sel(v_fw_sel), .v_fw_grp(v_fw_grp), .v_fw_k(v_fw_k),
         .v_fw_shared(v_fw_shared), .v_fw_eidx(v_fw_eidx),
-        .v_fw_col(v_fw_col), .v_fw_col_up(v_fw_col_up), .v_fw_scale_g(v_fw_scale_g), .v_fw_scale_u(v_fw_scale_u),
+        .v_fw_q(v_fw_q), .v_fw_q_up(v_fw_q_up),
+        .v_fw_d_g(v_fw_d_g), .v_fw_dmin_g(v_fw_dmin_g), .v_fw_scales_g(v_fw_scales_g),
+        .v_fw_d_u(v_fw_d_u), .v_fw_dmin_u(v_fw_dmin_u), .v_fw_scales_u(v_fw_scales_u),
         .v_fn_req(v_fn_req), .v_fn_idx(v_fn_idx), .v_fn_val(v_fn_val),
         .v_lw_req(v_lw_req), .v_lw_vtile(v_lw_vtile), .v_lw_k(v_lw_k), .v_lw_col(v_lw_col)
     );
@@ -571,7 +536,7 @@ module sct_engine #(
     wire [VOCAB*16-1:0]       r_logits; wire [TOKW-1:0] r_argmax;
     wire [MODEL_DIM*16-1:0]   r_hstate;
     `MDL(r_)
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -586,12 +551,15 @@ module sct_engine #(
         .db_layer(r_db_layer), .idx_fresh(r_idx_fresh), .idx_win(r_idx_win),
         .gn_req(r_gn_req), .gn_which(r_gn_which), .gn_idx(r_gn_idx), .gn_val(r_gn_val),
         .aw_req(r_aw_req), .aw_sel(r_aw_sel), .aw_grp(r_aw_grp), .aw_k(r_aw_k),
-        .aw_col(r_aw_col), .aw_scale(r_aw_scale),
+        .aw_q(r_aw_q), .aw_d(r_aw_d), .aw_dmin(r_aw_dmin), .aw_scales(r_aw_scales),
         .kc_req(r_kc_req), .kc_idx(r_kc_idx), .kc_ckv(r_kc_ckv), .kc_krope(r_kc_krope), .kc_valid(r_kc_valid),
-        .rw_req(r_rw_req), .rw_k(r_rw_k), .rw_col(r_rw_col), .rw_scale(r_rw_scale),
+        .rw_req(r_rw_req), .rw_k(r_rw_k),
+        .rw_q(r_rw_q), .rw_d(r_rw_d), .rw_dmin(r_rw_dmin), .rw_scales(r_rw_scales),
         .fw_req(r_fw_req), .fw_sel(r_fw_sel), .fw_grp(r_fw_grp), .fw_k(r_fw_k),
         .fw_shared(r_fw_shared), .fw_eidx(r_fw_eidx),
-        .fw_col(r_fw_col), .fw_col_up(r_fw_col_up), .fw_scale_g(r_fw_scale_g), .fw_scale_u(r_fw_scale_u),
+        .fw_q(r_fw_q), .fw_q_up(r_fw_q_up),
+        .fw_d_g(r_fw_d_g), .fw_dmin_g(r_fw_dmin_g), .fw_scales_g(r_fw_scales_g),
+        .fw_d_u(r_fw_d_u), .fw_dmin_u(r_fw_dmin_u), .fw_scales_u(r_fw_scales_u),
         .fn_req(r_fn_req), .fn_idx(r_fn_idx), .fn_val(r_fn_val),
         .lw_req(r_lw_req), .lw_vtile(r_lw_vtile), .lw_k(r_lw_k), .lw_col(r_lw_col),
         .h_state(r_hstate)
@@ -605,7 +573,7 @@ module sct_engine #(
     wire [VOCAB*16-1:0]       rm_logits; wire [TOKW-1:0] rm_argmax;
     wire [MODEL_DIM*16-1:0]   rm_h_mtp;
     `MTP(rm_)
-    mtp_head_fp8 #(
+    mtp_head_q4k #(
         .MODEL_DIM(MODEL_DIM), .VOCAB(VOCAB), .H_HEADS(H_HEADS), .NOPE(NOPE),
         .ROPE(ROPE), .V_DIM(V_DIM), .Q_LORA(Q_LORA), .KV_LORA(KV_LORA),
         .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN), .THETA(THETA), .PE_N(PE_N),
@@ -617,15 +585,19 @@ module sct_engine #(
         .mode(rm_mode), .pos(rm_pos), .s_len(rm_slen), .h_t(rm_h_t), .emb_t1(rm_emb),
         .logits(rm_logits), .argmax(rm_argmax), .h_mtp(rm_h_mtp),
         .cn_req(rm_cn_req), .cn_which(rm_cn_which), .cn_idx(rm_cn_idx), .cn_val(rm_cn_val),
-        .pw_req(rm_pw_req), .pw_ptile(rm_pw_ptile), .pw_k(rm_pw_k), .pw_col(rm_pw_col), .pw_scale(rm_pw_scale),
+        .pw_req(rm_pw_req), .pw_ptile(rm_pw_ptile), .pw_k(rm_pw_k),
+        .pw_q(rm_pw_q), .pw_d(rm_pw_d), .pw_dmin(rm_pw_dmin), .pw_scales(rm_pw_scales),
         .gn_req(rm_gn_req), .gn_which(rm_gn_which), .gn_idx(rm_gn_idx), .gn_val(rm_gn_val),
         .aw_req(rm_aw_req), .aw_sel(rm_aw_sel), .aw_grp(rm_aw_grp), .aw_k(rm_aw_k),
-        .aw_col(rm_aw_col), .aw_scale(rm_aw_scale),
+        .aw_q(rm_aw_q), .aw_d(rm_aw_d), .aw_dmin(rm_aw_dmin), .aw_scales(rm_aw_scales),
         .kc_req(rm_kc_req), .kc_idx(rm_kc_idx), .kc_ckv(rm_kc_ckv), .kc_krope(rm_kc_krope), .kc_valid(rm_kc_valid),
-        .rw_req(rm_rw_req), .rw_k(rm_rw_k), .rw_col(rm_rw_col), .rw_scale(rm_rw_scale),
+        .rw_req(rm_rw_req), .rw_k(rm_rw_k),
+        .rw_q(rm_rw_q), .rw_d(rm_rw_d), .rw_dmin(rm_rw_dmin), .rw_scales(rm_rw_scales),
         .fw_req(rm_fw_req), .fw_sel(rm_fw_sel), .fw_grp(rm_fw_grp), .fw_k(rm_fw_k),
         .fw_shared(rm_fw_shared), .fw_eidx(rm_fw_eidx),
-        .fw_col(rm_fw_col), .fw_col_up(rm_fw_col_up), .fw_scale_g(rm_fw_scale_g), .fw_scale_u(rm_fw_scale_u),
+        .fw_q(rm_fw_q), .fw_q_up(rm_fw_q_up),
+        .fw_d_g(rm_fw_d_g), .fw_dmin_g(rm_fw_dmin_g), .fw_scales_g(rm_fw_scales_g),
+        .fw_d_u(rm_fw_d_u), .fw_dmin_u(rm_fw_dmin_u), .fw_scales_u(rm_fw_scales_u),
         .lw_req(rm_lw_req), .lw_vtile(rm_lw_vtile), .lw_k(rm_lw_k), .lw_col(rm_lw_col)
     );
     /* verilator lint_off UNUSEDSIGNAL */
@@ -843,7 +815,7 @@ module spec_chain_top_tb;
     wire [31:0] t2, e2;
     wire        f2;
 
-    // ONE engine only (K=2).  Each spec-chain pass runs a FULL glm_model_fp8
+    // ONE engine only (K=2).  Each spec-chain pass runs a FULL glm_model_q4k
     // forward, and every extra elaborated model/MTP netlist costs per simulated
     // cycle -- so a single K=2 engine (main + verify + ref_model + 2 mtp) is the
     // largest slice that finishes in the fast budget.  K=3 is validated separately

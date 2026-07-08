@@ -1,34 +1,34 @@
 `timescale 1ns/1ps
 /* verilator lint_off DECLFILENAME */
 //============================================================================
-// spec_chain_top.v  --  GLM-5.2-FP8 K-STEP MTP-CHAIN SPECULATIVE-DECODE TOP
+// spec_chain_top.v  --  GLM-5.2-Q4_K K-STEP MTP-CHAIN SPECULATIVE-DECODE TOP
 //                       (P1.3b -> B8 : PROMOTED pull ports, simulable)
 //----------------------------------------------------------------------------
 // PURPOSE  (the K>1 generalisation of spec_decode_top's K=1 loop)
 //   DeepSeek-MTP runs its single predict layer RECURRENTLY to mint K speculative
 //   drafts from ONE main-model pass: each step feeds the PRIOR step's decoder-
 //   block hidden state (the chain state) back in as the next step's h_t.  P1.3b
-//   exposed exactly that state on mtp_head_fp8 via the additive `h_mtp` port, so
+//   exposed exactly that state on mtp_head_q4k via the additive `h_mtp` port, so
 //   this orchestrator can chain it:
 //
-//     0. MAIN  : glm_model_fp8(PE_M=1, token=cur_tok, pos=cur_pos)
+//     0. MAIN  : glm_model_q4k(PE_M=1, token=cur_tok, pos=cur_pos)
 //                  -> verified m_0 = argmax , h_0 = h_state (final-norm output).
-//     1. CHAIN : for k = 0 .. K-1  (K recurrent mtp_head_fp8 runs):
+//     1. CHAIN : for k = 0 .. K-1  (K recurrent mtp_head_q4k runs):
 //                  h_in_0   = h_0  (main model hidden state)              [seed]
 //                  h_in_k   = h_mtp from step k-1   (*** the P1.3b chain state ***)
 //                  emb_k    = embed(prev token: m_0 for k=0 else draft d_{k-1})
-//                  d_k      = mtp_head_fp8(h_in_k, emb_k, pos=cur_pos+1+k).argmax
+//                  d_k      = mtp_head_q4k(h_in_k, emb_k, pos=cur_pos+1+k).argmax
 //                  h_mtp    = its packed decoder-block state -> feeds step k+1.
 //                -> K drafts {d_0 .. d_{K-1}}.
 //     2. VERIFY: assemble the PE_M=K+1 batch {cur_tok, d_0 .. d_{K-1}} and run
-//                glm_model_fp8(PE_M=K+1) in ONE weight-load (the spec_batched_top
+//                glm_model_q4k(PE_M=K+1) in ONE weight-load (the spec_batched_top
 //                contract) -> K+1 truths {m_0 .. m_K}.
 //     3. FEED  : pulse spec_decode_seq.pass_valid with draft_vec={d_0..d_{K-1}},
 //                truth_vec={m_0..m_K}, n_draft=K -> commit the longest accepted
 //                prefix; advance cur_tok/cur_pos over the committed frontier.
 //
 //   PURE ORCHESTRATOR -- reimplements NO math.  It instantiates the committed
-//   units (glm_model_fp8 x2, mtp_head_fp8, spec_decode_seq) and routes their
+//   units (glm_model_q4k x2, mtp_head_q4k, spec_decode_seq) and routes their
 //   weight/cache/embedding PULL interfaces up to the top exactly as
 //   spec_decode_top / spec_batched_top do, using THREE independent pull buses:
 //     m_* : the PE_M=1 main model         (prefix m_)
@@ -52,7 +52,7 @@
 //   no combinational loop; handshake-driven (each sub-unit launch waits its done).
 //============================================================================
 module spec_chain_top #(
-    // ---- model / slice config (mirrors glm_model_fp8 / mtp_head_fp8) ----
+    // ---- model / slice config (mirrors glm_model_q4k / mtp_head_q4k) ----
     parameter integer MODEL_DIM  = 128,
     parameter integer L          = 6,
     parameter integer N_DENSE    = 3,
@@ -79,8 +79,8 @@ module spec_chain_top #(
     parameter integer PROJ_TN    = 4,           // MTP combine-proj cols/pass
     parameter integer DRAFT_K    = 2,           // # chained MTP drafts per pass (K)
     // ====================================================================
-    // derived (do NOT override) -- copied verbatim from glm_model_fp8 /
-    //                              mtp_head_fp8 / spec_decode_seq
+    // derived (do NOT override) -- copied verbatim from glm_model_q4k /
+    //                              mtp_head_q4k / spec_decode_seq
     // ====================================================================
     parameter integer B          = DRAFT_K + 1,    // PE_M batch = K+1 verify rows
     parameter integer QK_DIM     = NOPE + ROPE,
@@ -111,20 +111,20 @@ module spec_chain_top #(
     parameter integer FF_KWD     = $clog2(FF_KMAX_D + 1),
     parameter integer FF_KMAX_M  = (INTER_MOE  > MODEL_DIM) ? INTER_MOE  : MODEL_DIM,
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1),
-    parameter integer A_NB       = (A_KMAX    + BLK - 1) / BLK,
-    parameter integer FF_NB_D    = (FF_KMAX_D + BLK - 1) / BLK,
-    parameter integer R_NB       = (FF_KMAX_M + BLK - 1) / BLK,
+    parameter integer A_NSB      = (A_KMAX    + 255) / 256,  // attention Q4_K super-blocks
+    parameter integer FF_NSB_D   = (FF_KMAX_D + 255) / 256,  // dense FFN super-blocks
+    parameter integer R_NSB      = (FF_KMAX_M + 255) / 256,  // router super-blocks
     parameter integer LAYW       = (L     <= 1) ? 1 : $clog2(L),
     parameter integer TOKW       = (VOCAB <= 1) ? 1 : $clog2(VOCAB),
     parameter integer DIMW       = (MODEL_DIM <= 1) ? 1 : $clog2(MODEL_DIM),
     parameter integer NVTILE     = VOCAB / LM_TN,
     parameter integer VTW        = (NVTILE <= 1) ? 1 : $clog2(NVTILE),
-    // MTP combine-projection derived (mtp_head_fp8)
+    // MTP combine-projection derived (mtp_head_q4k)
     parameter integer CK         = 2 * MODEL_DIM,
     parameter integer CKIW       = $clog2(CK),
     parameter integer NPTILE     = MODEL_DIM / PROJ_TN,
     parameter integer PTW        = (NPTILE <= 1) ? 1 : $clog2(NPTILE),
-    parameter integer PROJ_NB    = (CK + BLK - 1) / BLK,
+    parameter integer PROJ_NSB   = (CK + 255) / 256,          // MTP proj Q4_K super-blocks
     // spec_decode_seq batch-interface widths
     parameter integer DKW        = (DRAFT_K <= 1) ? 1 : $clog2(DRAFT_K + 1),
     parameter integer OCW        = $clog2(DRAFT_K + 2),   // 0..K+1 prefix count width
@@ -178,8 +178,10 @@ module spec_chain_top #(
     output wire [3:0]                    m_aw_sel,
     output wire [A_GRPW-1:0]             m_aw_grp,
     output wire [A_KCW-1:0]              m_aw_k,
-    input  wire [PE_N*8-1:0]             m_aw_col,
-    input  wire [16*PE_N*A_NB-1:0]       m_aw_scale,
+    input  wire [PE_N*4-1:0]             m_aw_q,       // PE_N Q4_K 4-bit weight lanes
+    input  wire [16*PE_N*A_NSB-1:0]      m_aw_d,       // fp16 d per (col,super-block)
+    input  wire [16*PE_N*A_NSB-1:0]      m_aw_dmin,    // fp16 dmin
+    input  wire [96*PE_N*A_NSB-1:0]      m_aw_scales,  // 6-bit scales
     output wire                          m_kc_req,
     output wire [IDXW-1:0]               m_kc_idx,
     input  wire [KV_LORA*16-1:0]         m_kc_ckv,
@@ -187,18 +189,24 @@ module spec_chain_top #(
     input  wire                          m_kc_valid,
     output wire                          m_rw_req,
     output wire [R_KW-1:0]               m_rw_k,
-    input  wire [8*N_EXPERT-1:0]         m_rw_col,
-    input  wire [16*N_EXPERT*R_NB-1:0]   m_rw_scale,
+    input  wire [4*N_EXPERT-1:0]         m_rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
+    input  wire [16*N_EXPERT*R_NSB-1:0]  m_rw_d,       // fp16 d
+    input  wire [16*N_EXPERT*R_NSB-1:0]  m_rw_dmin,    // fp16 dmin
+    input  wire [96*N_EXPERT*R_NSB-1:0]  m_rw_scales,  // 6-bit scales
     output wire                          m_fw_req,
     output wire [1:0]                    m_fw_sel,
     output wire [FF_GWD-1:0]             m_fw_grp,
     output wire [FF_KWD-1:0]             m_fw_k,
     output wire                          m_fw_shared,
     output wire [EIDXW-1:0]              m_fw_eidx,
-    input  wire [8*TN-1:0]               m_fw_col,
-    input  wire [8*TN-1:0]               m_fw_col_up,
-    input  wire [16*TN*FF_NB_D-1:0]      m_fw_scale_g,
-    input  wire [16*TN*FF_NB_D-1:0]      m_fw_scale_u,
+    input  wire [4*TN-1:0]               m_fw_q,       // GATE/DOWN Q4_K 4-bit lanes
+    input  wire [4*TN-1:0]               m_fw_q_up,    // UP companion Q4_K 4-bit lanes
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_d_g,     // GATE/DOWN fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_dmin_g,  // GATE/DOWN fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     m_fw_scales_g,// GATE/DOWN 6-bit scales
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_d_u,     // UP fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     m_fw_dmin_u,  // UP fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     m_fw_scales_u,// UP 6-bit scales
     output wire                          m_fn_req,
     output wire [DIMW-1:0]               m_fn_idx,
     input  wire [15:0]                   m_fn_val,
@@ -217,8 +225,10 @@ module spec_chain_top #(
     output wire                          t_pw_req,
     output wire [PTW-1:0]                t_pw_ptile,
     output wire [CKIW-1:0]               t_pw_k,
-    input  wire [PROJ_TN*8-1:0]          t_pw_col,
-    input  wire [16*PROJ_TN*PROJ_NB-1:0] t_pw_scale,
+    input  wire [PROJ_TN*4-1:0]          t_pw_q,       // PROJ_TN Q4_K 4-bit weight lanes
+    input  wire [16*PROJ_TN*PROJ_NSB-1:0] t_pw_d,      // fp16 d per (col,super-block)
+    input  wire [16*PROJ_TN*PROJ_NSB-1:0] t_pw_dmin,   // fp16 dmin
+    input  wire [96*PROJ_TN*PROJ_NSB-1:0] t_pw_scales, // 6-bit scales
     output wire                          t_gn_req,
     output wire                          t_gn_which,
     output wire [DIMW-1:0]               t_gn_idx,
@@ -227,8 +237,10 @@ module spec_chain_top #(
     output wire [3:0]                    t_aw_sel,
     output wire [A_GRPW-1:0]             t_aw_grp,
     output wire [A_KCW-1:0]              t_aw_k,
-    input  wire [PE_N*8-1:0]             t_aw_col,
-    input  wire [16*PE_N*A_NB-1:0]       t_aw_scale,
+    input  wire [PE_N*4-1:0]             t_aw_q,       // PE_N Q4_K 4-bit weight lanes
+    input  wire [16*PE_N*A_NSB-1:0]      t_aw_d,       // fp16 d per (col,super-block)
+    input  wire [16*PE_N*A_NSB-1:0]      t_aw_dmin,    // fp16 dmin
+    input  wire [96*PE_N*A_NSB-1:0]      t_aw_scales,  // 6-bit scales
     output wire                          t_kc_req,
     output wire [IDXW-1:0]               t_kc_idx,
     input  wire [KV_LORA*16-1:0]         t_kc_ckv,
@@ -236,18 +248,24 @@ module spec_chain_top #(
     input  wire                          t_kc_valid,
     output wire                          t_rw_req,
     output wire [R_KW-1:0]               t_rw_k,
-    input  wire [8*N_EXPERT-1:0]         t_rw_col,
-    input  wire [16*N_EXPERT*R_NB-1:0]   t_rw_scale,
+    input  wire [4*N_EXPERT-1:0]         t_rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
+    input  wire [16*N_EXPERT*R_NSB-1:0]  t_rw_d,       // fp16 d
+    input  wire [16*N_EXPERT*R_NSB-1:0]  t_rw_dmin,    // fp16 dmin
+    input  wire [96*N_EXPERT*R_NSB-1:0]  t_rw_scales,  // 6-bit scales
     output wire                          t_fw_req,
     output wire [1:0]                    t_fw_sel,
     output wire [FF_GWD-1:0]             t_fw_grp,
     output wire [FF_KWD-1:0]             t_fw_k,
     output wire                          t_fw_shared,
     output wire [EIDXW-1:0]              t_fw_eidx,
-    input  wire [8*TN-1:0]               t_fw_col,
-    input  wire [8*TN-1:0]               t_fw_col_up,
-    input  wire [16*TN*FF_NB_D-1:0]      t_fw_scale_g,
-    input  wire [16*TN*FF_NB_D-1:0]      t_fw_scale_u,
+    input  wire [4*TN-1:0]               t_fw_q,       // GATE/DOWN Q4_K 4-bit lanes
+    input  wire [4*TN-1:0]               t_fw_q_up,    // UP companion Q4_K 4-bit lanes
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_d_g,     // GATE/DOWN fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_dmin_g,  // GATE/DOWN fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     t_fw_scales_g,// GATE/DOWN 6-bit scales
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_d_u,     // UP fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     t_fw_dmin_u,  // UP fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     t_fw_scales_u,// UP 6-bit scales
     output wire                          t_lw_req,
     output wire [VTW-1:0]                t_lw_vtile,
     output wire [DIMW-1:0]               t_lw_k,
@@ -271,8 +289,10 @@ module spec_chain_top #(
     output wire [3:0]                    v_aw_sel,
     output wire [A_GRPW-1:0]             v_aw_grp,
     output wire [A_KCW-1:0]              v_aw_k,
-    input  wire [PE_N*8-1:0]             v_aw_col,
-    input  wire [16*PE_N*A_NB-1:0]       v_aw_scale,
+    input  wire [PE_N*4-1:0]             v_aw_q,       // PE_N Q4_K 4-bit weight lanes
+    input  wire [16*PE_N*A_NSB-1:0]      v_aw_d,       // fp16 d per (col,super-block)
+    input  wire [16*PE_N*A_NSB-1:0]      v_aw_dmin,    // fp16 dmin
+    input  wire [96*PE_N*A_NSB-1:0]      v_aw_scales,  // 6-bit scales
     output wire                          v_kc_req,
     output wire [IDXW-1:0]               v_kc_idx,
     input  wire [KV_LORA*16-1:0]         v_kc_ckv,
@@ -280,18 +300,24 @@ module spec_chain_top #(
     input  wire                          v_kc_valid,
     output wire                          v_rw_req,
     output wire [R_KW-1:0]               v_rw_k,
-    input  wire [8*N_EXPERT-1:0]         v_rw_col,
-    input  wire [16*N_EXPERT*R_NB-1:0]   v_rw_scale,
+    input  wire [4*N_EXPERT-1:0]         v_rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
+    input  wire [16*N_EXPERT*R_NSB-1:0]  v_rw_d,       // fp16 d
+    input  wire [16*N_EXPERT*R_NSB-1:0]  v_rw_dmin,    // fp16 dmin
+    input  wire [96*N_EXPERT*R_NSB-1:0]  v_rw_scales,  // 6-bit scales
     output wire                          v_fw_req,
     output wire [1:0]                    v_fw_sel,
     output wire [FF_GWD-1:0]             v_fw_grp,
     output wire [FF_KWD-1:0]             v_fw_k,
     output wire                          v_fw_shared,
     output wire [EIDXW-1:0]              v_fw_eidx,
-    input  wire [8*TN-1:0]               v_fw_col,
-    input  wire [8*TN-1:0]               v_fw_col_up,
-    input  wire [16*TN*FF_NB_D-1:0]      v_fw_scale_g,
-    input  wire [16*TN*FF_NB_D-1:0]      v_fw_scale_u,
+    input  wire [4*TN-1:0]               v_fw_q,       // GATE/DOWN Q4_K 4-bit lanes
+    input  wire [4*TN-1:0]               v_fw_q_up,    // UP companion Q4_K 4-bit lanes
+    input  wire [16*TN*FF_NSB_D-1:0]     v_fw_d_g,     // GATE/DOWN fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     v_fw_dmin_g,  // GATE/DOWN fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     v_fw_scales_g,// GATE/DOWN 6-bit scales
+    input  wire [16*TN*FF_NSB_D-1:0]     v_fw_d_u,     // UP fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     v_fw_dmin_u,  // UP fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     v_fw_scales_u,// UP 6-bit scales
     output wire                          v_fn_req,
     output wire [DIMW-1:0]               v_fn_idx,
     input  wire [15:0]                   v_fn_val,
@@ -336,7 +362,7 @@ module spec_chain_top #(
     assign em_tok = prev_tok;
 
     //========================================================================
-    // u_main : the FULL FP8 model at PE_M=1 -- one main pass -> verified m_0 and
+    // u_main : the FULL Q4_K model at PE_M=1 -- one main pass -> verified m_0 and
     //   the hidden state h_state (final-RMSNorm output) that seeds the chain.
     //========================================================================
     reg                        main_start;
@@ -346,7 +372,7 @@ module spec_chain_top #(
     wire [MODEL_DIM*16-1:0]    main_hstate;
     reg  [TOKW-1:0]            main_tok;
 
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -361,21 +387,23 @@ module spec_chain_top #(
         .db_layer(m_db_layer), .idx_fresh(m_idx_fresh), .idx_win(m_idx_win),
         .gn_req(m_gn_req), .gn_which(m_gn_which), .gn_idx(m_gn_idx), .gn_val(m_gn_val),
         .aw_req(m_aw_req), .aw_sel(m_aw_sel), .aw_grp(m_aw_grp), .aw_k(m_aw_k),
-        .aw_col(m_aw_col), .aw_scale(m_aw_scale),
+        .aw_q(m_aw_q), .aw_d(m_aw_d), .aw_dmin(m_aw_dmin), .aw_scales(m_aw_scales),
         .kc_req(m_kc_req), .kc_idx(m_kc_idx), .kc_ckv(m_kc_ckv),
         .kc_krope(m_kc_krope), .kc_valid(m_kc_valid),
-        .rw_req(m_rw_req), .rw_k(m_rw_k), .rw_col(m_rw_col), .rw_scale(m_rw_scale),
+        .rw_req(m_rw_req), .rw_k(m_rw_k),
+        .rw_q(m_rw_q), .rw_d(m_rw_d), .rw_dmin(m_rw_dmin), .rw_scales(m_rw_scales),
         .fw_req(m_fw_req), .fw_sel(m_fw_sel), .fw_grp(m_fw_grp), .fw_k(m_fw_k),
         .fw_shared(m_fw_shared), .fw_eidx(m_fw_eidx),
-        .fw_col(m_fw_col), .fw_col_up(m_fw_col_up),
-        .fw_scale_g(m_fw_scale_g), .fw_scale_u(m_fw_scale_u),
+        .fw_q(m_fw_q), .fw_q_up(m_fw_q_up),
+        .fw_d_g(m_fw_d_g), .fw_dmin_g(m_fw_dmin_g), .fw_scales_g(m_fw_scales_g),
+        .fw_d_u(m_fw_d_u), .fw_dmin_u(m_fw_dmin_u), .fw_scales_u(m_fw_scales_u),
         .fn_req(m_fn_req), .fn_idx(m_fn_idx), .fn_val(m_fn_val),
         .lw_req(m_lw_req), .lw_vtile(m_lw_vtile), .lw_k(m_lw_k), .lw_col(m_lw_col),
         .h_state(main_hstate)
     );
 
     //========================================================================
-    // u_mtp : ONE mtp_head_fp8 serially reused across the K chain steps.  Its
+    // u_mtp : ONE mtp_head_q4k serially reused across the K chain steps.  Its
     //   h_t input is the phase-selected chain state; its h_mtp output (P1.3b) is
     //   captured and fed back as the next step's h_t.  emb_t1 = embed(prev token).
     //========================================================================
@@ -388,7 +416,7 @@ module spec_chain_top #(
     reg  [MODEL_DIM*16-1:0]    mtp_h_t;          // selected chain state
     reg  [MODEL_DIM*16-1:0]    mtp_emb;          // embed(prev token)
 
-    mtp_head_fp8 #(
+    mtp_head_q4k #(
         .MODEL_DIM(MODEL_DIM), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -403,22 +431,24 @@ module spec_chain_top #(
         .h_mtp(mtp_h_mtp),                       // *** P1.3b chain state out ***
         .cn_req(t_cn_req), .cn_which(t_cn_which), .cn_idx(t_cn_idx), .cn_val(t_cn_val),
         .pw_req(t_pw_req), .pw_ptile(t_pw_ptile), .pw_k(t_pw_k),
-        .pw_col(t_pw_col), .pw_scale(t_pw_scale),
+        .pw_q(t_pw_q), .pw_d(t_pw_d), .pw_dmin(t_pw_dmin), .pw_scales(t_pw_scales),
         .gn_req(t_gn_req), .gn_which(t_gn_which), .gn_idx(t_gn_idx), .gn_val(t_gn_val),
         .aw_req(t_aw_req), .aw_sel(t_aw_sel), .aw_grp(t_aw_grp), .aw_k(t_aw_k),
-        .aw_col(t_aw_col), .aw_scale(t_aw_scale),
+        .aw_q(t_aw_q), .aw_d(t_aw_d), .aw_dmin(t_aw_dmin), .aw_scales(t_aw_scales),
         .kc_req(t_kc_req), .kc_idx(t_kc_idx), .kc_ckv(t_kc_ckv),
         .kc_krope(t_kc_krope), .kc_valid(t_kc_valid),
-        .rw_req(t_rw_req), .rw_k(t_rw_k), .rw_col(t_rw_col), .rw_scale(t_rw_scale),
+        .rw_req(t_rw_req), .rw_k(t_rw_k),
+        .rw_q(t_rw_q), .rw_d(t_rw_d), .rw_dmin(t_rw_dmin), .rw_scales(t_rw_scales),
         .fw_req(t_fw_req), .fw_sel(t_fw_sel), .fw_grp(t_fw_grp), .fw_k(t_fw_k),
         .fw_shared(t_fw_shared), .fw_eidx(t_fw_eidx),
-        .fw_col(t_fw_col), .fw_col_up(t_fw_col_up),
-        .fw_scale_g(t_fw_scale_g), .fw_scale_u(t_fw_scale_u),
+        .fw_q(t_fw_q), .fw_q_up(t_fw_q_up),
+        .fw_d_g(t_fw_d_g), .fw_dmin_g(t_fw_dmin_g), .fw_scales_g(t_fw_scales_g),
+        .fw_d_u(t_fw_d_u), .fw_dmin_u(t_fw_dmin_u), .fw_scales_u(t_fw_scales_u),
         .lw_req(t_lw_req), .lw_vtile(t_lw_vtile), .lw_k(t_lw_k), .lw_col(t_lw_col)
     );
 
     //========================================================================
-    // u_verify : the FULL FP8 model at PE_M=K+1 -- verify {cur_tok,d_0..d_{K-1}}
+    // u_verify : the FULL Q4_K model at PE_M=K+1 -- verify {cur_tok,d_0..d_{K-1}}
     //   in ONE weight-load -> {m_0 .. m_K} (spec_batched_top PE_M weight-share).
     //========================================================================
     reg                        ver_start;
@@ -428,7 +458,7 @@ module spec_chain_top #(
     wire [B*MODEL_DIM*16-1:0]  ver_hstate;
     reg  [B*TOKW-1:0]          ver_tok;         // {cur_tok, d_0 .. d_{K-1}}
 
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -443,14 +473,16 @@ module spec_chain_top #(
         .db_layer(v_db_layer), .idx_fresh(v_idx_fresh), .idx_win(v_idx_win),
         .gn_req(v_gn_req), .gn_which(v_gn_which), .gn_idx(v_gn_idx), .gn_val(v_gn_val),
         .aw_req(v_aw_req), .aw_sel(v_aw_sel), .aw_grp(v_aw_grp), .aw_k(v_aw_k),
-        .aw_col(v_aw_col), .aw_scale(v_aw_scale),
+        .aw_q(v_aw_q), .aw_d(v_aw_d), .aw_dmin(v_aw_dmin), .aw_scales(v_aw_scales),
         .kc_req(v_kc_req), .kc_idx(v_kc_idx), .kc_ckv(v_kc_ckv),
         .kc_krope(v_kc_krope), .kc_valid(v_kc_valid),
-        .rw_req(v_rw_req), .rw_k(v_rw_k), .rw_col(v_rw_col), .rw_scale(v_rw_scale),
+        .rw_req(v_rw_req), .rw_k(v_rw_k),
+        .rw_q(v_rw_q), .rw_d(v_rw_d), .rw_dmin(v_rw_dmin), .rw_scales(v_rw_scales),
         .fw_req(v_fw_req), .fw_sel(v_fw_sel), .fw_grp(v_fw_grp), .fw_k(v_fw_k),
         .fw_shared(v_fw_shared), .fw_eidx(v_fw_eidx),
-        .fw_col(v_fw_col), .fw_col_up(v_fw_col_up),
-        .fw_scale_g(v_fw_scale_g), .fw_scale_u(v_fw_scale_u),
+        .fw_q(v_fw_q), .fw_q_up(v_fw_q_up),
+        .fw_d_g(v_fw_d_g), .fw_dmin_g(v_fw_dmin_g), .fw_scales_g(v_fw_scales_g),
+        .fw_d_u(v_fw_d_u), .fw_dmin_u(v_fw_dmin_u), .fw_scales_u(v_fw_scales_u),
         .fn_req(v_fn_req), .fn_idx(v_fn_idx), .fn_val(v_fn_val),
         .lw_req(v_lw_req), .lw_vtile(v_lw_vtile), .lw_k(v_lw_k), .lw_col(v_lw_col),
         .h_state(ver_hstate)
@@ -516,7 +548,7 @@ module spec_chain_top #(
         C_IDLE   = 3'd0,
         C_MAIN   = 3'd1,    // run PE_M=1 main pass -> m_0, h_0
         C_PREP   = 3'd2,    // capture embed(prev tok); launch a chain step
-        C_CHAIN  = 3'd3,    // wait mtp_head_fp8 done, chaining h_mtp
+        C_CHAIN  = 3'd3,    // wait mtp_head_q4k done, chaining h_mtp
         C_VERIFY = 3'd4,    // run PE_M=K+1 batched verify -> m_0..m_K
         C_FEED   = 3'd5,    // pulse spec_decode_seq; advance cursor
         C_DRAIN  = 3'd6,    // drain final pass's bonus commit beats

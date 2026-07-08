@@ -1,6 +1,5 @@
 `timescale 1ns/1ps
 `include "glm_fp.vh"
-`include "fp8_e4m3.vh"
 `include "glm_fp_pipe_lat.vh"
 /* verilator lint_off DECLFILENAME */
 //============================================================================
@@ -275,7 +274,6 @@ module mtp_head_q4k #(
     input  wire [LM_TN*16-1:0]           lw_col
 );
     `include "glm_fp.vh"
-    `include "fp8_e4m3.vh"
 
     integer ii;
     integer rr;        // PE_M row loop variable

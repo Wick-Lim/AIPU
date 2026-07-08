@@ -7,7 +7,7 @@
 // WHAT IT BINDS (per the brief):
 //
 //  (1) spec == greedy  (EXACT, the safety invariant):
-//      An INDEPENDENT reference (a separate PE_M=1 glm_model_fp8 instance + a
+//      An INDEPENDENT reference (a separate PE_M=1 glm_model_q4k instance + a
 //      private copy of spec_decode_seq's longest-accepted-prefix rule) computes,
 //      for the SAME prompt / pos / s_len / draft schedule, the EXACT committed
 //      token stream the loop must produce.  Because the loop only ever commits
@@ -94,9 +94,9 @@ module sbt_engine #(
     localparam integer FF_GWD = $clog2(((INTER_DENSE>MODEL_DIM)?INTER_DENSE:MODEL_DIM)/TN+1);
     localparam integer FF_KWD = $clog2(FF_KMAX_D+1);
     localparam integer R_KW   = $clog2(FF_KMAX_M+1);
-    localparam integer A_NB    = (A_KMAX   +BLK-1)/BLK;
-    localparam integer FF_NB_D = (FF_KMAX_D+BLK-1)/BLK;
-    localparam integer R_NB    = (FF_KMAX_M+BLK-1)/BLK;
+    localparam integer A_NSB    = (A_KMAX   +255)/256;  // Q4_K super-blocks
+    localparam integer FF_NSB_D = (FF_KMAX_D+255)/256;
+    localparam integer R_NSB    = (FF_KMAX_M+255)/256;
     localparam integer LAYW   = (L<=1)?1:$clog2(L);
     localparam integer TOKW   = (VOCAB<=1)?1:$clog2(VOCAB);
     localparam integer DIMW   = (MODEL_DIM<=1)?1:$clog2(MODEL_DIM);
@@ -113,33 +113,40 @@ module sbt_engine #(
     reg [15:0] Wlm [0:VOCAB-1][0:MODEL_DIM-1];
     reg [15:0] G1 [0:L-1][0:MODEL_DIM-1];
     reg [15:0] G2 [0:L-1][0:MODEL_DIM-1];
-    reg [7:0] W_dq  [0:L-1][0:Q_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] W_uq  [0:L-1][0:HQK-1][0:Q_LORA-1];
-    reg [7:0] W_dkv [0:L-1][0:KV_LORA-1][0:MODEL_DIM-1];
-    reg [7:0] W_kr  [0:L-1][0:ROPE-1][0:MODEL_DIM-1];
-    reg [7:0] W_uk  [0:L-1][0:HNOPE-1][0:KV_LORA-1];
-    reg [7:0] W_uv  [0:L-1][0:HV-1][0:KV_LORA-1];
-    reg [7:0] W_o   [0:L-1][0:MODEL_DIM-1][0:HV-1];
-    reg [15:0] ScW_dq[0:L-1], ScW_uq[0:L-1], ScW_dkv[0:L-1], ScW_kr[0:L-1],
-               ScW_uk[0:L-1], ScW_uv[0:L-1], ScW_o[0:L-1];
+    // ---- Q4_K weight codes (4-bit nibbles) -- all quantized matrices ----
+    reg [3:0] W_dq  [0:L-1][0:Q_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] W_uq  [0:L-1][0:HQK-1][0:Q_LORA-1];
+    reg [3:0] W_dkv [0:L-1][0:KV_LORA-1][0:MODEL_DIM-1];
+    reg [3:0] W_kr  [0:L-1][0:ROPE-1][0:MODEL_DIM-1];
+    reg [3:0] W_uk  [0:L-1][0:HNOPE-1][0:KV_LORA-1];
+    reg [3:0] W_uv  [0:L-1][0:HV-1][0:KV_LORA-1];
+    reg [3:0] W_o   [0:L-1][0:MODEL_DIM-1][0:HV-1];
     reg [15:0] CKV [0:L-1][0:S_MAX-1][0:KV_LORA-1];
     reg [15:0] KRP [0:L-1][0:S_MAX-1][0:ROPE-1];
-    reg [7:0]  Wg [0:L-1][0:MODEL_DIM-1][0:N_EXPERT-1];
-    reg [15:0] ScWg[0:L-1];
-    reg [7:0] Dg [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] Du [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
-    reg [7:0] Dd [0:L-1][0:MODEL_DIM-1][0:INTER_DENSE-1];
-    reg [15:0] ScDg [0:L-1][0:FF_NB_D-1];
-    reg [15:0] ScDu [0:L-1][0:FF_NB_D-1];
-    reg [15:0] ScDd [0:L-1][0:FF_NB_D-1];
-    reg [7:0] Mg [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] Mu [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] Md [0:L-1][0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [7:0] SHg [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] SHu [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
-    reg [7:0] SHd [0:L-1][0:MODEL_DIM-1][0:INTER_MOE-1];
-    reg [15:0] ScMg [0:L-1][0:N_EXPERT-1], ScMu [0:L-1][0:N_EXPERT-1], ScMd [0:L-1][0:N_EXPERT-1];
-    reg [15:0] ScSHg[0:L-1], ScSHu[0:L-1], ScSHd[0:L-1];
+    reg [3:0]  Wg [0:L-1][0:MODEL_DIM-1][0:N_EXPERT-1];
+    reg [3:0] Dg [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] Du [0:L-1][0:INTER_DENSE-1][0:MODEL_DIM-1];
+    reg [3:0] Dd [0:L-1][0:MODEL_DIM-1][0:INTER_DENSE-1];
+    reg [3:0] Mg [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] Mu [0:L-1][0:N_EXPERT-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] Md [0:L-1][0:N_EXPERT-1][0:MODEL_DIM-1][0:INTER_MOE-1];
+    reg [3:0] SHg [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] SHu [0:L-1][0:INTER_MOE-1][0:MODEL_DIM-1];
+    reg [3:0] SHd [0:L-1][0:MODEL_DIM-1][0:INTER_MOE-1];
+
+    // ---- Q4_K super-block params (arbitrary but self-consistent; shared by the
+    //   DUT's internal model and the ref1 model so token-for-token equivalence
+    //   holds regardless of value).  At this slice A_KMAX=16, FF_KMAX_D=160,
+    //   FF_KMAX_M=16 -> every GEMM lives in super-block 0.  d/dmin are global fp16
+    //   0.125; the sub-block-0 scale6 is chosen PER COLUMN by mk_sc96() (min6=28
+    //   fixed) -> w_deq = d*scale6*q - dmin*28, exercising the model's per-column
+    //   q4k_scale_min extraction.  The verified sequence still collapses to a fixed
+    //   point at this tiny VOCAB=16/L=2 slice for essentially any weights (an
+    //   architecture property, not a quantization one), so the proof rests on
+    //   spec==greedy token-for-token equivalence + the count/X/weight-load
+    //   invariants, NOT on token diversity.
+    localparam [15:0] Q_D  = 16'h3000;  // fp16 0.125 (super-block d)
+    localparam [15:0] Q_DM = 16'h3000;  // fp16 0.125 (super-block dmin)
 
     // ================= deterministic generators (== pem_tb) =================
     function [15:0] gen_bf16; input integer seed; input integer band;
@@ -149,12 +156,19 @@ module sbt_engine #(
         if (band==1) e=8'd125+h[6:4]; else e=8'd124+h[5:4];
         m=h[12:6]; gen_bf16={s,e,m};
     end endfunction
-    function [7:0] gen_e4m3; input integer seed; input integer band;
-        reg s; reg [3:0] e; reg [2:0] m; integer h; begin
+    function [3:0] gen_q4; input integer seed; input integer band;
+        integer h; begin
         h=(seed*2654435761)^(seed<<13)^(seed*40503);
-        s=h[3];
-        if (band==1) e = 4'd7 + {3'b0,h[4]}; else e = 4'd6 + {3'b0,h[4]};
-        m = h[12:10]; gen_e4m3 = {s,e,m};
+        gen_q4 = h[9:6] ^ h[6:3];   // 4-bit Q4_K code, varied (band unused)
+    end endfunction
+    // Per-column Q4_K sub-block-0 scale: each output column gets a DISTINCT
+    //   scale6 (1..15, never 0) so the dequant transform varies column-to-column
+    //   -- restores the weight entropy 4-bit codes alone lack.  min6=28 fixed.
+    //   Legitimate Q4_K: every column carries its own super-block params.
+    function [95:0] mk_sc96; input integer col; reg [95:0] v; integer s6; begin
+        s6 = (col % 15) + 1;
+        v = 96'd0; v[5:0] = s6[5:0]; v[37:32] = 6'd28;
+        mk_sc96 = v;
     end endfunction
     function [15:0] gen_scale; input integer seed;
         reg [7:0] e; reg [6:0] m; integer h; begin
@@ -169,37 +183,27 @@ module sbt_engine #(
         for (GLY=0;GLY<L;GLY=GLY+1) begin
             for (i=0;i<MODEL_DIM;i=i+1) begin G1[GLY][i]=gen_bf16(sc,band); sc=sc+1; end
             for (i=0;i<MODEL_DIM;i=i+1) begin G2[GLY][i]=gen_bf16(sc,band); sc=sc+1; end
-            for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin W_dq[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin W_uq[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin W_dkv[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin W_kr[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin W_uk[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin W_uv[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin W_o[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScW_dq[GLY]=gen_scale(sc); sc=sc+1;  ScW_uq[GLY]=gen_scale(sc); sc=sc+1;
-            ScW_dkv[GLY]=gen_scale(sc); sc=sc+1; ScW_kr[GLY]=gen_scale(sc); sc=sc+1;
-            ScW_uk[GLY]=gen_scale(sc); sc=sc+1;  ScW_uv[GLY]=gen_scale(sc); sc=sc+1;
-            ScW_o[GLY]=gen_scale(sc); sc=sc+1;
+            for (i=0;i<Q_LORA;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin W_dq[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HQK;i=i+1)    for (j=0;j<Q_LORA;j=j+1)    begin W_uq[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<KV_LORA;i=i+1)for (j=0;j<MODEL_DIM;j=j+1) begin W_dkv[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<ROPE;i=i+1)   for (j=0;j<MODEL_DIM;j=j+1) begin W_kr[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HNOPE;i=i+1)  for (j=0;j<KV_LORA;j=j+1)   begin W_uk[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<HV;i=i+1)     for (j=0;j<KV_LORA;j=j+1)   begin W_uv[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1)for (j=0;j<HV;j=j+1)      begin W_o[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
             for (i=0;i<S_MAX;i=i+1) for (j=0;j<KV_LORA;j=j+1) begin CKV[GLY][i][j]=gen_bf16(sc,band); sc=sc+1; end
             for (i=0;i<S_MAX;i=i+1) for (j=0;j<ROPE;j=j+1)    begin KRP[GLY][i][j]=gen_bf16(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin Wg[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScWg[GLY]=gen_scale(sc); sc=sc+1;
-            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Dg[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Du[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin Dd[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDg[GLY][i]=gen_scale(sc); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDu[GLY][i]=gen_scale(sc); sc=sc+1; end
-            for (i=0;i<FF_NB_D;i=i+1) begin ScDd[GLY][i]=gen_scale(sc); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<N_EXPERT;j=j+1) begin Wg[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Dg[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_DENSE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Du[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_DENSE;j=j+1) begin Dd[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
             for (e=0;e<N_EXPERT;e=e+1) begin
-                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mg[GLY][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mu[GLY][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin Md[GLY][e][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-                ScMg[GLY][e]=gen_scale(sc); sc=sc+1; ScMu[GLY][e]=gen_scale(sc); sc=sc+1; ScMd[GLY][e]=gen_scale(sc); sc=sc+1;
+                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mg[GLY][e][i][j]=gen_q4(sc,band); sc=sc+1; end
+                for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Mu[GLY][e][i][j]=gen_q4(sc,band); sc=sc+1; end
+                for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin Md[GLY][e][i][j]=gen_q4(sc,band); sc=sc+1; end
             end
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHg[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHu[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin SHd[GLY][i][j]=gen_e4m3(sc,band); sc=sc+1; end
-            ScSHg[GLY]=gen_scale(sc); sc=sc+1; ScSHu[GLY]=gen_scale(sc); sc=sc+1; ScSHd[GLY]=gen_scale(sc); sc=sc+1;
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHg[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<INTER_MOE;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin SHu[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
+            for (i=0;i<MODEL_DIM;i=i+1) for (j=0;j<INTER_MOE;j=j+1) begin SHd[GLY][i][j]=gen_q4(sc,band); sc=sc+1; end
         end
         for (i=0;i<MODEL_DIM;i=i+1) begin GF[i]=gen_bf16(sc,band); sc=sc+1; end
         for (i=0;i<VOCAB;i=i+1) for (j=0;j<MODEL_DIM;j=j+1) begin Wlm[i][j]=gen_bf16(sc,band); sc=sc+1; end
@@ -221,12 +225,12 @@ module sbt_engine #(
     wire [LAYW-1:0]           db_layer; wire idx_fresh; wire [LAYW-1:0] idx_win;
     wire                      gn_req, gn_which; wire [DIMW-1:0] gn_idx; reg [15:0] gn_val;
     wire                      aw_req; wire [3:0] aw_sel; wire [A_GRPW-1:0] aw_grp; wire [A_KCW-1:0] aw_k;
-    reg  [PE_N*8-1:0]         aw_col; reg [16*PE_N*A_NB-1:0] aw_scale;
+    reg  [PE_N*4-1:0]         aw_q; reg [16*PE_N*A_NSB-1:0] aw_d, aw_dmin; reg [96*PE_N*A_NSB-1:0] aw_scales;
     wire                      kc_req; wire [IDXW-1:0] kc_idx; reg [KV_LORA*16-1:0] kc_ckv; reg [ROPE*16-1:0] kc_krope; reg kc_valid;
-    wire                      rw_req; wire [R_KW-1:0] rw_k; reg [8*N_EXPERT-1:0] rw_col; reg [16*N_EXPERT*R_NB-1:0] rw_scale;
+    wire                      rw_req; wire [R_KW-1:0] rw_k; reg [4*N_EXPERT-1:0] rw_q; reg [16*N_EXPERT*R_NSB-1:0] rw_d, rw_dmin; reg [96*N_EXPERT*R_NSB-1:0] rw_scales;
     wire                      fw_req; wire [1:0] fw_sel; wire [FF_GWD-1:0] fw_grp; wire [FF_KWD-1:0] fw_k;
     wire                      fw_shared; wire [EIDXW-1:0] fw_eidx;
-    reg  [8*TN-1:0]           fw_col, fw_col_up; reg [16*TN*FF_NB_D-1:0] fw_scale_g, fw_scale_u;
+    reg  [4*TN-1:0]           fw_q, fw_q_up; reg [16*TN*FF_NSB_D-1:0] fw_d_g, fw_dmin_g, fw_d_u, fw_dmin_u; reg [96*TN*FF_NSB_D-1:0] fw_scales_g, fw_scales_u;
     wire                      fn_req; wire [DIMW-1:0] fn_idx; reg [15:0] fn_val;
     wire                      lw_req; wire [VTW-1:0] lw_vtile; wire [DIMW-1:0] lw_k; reg [LM_TN*16-1:0] lw_col;
 
@@ -250,12 +254,13 @@ module sbt_engine #(
         .db_layer(db_layer), .idx_fresh(idx_fresh), .idx_win(idx_win),
         .gn_req(gn_req), .gn_which(gn_which), .gn_idx(gn_idx), .gn_val(gn_val),
         .aw_req(aw_req), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(aw_k),
-        .aw_col(aw_col), .aw_scale(aw_scale),
+        .aw_q(aw_q), .aw_d(aw_d), .aw_dmin(aw_dmin), .aw_scales(aw_scales),
         .kc_req(kc_req), .kc_idx(kc_idx), .kc_ckv(kc_ckv), .kc_krope(kc_krope), .kc_valid(kc_valid),
-        .rw_req(rw_req), .rw_k(rw_k), .rw_col(rw_col), .rw_scale(rw_scale),
+        .rw_req(rw_req), .rw_k(rw_k), .rw_q(rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
-        .fw_col(fw_col), .fw_col_up(fw_col_up), .fw_scale_g(fw_scale_g), .fw_scale_u(fw_scale_u),
+        .fw_q(fw_q), .fw_q_up(fw_q_up), .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
+        .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
         .fn_req(fn_req), .fn_idx(fn_idx), .fn_val(fn_val),
         .lw_req(lw_req), .lw_vtile(lw_vtile), .lw_k(lw_k), .lw_col(lw_col)
     );
@@ -266,61 +271,61 @@ module sbt_engine #(
     /* verilator lint_on UNUSEDSIGNAL */
 
     // ---- DUT pull responder (combinational ROM reads keyed on routed-up ports) ----
-    integer ts, res, fts, fos, cds, obds; reg [15:0] scas; reg dmodes;
+    integer ts, res, fts, fos, cds; reg dmodes;
     always @* em_val = EMB[em_tok][em_idx];
     always @* fn_val = GF[fn_idx];
     always @* begin lw_col = {LM_TN*16{1'b0}};
         for (ts=0;ts<LM_TN;ts=ts+1) lw_col[16*ts+:16] = Wlm[lw_vtile*LM_TN + ts][lw_k]; end
     always @* gn_val = gn_which ? G2[db_layer][gn_idx] : G1[db_layer][gn_idx];
     always @* begin
-        aw_col = {PE_N*8{1'b0}}; aw_scale = {16*PE_N*A_NB{1'b0}};
+        aw_q = {PE_N*4{1'b0}}; aw_d = {16*PE_N*A_NSB{1'b0}};
+        aw_dmin = {16*PE_N*A_NSB{1'b0}}; aw_scales = {96*PE_N*A_NSB{1'b0}};
         for (ts=0;ts<PE_N;ts=ts+1) case (aw_sel)
-        4'd0: if (aw_grp*PE_N+ts<Q_LORA)   aw_col[8*ts+:8]=W_dq [db_layer][aw_grp*PE_N+ts][aw_k];
-        4'd1: if (aw_grp*PE_N+ts<HQK)      aw_col[8*ts+:8]=W_uq [db_layer][aw_grp*PE_N+ts][aw_k];
-        4'd2: if (aw_grp*PE_N+ts<KV_LORA)  aw_col[8*ts+:8]=W_dkv[db_layer][aw_grp*PE_N+ts][aw_k];
-        4'd3: if (aw_grp*PE_N+ts<ROPE)     aw_col[8*ts+:8]=W_kr [db_layer][aw_grp*PE_N+ts][aw_k];
-        4'd4: if (aw_grp*PE_N+ts<HNOPE)    aw_col[8*ts+:8]=W_uk [db_layer][aw_grp*PE_N+ts][aw_k];
-        4'd5: if (aw_grp*PE_N+ts<HV)       aw_col[8*ts+:8]=W_uv [db_layer][aw_grp*PE_N+ts][aw_k];
-        4'd6: if (aw_grp*PE_N+ts<MODEL_DIM)aw_col[8*ts+:8]=W_o  [db_layer][aw_grp*PE_N+ts][aw_k];
-        default: aw_col[8*ts+:8]=8'h0; endcase
-        case (aw_sel) 4'd0:scas=ScW_dq[db_layer]; 4'd1:scas=ScW_uq[db_layer]; 4'd2:scas=ScW_dkv[db_layer];
-        4'd3:scas=ScW_kr[db_layer]; 4'd4:scas=ScW_uk[db_layer]; 4'd5:scas=ScW_uv[db_layer];
-        4'd6:scas=ScW_o[db_layer]; default:scas=16'h3F80; endcase
-        for (ts=0;ts<PE_N;ts=ts+1) aw_scale[16*ts+:16]=scas;
+        4'd0: if (aw_grp*PE_N+ts<Q_LORA)   aw_q[4*ts+:4]=W_dq [db_layer][aw_grp*PE_N+ts][aw_k];
+        4'd1: if (aw_grp*PE_N+ts<HQK)      aw_q[4*ts+:4]=W_uq [db_layer][aw_grp*PE_N+ts][aw_k];
+        4'd2: if (aw_grp*PE_N+ts<KV_LORA)  aw_q[4*ts+:4]=W_dkv[db_layer][aw_grp*PE_N+ts][aw_k];
+        4'd3: if (aw_grp*PE_N+ts<ROPE)     aw_q[4*ts+:4]=W_kr [db_layer][aw_grp*PE_N+ts][aw_k];
+        4'd4: if (aw_grp*PE_N+ts<HNOPE)    aw_q[4*ts+:4]=W_uk [db_layer][aw_grp*PE_N+ts][aw_k];
+        4'd5: if (aw_grp*PE_N+ts<HV)       aw_q[4*ts+:4]=W_uv [db_layer][aw_grp*PE_N+ts][aw_k];
+        4'd6: if (aw_grp*PE_N+ts<MODEL_DIM)aw_q[4*ts+:4]=W_o  [db_layer][aw_grp*PE_N+ts][aw_k];
+        default: aw_q[4*ts+:4]=4'h0; endcase
+        // per-lane Q4_K super-block params (super-block 0; scale6 varies by column)
+        for (ts=0;ts<PE_N;ts=ts+1) begin
+            aw_d[16*ts+:16]=Q_D; aw_dmin[16*ts+:16]=Q_DM;
+            aw_scales[96*ts+:96]=mk_sc96(aw_grp*PE_N+ts);
+        end
     end
     always @* begin kc_ckv={KV_LORA*16{1'b0}}; kc_krope={ROPE*16{1'b0}};
         for (cds=0;cds<KV_LORA;cds=cds+1) kc_ckv[16*cds+:16]=CKV[db_layer][kc_idx][cds];
         for (cds=0;cds<ROPE;cds=cds+1)    kc_krope[16*cds+:16]=KRP[db_layer][kc_idx][cds]; end
-    always @* begin rw_col={8*N_EXPERT{1'b0}}; rw_scale={16*N_EXPERT*R_NB{1'b0}};
-        for (res=0;res<N_EXPERT;res=res+1) begin rw_col[8*res+:8]=Wg[db_layer][rw_k][res]; rw_scale[16*res+:16]=ScWg[db_layer]; end end
+    always @* begin rw_q={4*N_EXPERT{1'b0}}; rw_d={16*N_EXPERT*R_NSB{1'b0}};
+        rw_dmin={16*N_EXPERT*R_NSB{1'b0}}; rw_scales={96*N_EXPERT*R_NSB{1'b0}};
+        for (res=0;res<N_EXPERT;res=res+1) begin rw_q[4*res+:4]=Wg[db_layer][rw_k][res];
+            rw_d[16*res+:16]=Q_D; rw_dmin[16*res+:16]=Q_DM; rw_scales[96*res+:96]=mk_sc96(res); end end
     always @* begin dmodes=(db_layer<N_DENSE)?1'b0:1'b1;
-        fw_col={8*TN{1'b0}}; fw_col_up={8*TN{1'b0}}; fw_scale_g={16*TN*FF_NB_D{1'b0}}; fw_scale_u={16*TN*FF_NB_D{1'b0}};
-        obds=(fw_grp*TN)/BLK;
+        fw_q={4*TN{1'b0}}; fw_q_up={4*TN{1'b0}};
+        fw_d_g={16*TN*FF_NSB_D{1'b0}}; fw_dmin_g={16*TN*FF_NSB_D{1'b0}};
+        fw_d_u={16*TN*FF_NSB_D{1'b0}}; fw_dmin_u={16*TN*FF_NSB_D{1'b0}};
+        fw_scales_g={96*TN*FF_NSB_D{1'b0}}; fw_scales_u={96*TN*FF_NSB_D{1'b0}};
         for (fts=0;fts<TN;fts=fts+1) begin fos=fw_grp*TN+fts;
             if (dmodes==1'b0) begin
-                if (fw_sel==2'd2) begin if (fos<MODEL_DIM) fw_col[8*fts+:8]=Dd[db_layer][fos][fw_k]; end
-                else begin if (fos<INTER_DENSE) begin fw_col[8*fts+:8]=Dg[db_layer][fos][fw_k]; fw_col_up[8*fts+:8]=Du[db_layer][fos][fw_k]; end end
+                if (fw_sel==2'd2) begin if (fos<MODEL_DIM) fw_q[4*fts+:4]=Dd[db_layer][fos][fw_k]; end
+                else begin if (fos<INTER_DENSE) begin fw_q[4*fts+:4]=Dg[db_layer][fos][fw_k]; fw_q_up[4*fts+:4]=Du[db_layer][fos][fw_k]; end end
             end else begin
                 if (fw_shared) begin
-                    if (fw_sel==2'd2) begin if (fos<MODEL_DIM) fw_col[8*fts+:8]=SHd[db_layer][fos][fw_k]; end
-                    else if (fos<INTER_MOE) begin fw_col[8*fts+:8]=SHg[db_layer][fos][fw_k]; fw_col_up[8*fts+:8]=SHu[db_layer][fos][fw_k]; end
+                    if (fw_sel==2'd2) begin if (fos<MODEL_DIM) fw_q[4*fts+:4]=SHd[db_layer][fos][fw_k]; end
+                    else if (fos<INTER_MOE) begin fw_q[4*fts+:4]=SHg[db_layer][fos][fw_k]; fw_q_up[4*fts+:4]=SHu[db_layer][fos][fw_k]; end
                 end else begin
-                    if (fw_sel==2'd2) begin if (fos<MODEL_DIM) fw_col[8*fts+:8]=Md[db_layer][fw_eidx][fos][fw_k]; end
-                    else if (fos<INTER_MOE) begin fw_col[8*fts+:8]=Mg[db_layer][fw_eidx][fos][fw_k]; fw_col_up[8*fts+:8]=Mu[db_layer][fw_eidx][fos][fw_k]; end
+                    if (fw_sel==2'd2) begin if (fos<MODEL_DIM) fw_q[4*fts+:4]=Md[db_layer][fw_eidx][fos][fw_k]; end
+                    else if (fos<INTER_MOE) begin fw_q[4*fts+:4]=Mg[db_layer][fw_eidx][fos][fw_k]; fw_q_up[4*fts+:4]=Mu[db_layer][fw_eidx][fos][fw_k]; end
                 end end end
+        // per-lane Q4_K super-block params (super-block 0; scale6 varies by column)
         for (fts=0;fts<TN;fts=fts+1) begin
-            if (dmodes==1'b0) begin
-                if (fw_sel==2'd2) begin fw_scale_g[16*(0*TN+fts)+:16]=ScDd[db_layer][0]; fw_scale_g[16*(1*TN+fts)+:16]=ScDd[db_layer][1]; end
-                else begin fw_scale_g[16*(0*TN+fts)+:16]=ScDg[db_layer][obds]; fw_scale_g[16*(1*TN+fts)+:16]=ScDg[db_layer][obds];
-                    fw_scale_u[16*(0*TN+fts)+:16]=ScDu[db_layer][obds]; fw_scale_u[16*(1*TN+fts)+:16]=ScDu[db_layer][obds]; end
-            end else begin
-                if (fw_shared) begin
-                    if (fw_sel==2'd2) fw_scale_g[16*(0*TN+fts)+:16]=ScSHd[db_layer];
-                    else begin fw_scale_g[16*(0*TN+fts)+:16]=ScSHg[db_layer]; fw_scale_u[16*(0*TN+fts)+:16]=ScSHu[db_layer]; end
-                end else begin
-                    if (fw_sel==2'd2) fw_scale_g[16*(0*TN+fts)+:16]=ScMd[db_layer][fw_eidx];
-                    else begin fw_scale_g[16*(0*TN+fts)+:16]=ScMg[db_layer][fw_eidx]; fw_scale_u[16*(0*TN+fts)+:16]=ScMu[db_layer][fw_eidx]; end
-                end end end
+            fw_d_g[16*fts+:16]=Q_D; fw_dmin_g[16*fts+:16]=Q_DM;
+            fw_d_u[16*fts+:16]=Q_D; fw_dmin_u[16*fts+:16]=Q_DM;
+            fw_scales_g[96*fts+:96]=mk_sc96(fw_grp*TN+fts);
+            fw_scales_u[96*fts+:96]=mk_sc96(fw_grp*TN+fts);
+        end
     end
 
     // ================= committed-stream capture (X-aware) =================
@@ -346,16 +351,16 @@ module sbt_engine #(
     wire [LAYW-1:0]           s1_db_layer; wire s1_idx_fresh; wire [LAYW-1:0] s1_idx_win;
     wire                      s1_gn_req, s1_gn_which; wire [DIMW-1:0] s1_gn_idx; reg [15:0] s1_gn_val;
     wire                      s1_aw_req; wire [3:0] s1_aw_sel; wire [A_GRPW-1:0] s1_aw_grp; wire [A_KCW-1:0] s1_aw_k;
-    reg  [PE_N*8-1:0]         s1_aw_col; reg [16*PE_N*A_NB-1:0] s1_aw_scale;
+    reg  [PE_N*4-1:0]         s1_aw_q; reg [16*PE_N*A_NSB-1:0] s1_aw_d, s1_aw_dmin; reg [96*PE_N*A_NSB-1:0] s1_aw_scales;
     wire                      s1_kc_req; wire [IDXW-1:0] s1_kc_idx; reg [KV_LORA*16-1:0] s1_kc_ckv; reg [ROPE*16-1:0] s1_kc_krope; reg s1_kc_valid;
-    wire                      s1_rw_req; wire [R_KW-1:0] s1_rw_k; reg [8*N_EXPERT-1:0] s1_rw_col; reg [16*N_EXPERT*R_NB-1:0] s1_rw_scale;
+    wire                      s1_rw_req; wire [R_KW-1:0] s1_rw_k; reg [4*N_EXPERT-1:0] s1_rw_q; reg [16*N_EXPERT*R_NSB-1:0] s1_rw_d, s1_rw_dmin; reg [96*N_EXPERT*R_NSB-1:0] s1_rw_scales;
     wire                      s1_fw_req; wire [1:0] s1_fw_sel; wire [FF_GWD-1:0] s1_fw_grp; wire [FF_KWD-1:0] s1_fw_k;
     wire                      s1_fw_shared; wire [EIDXW-1:0] s1_fw_eidx;
-    reg  [8*TN-1:0]           s1_fw_col, s1_fw_col_up; reg [16*TN*FF_NB_D-1:0] s1_fw_scale_g, s1_fw_scale_u;
+    reg  [4*TN-1:0]           s1_fw_q, s1_fw_q_up; reg [16*TN*FF_NSB_D-1:0] s1_fw_d_g, s1_fw_dmin_g, s1_fw_d_u, s1_fw_dmin_u; reg [96*TN*FF_NSB_D-1:0] s1_fw_scales_g, s1_fw_scales_u;
     wire                      s1_fn_req; wire [DIMW-1:0] s1_fn_idx; reg [15:0] s1_fn_val;
     wire                      s1_lw_req; wire [VTW-1:0] s1_lw_vtile; wire [DIMW-1:0] s1_lw_k; reg [LM_TN*16-1:0] s1_lw_col;
 
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -370,12 +375,13 @@ module sbt_engine #(
         .db_layer(s1_db_layer), .idx_fresh(s1_idx_fresh), .idx_win(s1_idx_win),
         .gn_req(s1_gn_req), .gn_which(s1_gn_which), .gn_idx(s1_gn_idx), .gn_val(s1_gn_val),
         .aw_req(s1_aw_req), .aw_sel(s1_aw_sel), .aw_grp(s1_aw_grp), .aw_k(s1_aw_k),
-        .aw_col(s1_aw_col), .aw_scale(s1_aw_scale),
+        .aw_q(s1_aw_q), .aw_d(s1_aw_d), .aw_dmin(s1_aw_dmin), .aw_scales(s1_aw_scales),
         .kc_req(s1_kc_req), .kc_idx(s1_kc_idx), .kc_ckv(s1_kc_ckv), .kc_krope(s1_kc_krope), .kc_valid(s1_kc_valid),
-        .rw_req(s1_rw_req), .rw_k(s1_rw_k), .rw_col(s1_rw_col), .rw_scale(s1_rw_scale),
+        .rw_req(s1_rw_req), .rw_k(s1_rw_k), .rw_q(s1_rw_q), .rw_d(s1_rw_d), .rw_dmin(s1_rw_dmin), .rw_scales(s1_rw_scales),
         .fw_req(s1_fw_req), .fw_sel(s1_fw_sel), .fw_grp(s1_fw_grp), .fw_k(s1_fw_k),
         .fw_shared(s1_fw_shared), .fw_eidx(s1_fw_eidx),
-        .fw_col(s1_fw_col), .fw_col_up(s1_fw_col_up), .fw_scale_g(s1_fw_scale_g), .fw_scale_u(s1_fw_scale_u),
+        .fw_q(s1_fw_q), .fw_q_up(s1_fw_q_up), .fw_d_g(s1_fw_d_g), .fw_dmin_g(s1_fw_dmin_g), .fw_scales_g(s1_fw_scales_g),
+        .fw_d_u(s1_fw_d_u), .fw_dmin_u(s1_fw_dmin_u), .fw_scales_u(s1_fw_scales_u),
         .fn_req(s1_fn_req), .fn_idx(s1_fn_idx), .fn_val(s1_fn_val),
         .lw_req(s1_lw_req), .lw_vtile(s1_lw_vtile), .lw_k(s1_lw_k), .lw_col(s1_lw_col),
         .h_state()
@@ -386,61 +392,59 @@ module sbt_engine #(
                 s1_fn_req, s1_lw_req, s1_idx_fresh, s1_idx_win, s1_logits};
     /* verilator lint_on UNUSEDSIGNAL */
 
-    integer rts, rres, rfts, rfos, rcds, robds; reg [15:0] rscas; reg rdmodes;
+    integer rts, rres, rfts, rfos, rcds; reg rdmodes;
     always @* s1_em_val = EMB[s1_em_tok][s1_em_idx];
     always @* s1_fn_val = GF[s1_fn_idx];
     always @* begin s1_lw_col = {LM_TN*16{1'b0}};
         for (rts=0;rts<LM_TN;rts=rts+1) s1_lw_col[16*rts+:16] = Wlm[s1_lw_vtile*LM_TN + rts][s1_lw_k]; end
     always @* s1_gn_val = s1_gn_which ? G2[s1_db_layer][s1_gn_idx] : G1[s1_db_layer][s1_gn_idx];
     always @* begin
-        s1_aw_col = {PE_N*8{1'b0}}; s1_aw_scale = {16*PE_N*A_NB{1'b0}};
+        s1_aw_q = {PE_N*4{1'b0}}; s1_aw_d = {16*PE_N*A_NSB{1'b0}};
+        s1_aw_dmin = {16*PE_N*A_NSB{1'b0}}; s1_aw_scales = {96*PE_N*A_NSB{1'b0}};
         for (rts=0;rts<PE_N;rts=rts+1) case (s1_aw_sel)
-        4'd0: if (s1_aw_grp*PE_N+rts<Q_LORA)   s1_aw_col[8*rts+:8]=W_dq [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
-        4'd1: if (s1_aw_grp*PE_N+rts<HQK)      s1_aw_col[8*rts+:8]=W_uq [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
-        4'd2: if (s1_aw_grp*PE_N+rts<KV_LORA)  s1_aw_col[8*rts+:8]=W_dkv[s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
-        4'd3: if (s1_aw_grp*PE_N+rts<ROPE)     s1_aw_col[8*rts+:8]=W_kr [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
-        4'd4: if (s1_aw_grp*PE_N+rts<HNOPE)    s1_aw_col[8*rts+:8]=W_uk [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
-        4'd5: if (s1_aw_grp*PE_N+rts<HV)       s1_aw_col[8*rts+:8]=W_uv [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
-        4'd6: if (s1_aw_grp*PE_N+rts<MODEL_DIM)s1_aw_col[8*rts+:8]=W_o  [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
-        default: s1_aw_col[8*rts+:8]=8'h0; endcase
-        case (s1_aw_sel) 4'd0:rscas=ScW_dq[s1_db_layer]; 4'd1:rscas=ScW_uq[s1_db_layer]; 4'd2:rscas=ScW_dkv[s1_db_layer];
-        4'd3:rscas=ScW_kr[s1_db_layer]; 4'd4:rscas=ScW_uk[s1_db_layer]; 4'd5:rscas=ScW_uv[s1_db_layer];
-        4'd6:rscas=ScW_o[s1_db_layer]; default:rscas=16'h3F80; endcase
-        for (rts=0;rts<PE_N;rts=rts+1) s1_aw_scale[16*rts+:16]=rscas;
+        4'd0: if (s1_aw_grp*PE_N+rts<Q_LORA)   s1_aw_q[4*rts+:4]=W_dq [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
+        4'd1: if (s1_aw_grp*PE_N+rts<HQK)      s1_aw_q[4*rts+:4]=W_uq [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
+        4'd2: if (s1_aw_grp*PE_N+rts<KV_LORA)  s1_aw_q[4*rts+:4]=W_dkv[s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
+        4'd3: if (s1_aw_grp*PE_N+rts<ROPE)     s1_aw_q[4*rts+:4]=W_kr [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
+        4'd4: if (s1_aw_grp*PE_N+rts<HNOPE)    s1_aw_q[4*rts+:4]=W_uk [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
+        4'd5: if (s1_aw_grp*PE_N+rts<HV)       s1_aw_q[4*rts+:4]=W_uv [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
+        4'd6: if (s1_aw_grp*PE_N+rts<MODEL_DIM)s1_aw_q[4*rts+:4]=W_o  [s1_db_layer][s1_aw_grp*PE_N+rts][s1_aw_k];
+        default: s1_aw_q[4*rts+:4]=4'h0; endcase
+        for (rts=0;rts<PE_N;rts=rts+1) begin
+            s1_aw_d[16*rts+:16]=Q_D; s1_aw_dmin[16*rts+:16]=Q_DM;
+            s1_aw_scales[96*rts+:96]=mk_sc96(s1_aw_grp*PE_N+rts);
+        end
     end
     always @* begin s1_kc_ckv={KV_LORA*16{1'b0}}; s1_kc_krope={ROPE*16{1'b0}};
         for (rcds=0;rcds<KV_LORA;rcds=rcds+1) s1_kc_ckv[16*rcds+:16]=CKV[s1_db_layer][s1_kc_idx][rcds];
         for (rcds=0;rcds<ROPE;rcds=rcds+1)    s1_kc_krope[16*rcds+:16]=KRP[s1_db_layer][s1_kc_idx][rcds]; end
-    always @* begin s1_rw_col={8*N_EXPERT{1'b0}}; s1_rw_scale={16*N_EXPERT*R_NB{1'b0}};
-        for (rres=0;rres<N_EXPERT;rres=rres+1) begin s1_rw_col[8*rres+:8]=Wg[s1_db_layer][s1_rw_k][rres]; s1_rw_scale[16*rres+:16]=ScWg[s1_db_layer]; end end
+    always @* begin s1_rw_q={4*N_EXPERT{1'b0}}; s1_rw_d={16*N_EXPERT*R_NSB{1'b0}};
+        s1_rw_dmin={16*N_EXPERT*R_NSB{1'b0}}; s1_rw_scales={96*N_EXPERT*R_NSB{1'b0}};
+        for (rres=0;rres<N_EXPERT;rres=rres+1) begin s1_rw_q[4*rres+:4]=Wg[s1_db_layer][s1_rw_k][rres];
+            s1_rw_d[16*rres+:16]=Q_D; s1_rw_dmin[16*rres+:16]=Q_DM; s1_rw_scales[96*rres+:96]=mk_sc96(rres); end end
     always @* begin rdmodes=(s1_db_layer<N_DENSE)?1'b0:1'b1;
-        s1_fw_col={8*TN{1'b0}}; s1_fw_col_up={8*TN{1'b0}}; s1_fw_scale_g={16*TN*FF_NB_D{1'b0}}; s1_fw_scale_u={16*TN*FF_NB_D{1'b0}};
-        robds=(s1_fw_grp*TN)/BLK;
+        s1_fw_q={4*TN{1'b0}}; s1_fw_q_up={4*TN{1'b0}};
+        s1_fw_d_g={16*TN*FF_NSB_D{1'b0}}; s1_fw_dmin_g={16*TN*FF_NSB_D{1'b0}};
+        s1_fw_d_u={16*TN*FF_NSB_D{1'b0}}; s1_fw_dmin_u={16*TN*FF_NSB_D{1'b0}};
+        s1_fw_scales_g={96*TN*FF_NSB_D{1'b0}}; s1_fw_scales_u={96*TN*FF_NSB_D{1'b0}};
         for (rfts=0;rfts<TN;rfts=rfts+1) begin rfos=s1_fw_grp*TN+rfts;
             if (rdmodes==1'b0) begin
-                if (s1_fw_sel==2'd2) begin if (rfos<MODEL_DIM) s1_fw_col[8*rfts+:8]=Dd[s1_db_layer][rfos][s1_fw_k]; end
-                else begin if (rfos<INTER_DENSE) begin s1_fw_col[8*rfts+:8]=Dg[s1_db_layer][rfos][s1_fw_k]; s1_fw_col_up[8*rfts+:8]=Du[s1_db_layer][rfos][s1_fw_k]; end end
+                if (s1_fw_sel==2'd2) begin if (rfos<MODEL_DIM) s1_fw_q[4*rfts+:4]=Dd[s1_db_layer][rfos][s1_fw_k]; end
+                else begin if (rfos<INTER_DENSE) begin s1_fw_q[4*rfts+:4]=Dg[s1_db_layer][rfos][s1_fw_k]; s1_fw_q_up[4*rfts+:4]=Du[s1_db_layer][rfos][s1_fw_k]; end end
             end else begin
                 if (s1_fw_shared) begin
-                    if (s1_fw_sel==2'd2) begin if (rfos<MODEL_DIM) s1_fw_col[8*rfts+:8]=SHd[s1_db_layer][rfos][s1_fw_k]; end
-                    else if (rfos<INTER_MOE) begin s1_fw_col[8*rfts+:8]=SHg[s1_db_layer][rfos][s1_fw_k]; s1_fw_col_up[8*rfts+:8]=SHu[s1_db_layer][rfos][s1_fw_k]; end
+                    if (s1_fw_sel==2'd2) begin if (rfos<MODEL_DIM) s1_fw_q[4*rfts+:4]=SHd[s1_db_layer][rfos][s1_fw_k]; end
+                    else if (rfos<INTER_MOE) begin s1_fw_q[4*rfts+:4]=SHg[s1_db_layer][rfos][s1_fw_k]; s1_fw_q_up[4*rfts+:4]=SHu[s1_db_layer][rfos][s1_fw_k]; end
                 end else begin
-                    if (s1_fw_sel==2'd2) begin if (rfos<MODEL_DIM) s1_fw_col[8*rfts+:8]=Md[s1_db_layer][s1_fw_eidx][rfos][s1_fw_k]; end
-                    else if (rfos<INTER_MOE) begin s1_fw_col[8*rfts+:8]=Mg[s1_db_layer][s1_fw_eidx][rfos][s1_fw_k]; s1_fw_col_up[8*rfts+:8]=Mu[s1_db_layer][s1_fw_eidx][rfos][s1_fw_k]; end
+                    if (s1_fw_sel==2'd2) begin if (rfos<MODEL_DIM) s1_fw_q[4*rfts+:4]=Md[s1_db_layer][s1_fw_eidx][rfos][s1_fw_k]; end
+                    else if (rfos<INTER_MOE) begin s1_fw_q[4*rfts+:4]=Mg[s1_db_layer][s1_fw_eidx][rfos][s1_fw_k]; s1_fw_q_up[4*rfts+:4]=Mu[s1_db_layer][s1_fw_eidx][rfos][s1_fw_k]; end
                 end end end
         for (rfts=0;rfts<TN;rfts=rfts+1) begin
-            if (rdmodes==1'b0) begin
-                if (s1_fw_sel==2'd2) begin s1_fw_scale_g[16*(0*TN+rfts)+:16]=ScDd[s1_db_layer][0]; s1_fw_scale_g[16*(1*TN+rfts)+:16]=ScDd[s1_db_layer][1]; end
-                else begin s1_fw_scale_g[16*(0*TN+rfts)+:16]=ScDg[s1_db_layer][robds]; s1_fw_scale_g[16*(1*TN+rfts)+:16]=ScDg[s1_db_layer][robds];
-                    s1_fw_scale_u[16*(0*TN+rfts)+:16]=ScDu[s1_db_layer][robds]; s1_fw_scale_u[16*(1*TN+rfts)+:16]=ScDu[s1_db_layer][robds]; end
-            end else begin
-                if (s1_fw_shared) begin
-                    if (s1_fw_sel==2'd2) s1_fw_scale_g[16*(0*TN+rfts)+:16]=ScSHd[s1_db_layer];
-                    else begin s1_fw_scale_g[16*(0*TN+rfts)+:16]=ScSHg[s1_db_layer]; s1_fw_scale_u[16*(0*TN+rfts)+:16]=ScSHu[s1_db_layer]; end
-                end else begin
-                    if (s1_fw_sel==2'd2) s1_fw_scale_g[16*(0*TN+rfts)+:16]=ScMd[s1_db_layer][s1_fw_eidx];
-                    else begin s1_fw_scale_g[16*(0*TN+rfts)+:16]=ScMg[s1_db_layer][s1_fw_eidx]; s1_fw_scale_u[16*(0*TN+rfts)+:16]=ScMu[s1_db_layer][s1_fw_eidx]; end
-                end end end
+            s1_fw_d_g[16*rfts+:16]=Q_D; s1_fw_dmin_g[16*rfts+:16]=Q_DM;
+            s1_fw_d_u[16*rfts+:16]=Q_D; s1_fw_dmin_u[16*rfts+:16]=Q_DM;
+            s1_fw_scales_g[96*rfts+:96]=mk_sc96(s1_fw_grp*TN+rfts);
+            s1_fw_scales_u[96*rfts+:96]=mk_sc96(s1_fw_grp*TN+rfts);
+        end
     end
 
     // ================= reference-step : ONE PE_M=1 model pass -> argmax =========

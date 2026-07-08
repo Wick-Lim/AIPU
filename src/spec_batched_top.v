@@ -1,20 +1,20 @@
 `timescale 1ns/1ps
 /* verilator lint_off DECLFILENAME */
 //============================================================================
-// spec_batched_top.v  --  GLM-5.2-FP8 BATCHED-VERIFY SPECULATIVE-DECODE LOOP
+// spec_batched_top.v  --  GLM-5.2-Q4_K BATCHED-VERIFY SPECULATIVE-DECODE LOOP
 //                         (docs/SYSTEM_SINGLE_PACKAGE.md -- the Flash/K lever)
 //----------------------------------------------------------------------------
 // PURPOSE  (KEY IDEA #5 -- ÷K weight-loads)
-//   The committed K=1 loop (spec_decode_top) runs ONE full glm_model_fp8 weight-
+//   The committed K=1 loop (spec_decode_top) runs ONE full glm_model_q4k weight-
 //   load to verify ONE drafted position per pass.  This module verifies K drafted
 //   positions in ONE weight-load by making the K+1 verify positions a PE_M=K+1
-//   BATCH through a SINGLE glm_model_fp8 instance:
+//   BATCH through a SINGLE glm_model_q4k instance:
 //
 //     verify rows (PE_M = DRAFT_K+1):
 //        row 0      = cur_tok   (the last committed token, position t)
 //        row j (1..K) = d_j     (the j-th chained MTP draft, position t+j)
 //
-//   glm_model_fp8 at PE_M=K+1 pushes all K+1 rows through the model in LOCKSTEP:
+//   glm_model_q4k at PE_M=K+1 pushes all K+1 rows through the model in LOCKSTEP:
 //   ONE weight fetch per (layer, projection, expert) feeds every row (the aw_*/
 //   rw_*/fw_*/kc_*/gn_*/fn_*/lw_* pull streams are IDENTICAL to a single-token
 //   pass -- the model's documented PE_M weight-share contract).  So the whole
@@ -40,7 +40,7 @@
 //   token cursor cur_tok @ cur_pos.  For pass i = 0 .. num_passes-1:
 //     1. SETUP : latch the K drafts {d_1..d_K} (draft_in) + n_draft.
 //     2. LAUNCH: assemble the PE_M=K+1 batch {cur_tok, d_1..d_K} and pulse
-//                glm_model_fp8.start  -> ONE weight-load.  weight_loads++.
+//                glm_model_q4k.start  -> ONE weight-load.  weight_loads++.
 //     3. MWAIT : wait u_main.done -> capture the K+1 argmaxes {m_1..m_{K+1}}.
 //     4. FEED  : pulse spec_decode_seq.pass_valid with draft_vec={d_1..d_K},
 //                truth_vec={m_1..m_{K+1}}, n_draft -> commits m_1..m_{p+1}.
@@ -58,7 +58,7 @@
 //   the top so the system (TB) answers them (ONE shared set -- single model).
 //============================================================================
 module spec_batched_top #(
-    // ---- model / slice config (mirrors glm_model_fp8) ----
+    // ---- model / slice config (mirrors glm_model_q4k) ----
     parameter integer MODEL_DIM  = 128,
     parameter integer L          = 6,
     parameter integer N_DENSE    = 3,
@@ -85,7 +85,7 @@ module spec_batched_top #(
     // ---- DRAFT_K : drafted positions verified per ONE model weight-load (K>1) ----
     parameter integer DRAFT_K    = 2,
     // ====================================================================
-    // derived (do NOT override) -- copied verbatim from glm_model_fp8 so every
+    // derived (do NOT override) -- copied verbatim from glm_model_q4k so every
     //                             routed-up pull port matches width.
     // ====================================================================
     parameter integer B          = DRAFT_K + 1,    // PE_M batch = K+1 verify rows
@@ -117,9 +117,9 @@ module spec_batched_top #(
     parameter integer FF_KWD     = $clog2(FF_KMAX_D + 1),
     parameter integer FF_KMAX_M  = (INTER_MOE  > MODEL_DIM) ? INTER_MOE  : MODEL_DIM,
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1),
-    parameter integer A_NB       = (A_KMAX    + BLK - 1) / BLK,
-    parameter integer FF_NB_D    = (FF_KMAX_D + BLK - 1) / BLK,
-    parameter integer R_NB       = (FF_KMAX_M + BLK - 1) / BLK,
+    parameter integer A_NSB      = (A_KMAX    + 255) / 256,  // attention Q4_K super-blocks
+    parameter integer FF_NSB_D   = (FF_KMAX_D + 255) / 256,  // dense FFN super-blocks
+    parameter integer R_NSB      = (FF_KMAX_M + 255) / 256,  // router super-blocks
     parameter integer LAYW       = (L     <= 1) ? 1 : $clog2(L),
     parameter integer TOKW       = (VOCAB <= 1) ? 1 : $clog2(VOCAB),
     parameter integer DIMW       = (MODEL_DIM <= 1) ? 1 : $clog2(MODEL_DIM),
@@ -159,7 +159,7 @@ module spec_batched_top #(
     output reg  [31:0]                   weight_loads,
 
     // ====================================================================
-    // glm_model_fp8 PULL INTERFACES -- routed straight up (single shared model).
+    // glm_model_q4k PULL INTERFACES (Q4_K) -- routed straight up (single shared model).
     //   ONE set answers ALL B=K+1 verify rows (the PE_M weight-share contract).
     // ====================================================================
     output wire                          em_req,
@@ -177,8 +177,10 @@ module spec_batched_top #(
     output wire [3:0]                    aw_sel,
     output wire [A_GRPW-1:0]             aw_grp,
     output wire [A_KCW-1:0]              aw_k,
-    input  wire [PE_N*8-1:0]             aw_col,
-    input  wire [16*PE_N*A_NB-1:0]       aw_scale,
+    input  wire [PE_N*4-1:0]             aw_q,       // PE_N Q4_K 4-bit weight lanes
+    input  wire [16*PE_N*A_NSB-1:0]      aw_d,       // fp16 d per (col,super-block)
+    input  wire [16*PE_N*A_NSB-1:0]      aw_dmin,    // fp16 dmin
+    input  wire [96*PE_N*A_NSB-1:0]      aw_scales,  // 6-bit scales
     output wire                          kc_req,
     output wire [IDXW-1:0]               kc_idx,
     input  wire [KV_LORA*16-1:0]         kc_ckv,
@@ -186,18 +188,24 @@ module spec_batched_top #(
     input  wire                          kc_valid,
     output wire                          rw_req,
     output wire [R_KW-1:0]               rw_k,
-    input  wire [8*N_EXPERT-1:0]         rw_col,
-    input  wire [16*N_EXPERT*R_NB-1:0]   rw_scale,
+    input  wire [4*N_EXPERT-1:0]         rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
+    input  wire [16*N_EXPERT*R_NSB-1:0]  rw_d,       // fp16 d
+    input  wire [16*N_EXPERT*R_NSB-1:0]  rw_dmin,    // fp16 dmin
+    input  wire [96*N_EXPERT*R_NSB-1:0]  rw_scales,  // 6-bit scales
     output wire                          fw_req,
     output wire [1:0]                    fw_sel,
     output wire [FF_GWD-1:0]             fw_grp,
     output wire [FF_KWD-1:0]             fw_k,
     output wire                          fw_shared,
     output wire [EIDXW-1:0]              fw_eidx,
-    input  wire [8*TN-1:0]               fw_col,
-    input  wire [8*TN-1:0]               fw_col_up,
-    input  wire [16*TN*FF_NB_D-1:0]      fw_scale_g,
-    input  wire [16*TN*FF_NB_D-1:0]      fw_scale_u,
+    input  wire [4*TN-1:0]               fw_q,       // GATE/DOWN Q4_K 4-bit lanes
+    input  wire [4*TN-1:0]               fw_q_up,    // UP companion Q4_K 4-bit lanes
+    input  wire [16*TN*FF_NSB_D-1:0]     fw_d_g,     // GATE/DOWN fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     fw_dmin_g,  // GATE/DOWN fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     fw_scales_g,// GATE/DOWN 6-bit scales
+    input  wire [16*TN*FF_NSB_D-1:0]     fw_d_u,     // UP fp16 d
+    input  wire [16*TN*FF_NSB_D-1:0]     fw_dmin_u,  // UP fp16 dmin
+    input  wire [96*TN*FF_NSB_D-1:0]     fw_scales_u,// UP 6-bit scales
     output wire                          fn_req,
     output wire [DIMW-1:0]               fn_idx,
     input  wire [15:0]                   fn_val,
@@ -226,7 +234,7 @@ module spec_batched_top #(
     //   row 0 = cur_tok (position t) ; row j+1 = d_{j+1} (position t+j+1).
     //   Built combinationally from the STABLE registers cur_tok + draft_q (cur_tok
     //   changes only at FEED, draft_q only at SETUP), so it holds for the whole
-    //   model pass -- glm_model_fp8 reads token_id across its serial embed phase.
+    //   model pass -- glm_model_q4k reads token_id across its serial embed phase.
     //========================================================================
     wire [B*TOKW-1:0] mdl_token_id;
     assign mdl_token_id[TOKW*0 +: TOKW] = cur_tok;
@@ -237,13 +245,13 @@ module spec_batched_top #(
     endgenerate
 
     //========================================================================
-    // u_main : the FULL FP8 model at PE_M = K+1 (ONE weight-load -> K+1 argmaxes).
+    // u_main : the FULL Q4_K model at PE_M = K+1 (ONE weight-load -> K+1 argmaxes).
     //========================================================================
     wire                  mdl_busy, mdl_done;
     wire [B*VOCAB*16-1:0] mdl_logits;
     wire [B*TOKW-1:0]     mdl_argmax;
     wire [B*MODEL_DIM*16-1:0] mdl_hstate;   // unused (verify only needs argmax)
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -258,14 +266,16 @@ module spec_batched_top #(
         .db_layer(db_layer), .idx_fresh(idx_fresh), .idx_win(idx_win),
         .gn_req(gn_req), .gn_which(gn_which), .gn_idx(gn_idx), .gn_val(gn_val),
         .aw_req(aw_req), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(aw_k),
-        .aw_col(aw_col), .aw_scale(aw_scale),
+        .aw_q(aw_q), .aw_d(aw_d), .aw_dmin(aw_dmin), .aw_scales(aw_scales),
         .kc_req(kc_req), .kc_idx(kc_idx), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
         .kc_valid(kc_valid),
-        .rw_req(rw_req), .rw_k(rw_k), .rw_col(rw_col), .rw_scale(rw_scale),
+        .rw_req(rw_req), .rw_k(rw_k),
+        .rw_q(rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
-        .fw_col(fw_col), .fw_col_up(fw_col_up),
-        .fw_scale_g(fw_scale_g), .fw_scale_u(fw_scale_u),
+        .fw_q(fw_q), .fw_q_up(fw_q_up),
+        .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
+        .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
         .fn_req(fn_req), .fn_idx(fn_idx), .fn_val(fn_val),
         .lw_req(lw_req), .lw_vtile(lw_vtile), .lw_k(lw_k), .lw_col(lw_col),
         .h_state(mdl_hstate)

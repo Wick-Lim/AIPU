@@ -1,10 +1,10 @@
 `timescale 1ns/1ps
 //============================================================================
 // test/full_config_elab_wrap.v
-//   FULL-CONFIG ELABORATION wrapper for glm_model_fp8 (PRODUCT_ROADMAP P1.2).
+//   FULL-CONFIG ELABORATION wrapper for glm_model_q4k (PRODUCT_ROADMAP P1.2).
 //
-//   Instantiates the compute-die top `glm_model_fp8` with EVERY parameter
-//   overridden to the REAL 753B GLM-5.2-FP8 production shape so an
+//   Instantiates the compute-die top `glm_model_q4k` with EVERY parameter
+//   overridden to the REAL 753B GLM-5.2 (UD-Q4_K_XL) production shape so an
 //   elaboration-only tool (iverilog -tnull / yosys hierarchy -check) type/width
 //   checks the parameterization at true scale.  This catches full-scale RTL
 //   issues -- width overflow, out-of-range part-selects, $clog2 edges, negative
@@ -18,7 +18,7 @@
 //   MoE runs into the billions of cycles).  See docs/FULL_CONFIG_ELAB.md.
 //
 //   The real shape is sourced from configs/full_glm52.vh (every value cited to
-//   config.json of zai-org/GLM-5.2-FP8 / docs/ACCEL_GLM52.md).  Q_LORA/KV_LORA
+//   config.json of zai-org/GLM-5.2 / docs/ACCEL_GLM52.md).  Q_LORA/KV_LORA
 //   = 2048/512 are the safetensors-CONFIRMED ranks (docs/REAL_CKPT_VALIDATION.md).
 //
 //   ASSUMPTIONS FLAGGED (not free model config -- see docs/FULL_CONFIG_ELAB.md):
@@ -35,8 +35,8 @@
 //   Build (elaboration only, from repo root):
 //     iverilog -g2012 -I src -I configs -tnull -pfileline=1 \
 //       test/full_config_elab_wrap.v \
-//       src/glm_model_fp8.v src/glm_decoder_block_fp8.v src/mla_attn_fp8.v \
-//       src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v \
+//       src/glm_model_q4k.v src/glm_decoder_block_q4k.v src/mla_attn_q4k.v \
+//       src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v \
 //       src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v \
 //       src/dsa_indexer.v src/topk_select.v src/glm_act.v \
 //       src/glm_matmul_pipe.v src/glm_fp_pipe.v
@@ -45,7 +45,7 @@
 
 module full_config_elab_wrap (input wire clk, input wire rst);
 
-    glm_model_fp8 #(
+    glm_model_q4k #(
         .MODEL_DIM  (`GLM52_MODEL_DIM),    // 6144    hidden_size
         .L          (`GLM52_L),            // 78      num_hidden_layers
         .N_DENSE    (`GLM52_N_DENSE),      // 3       first_k_dense_replace
