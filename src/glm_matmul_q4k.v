@@ -130,7 +130,13 @@ module glm_matmul_q4k #(
                 for (idx = 0; idx < PE_M*PE_N; idx = idx + 1) acc[idx] <= 32'd0;
             end else if (busy && in_valid) begin
                 sb  = k_cnt >> 8;                          // k / 256 (super-block)
-                sub = k_cnt[7:5];                          // (k%256) / 32 (sub-block)
+                // sub-block within super-block = (k%256)/32.  Use a SHIFT (not the
+                //   part-select k_cnt[7:5]) so it is correct for a NARROW k_cnt too:
+                //   when KMAX<128, KW=$clog2(KMAX+1)<8 makes k_cnt fewer than 8 bits,
+                //   and k_cnt[7:5] would read OUT-OF-RANGE bits (-> x / wrong scale).
+                //   `k_cnt>>5` truncated into sub[2:0] yields (k/32) mod 8 == (k%256)/32
+                //   for any width, and is bit-identical to k_cnt[7:5] when KW>=8.
+                sub = k_cnt >> 5;                          // (k%256) / 32 (sub-block)
                 // per-column w_type-selected dequant + per-cell fp32 MAC (sequential
                 // accumulate).  Each type produces ONE fp32 wdeq that feeds the SAME
                 // MAC below; the w_type case is the ONLY per-column front-end change.
@@ -141,7 +147,7 @@ module glm_matmul_q4k #(
                         //   grouped (d*sc)*q to match numpy's left-assoc d*f32(sc)*f32(q);
                         //   identical numerics to q4k_mixed.vh q6k_deq (inlined leaf prims).
                         WT_Q6K: begin
-                            sidx = k_cnt[7:4];             // scale index within super-block = p>>4
+                            sidx = k_cnt >> 4;             // (k%256)/16 within super-block; SHIFT (see `sub`) for narrow k_cnt
                             d1   = fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),
                                             s8_to_fp32(q6sc_r[128*col + 8*sidx +: 8]));
                             wdeq = fp32_mul(d1, s8_to_fp32({2'b00, w_hp[16*pj +: 6]} - 8'd32));

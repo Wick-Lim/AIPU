@@ -289,6 +289,62 @@ module mla_attn_q4k #(
     `include "glm_fp.vh"
 
     //========================================================================
+    // MLA softmax scale  1/sqrt(qk_head_dim)   (GLM-5.2 / DeepSeek-V2 MLA)
+    //------------------------------------------------------------------------
+    //   GLM-5.2 (like DeepSeek-V2 MLA / llama.cpp) scales the q.K attention
+    //   scores by softmax_scale = qk_head_dim^(-1/2), qk_head_dim = NOPE+ROPE
+    //   = QK_DIM (no YaRN mscale -- native 1M context, no rope_scaling).  This
+    //   was previously OMITTED (a real correctness gap, ACCEL_GLM52 §4.1); it is
+    //   applied ONCE at score capture below (K_NEXTH), leaving q/K/softmax and
+    //   the DSA indexer untouched (no double-scale).
+    //
+    //   SM_SCALE_F32 = fp32 bits of 1/sqrt(QK_DIM), computed at ELABORATION by a
+    //   pure-integer constant fn (synthesizable; no reals).  For power-of-two
+    //   QK_DIM (the real configs: slice QK_DIM=32 -> 0x3E3504F3; full config
+    //   QK_DIM=256 -> 0x3D800000 = 0.0625) sqrt is exact, so this is bit-identical
+    //   to the numpy golden's np.float32(1)/np.sqrt(np.float32(QK_DIM)).
+    //========================================================================
+    // fp32 bits of 1/sqrt(n): root = isqrt(2^128/n) ~= 2^64/sqrt(n), then
+    //   normalize root*2^-64 to IEEE-754 binary32 with round-to-nearest-even.
+    function automatic [31:0] f32_inv_sqrt(input integer n);
+        reg [271:0] X, root, bit_, tmp;
+        integer b, i;
+        reg [23:0] fm;
+        reg        guard, sticky, roundup;
+        reg signed [15:0] eub;
+        reg [7:0]  fe;
+        reg [22:0] mant;
+        begin
+            X    = (272'd1 <<< 128) / n;             // 2^128 / n (floor)
+            root = 272'd0;
+            bit_ = (272'd1 <<< 128);                 // 4^64, highest power-of-4 <= 2^128
+            while (bit_ > X) bit_ = bit_ >>> 2;
+            while (bit_ != 0) begin
+                tmp = root + bit_;
+                if (X >= tmp) begin
+                    X    = X - tmp;
+                    root = (root >>> 1) + bit_;
+                end else
+                    root = root >>> 1;
+                bit_ = bit_ >>> 2;
+            end
+            b = -1;
+            for (i = 0; i < 272; i = i + 1) if (root[i]) b = i;
+            eub    = b - 64;                          // leading 1 at 2^(b-64)
+            mant   = (root >>> (b-23)) & 23'h7FFFFF;  // 23 fraction bits
+            guard  = (root >>> (b-24)) & 1'b1;
+            sticky = (root & ((272'd1 <<< (b-24)) - 1'b1)) != 0;
+            roundup = guard & (sticky | mant[0]);
+            fm = {1'b0, mant} + {23'd0, roundup};
+            if (fm[23]) begin eub = eub + 1; mant = fm[23:1]; end
+            else              mant = fm[22:0];
+            fe = eub + 16'sd127;
+            f32_inv_sqrt = {1'b0, fe, mant};
+        end
+    endfunction
+    localparam [31:0] SM_SCALE_F32 = f32_inv_sqrt(QK_DIM);
+
+    //========================================================================
     // weight-select codes (w_sel)
     //========================================================================
     localparam [3:0] SEL_DQ=4'd0, SEL_UQ=4'd1, SEL_DKV=4'd2, SEL_KR=4'd3,
@@ -1349,15 +1405,23 @@ module mla_attn_q4k #(
                     K_NEXTH: begin
                         if (gv_go) gv_go <= 1'b0;
                         // store each row's q.K score at the UNION SLOT ksel (SWIN scratch).
+                        //   MLA softmax scale: score = bf16( f32(bf16 dot) * 1/sqrt(QK_DIM) ).
+                        //   The bf16 dot from the score engine is widened (lossless), scaled
+                        //   by the fp32 SM_SCALE_F32, re-rounded to bf16 -- one extra RNE, exactly
+                        //   mirrored by the numpy golden (bf16(fmul(b2f(dot), sm_scale_f32))).
                         if (mm_out_valid && gv_st==GV_WAIT)
                             for (rr=0; rr<PE_M; rr=rr+1)
                                 if (VSTORE_RAM)
                                     scores_mem[(rr*H_HEADS + gv_head[$clog2(H_HEADS)-1:0])*SWIN
                                                + ksel[SWINW-1:0]]
-                                        <= mm_c[16*(rr*PE_N) +:16];
+                                        <= fp32_to_bf16(fp32_mul(
+                                               bf16_to_fp32(mm_c[16*(rr*PE_N) +:16]),
+                                               SM_SCALE_F32));
                                 else
                                     scores[rr][gv_head[$clog2(H_HEADS)-1:0]][ksel[SWINW-1:0]]
-                                        <= mm_c[16*(rr*PE_N) +:16];
+                                        <= fp32_to_bf16(fp32_mul(
+                                               bf16_to_fp32(mm_c[16*(rr*PE_N) +:16]),
+                                               SM_SCALE_F32));
                         if (gv_done) begin
                             if (gv_head == H_HEADS[$clog2(H_HEADS+1)-1:0]-1'b1) begin
                                 gv_score <= 1'b0;

@@ -19,7 +19,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype spec-slow formal formal-ind lint host-test synth-glm cdc coverage clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-smoke spec-slow formal formal-ind lint host-test synth-glm cdc coverage clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, and the memory-controller formal proofs.
@@ -202,6 +202,9 @@ unittests:
 	    || { echo "FAILED: kv_ecc_ring"; exit 1; }
 	@# ---- Q4_K local-device track (GGUF UD-Q4_K_XL bring-up; both tracks live -- see docs/Q4K_SYSTEM_PLAN.md) ----
 	@$(MAKE) --no-print-directory q4k
+	@# ---- ASSEMBLED glm_model_q4k full-forward vs numpy golden (fast SPEC_SLICE smoke;
+	@#      the committed-slice `make model-q4k` is the thorough standalone gate) ----
+	@$(MAKE) --no-print-directory model-q4k-smoke
 	@echo "unittests: all per-unit TBs passed"
 
 # Q4_K local-device sub-gate (docs/Q4K_SYSTEM_PLAN.md 4.1): the four verified Q4_K unit TBs
@@ -232,6 +235,43 @@ q4k:
 	@# ---- mixed-type (Q6_K / Q8_0 / F16) consumer sub-gate ----
 	@$(MAKE) --no-print-directory mixedtype
 	@echo "q4k: all four Q4_K unit TBs + mixed-type (Q6_K/Q8_0/F16) sub-gate passed"
+
+# model-q4k / model-q4k-smoke: the ASSEMBLED glm_model_q4k FULL-FORWARD golden gate --
+#   closes the #1 correctness gap (the assembled Q4_K numeric path had NO functional
+#   golden; the model-level TBs ran the generic bf16 twin, not the _q4k product).
+#   tools/glm_model_q4k_tb_gen.py drives the assembled numpy golden
+#   (tools/glm_model_q4k_ref.py) and emits weights+inputs+expected as $readmemh hex;
+#   test/glm_model_q4k_full_tb.v drives the REAL product top glm_model_q4k with those
+#   SAME weights and asserts logits+argmax+h_state BIT-EXACT vs the golden.  This is what
+#   EXPOSED + LOCKS IN two real fixes: (1) the Phase-1 MLA softmax scale 1/sqrt(qk_head_dim)
+#   (src/mla_attn_q4k.v, previously OMITTED), and (2) the glm_matmul_q4k narrow-k_cnt
+#   out-of-range sub-block select (src/glm_matmul_q4k.v, latent for KMAX<128).
+#
+#   model-q4k-smoke : the SPEC_SLICE (MODEL_DIM=16/L=2/VOCAB=16) -- seconds/forward, so
+#     it is FOLDED INTO `unittests` as a fast bit-exact assembled-forward regression gate.
+#   model-q4k       : the committed slice (MODEL_DIM=128/L=6/VOCAB=256) -- each forward is
+#     the full model, minutes-long in iverilog, so it is kept OUT of `unittests` (like
+#     `spec-slow`); run explicitly as `make model-q4k`.  Both assert the identical
+#     bit-exact contract; the slice only changes the leaf sizes.
+MODEL_Q4K_SRCS := test/glm_model_q4k_full_tb.v src/glm_model_q4k.v src/glm_decoder_block_q4k.v \
+	src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v \
+	src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v \
+	src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
+
+model-q4k-smoke:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/glm_model_q4k_tb_gen.py --spec >/dev/null   # -> build/mq4k_s/*.hex (SPEC_SLICE golden)
+	@$(IVERILOG) $(IFLAGS) -D SPEC_SLICE -o $(BUILD_DIR)/glm_model_q4k_full_s_sim $(MODEL_Q4K_SRCS)
+	@printf '[%s] ' "glm_model_q4k_full(spec)"; $(VVP) $(BUILD_DIR)/glm_model_q4k_full_s_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_model_q4k_full(spec)"; exit 1; }
+
+model-q4k:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null          # -> build/mq4k/*.hex (committed-slice golden)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_model_q4k_full_sim $(MODEL_Q4K_SRCS)
+	@printf '[%s] ' "glm_model_q4k_full"; $(VVP) $(BUILD_DIR)/glm_model_q4k_full_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_model_q4k_full"; exit 1; }
+	@echo "model-q4k: assembled glm_model_q4k full forward == numpy golden (BIT-EXACT logits+argmax+h_state)"
 
 # Mixed-type (Q6_K / Q8_0 / F16) consumer sub-gate: the two per-type dequant-primitive
 # TBs (q6k_prim / q8_0_prim) + the integrated mixed-column GEMM (glm_matmul_mixed) that
