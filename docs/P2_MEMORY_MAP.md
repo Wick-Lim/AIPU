@@ -1,5 +1,14 @@
 # P2_MEMORY_MAP — On-chip memory / register-array classification (reliability effort)
 
+> **Prior-FP8-track drafting note (2026-07).** This map was **first drafted on the prior FP8 track**;
+> the active datapath is now **Q4_K**. Module names below are repointed to their `*_q4k` equivalents
+> (`glm_model_q4k`, `mla_attn_q4k`, `moe_router_q4k`, `swiglu_expert_q4k`, `glm_matmul_q4k`,
+> `mtp_head_q4k`, `glm_decoder_block_q4k`, `glm_q4k_soc(_ms)`, `glm_q4k_system`), and the deleted
+> standalone `batched_moe.v` is now **folded inline into `glm_decoder_block_q4k`** (the PE_M>1
+> union-skip loop). Stale FP8-era `file:line` numbers on the renamed modules have been **dropped**
+> (cite the module, not a line) since the Q4_K rewrite shifted them; the SECDED/PARITY/off-die
+> **classification** is format-agnostic and unchanged.
+
 > **Status:** analysis artifact for the P2 reliability track. **Read-only** — this
 > document changes no RTL. It is the concrete work-list that drives **C6**
 > (ECC-on-payload) and **C7** (MBIST integration).
@@ -35,7 +44,7 @@ the table as a target (it *is* the mechanism):
 
 ## 2. Master classification table
 
-Grouped by function. **Active GLM-5.2 FP8 datapath + memory system first**, then
+Grouped by function. **Active GLM-5.2 Q4_K datapath + memory system first**, then
 the transient compute scratch, then the legacy TPU core and the superseded bf16
 GLM path (kept separate per the task). Every `reg`-array found by the STEP-1
 greps appears here or in the §5 exclusion list.
@@ -44,9 +53,9 @@ greps appears here or in the §5 exclusion list.
 
 | Module | Array (signal) | Width × Depth | Holds | Class | Rationale |
 |--------|----------------|---------------|-------|-------|-----------|
-| kv_cache_pager.v:172 | `ring [0:NSEQ*RESIDENT-1]` | `RING_W`(=`ROW_BITS` 768, unenc.) × `NSEQ·RESIDENT`(32/seq) | Resident-window **latent KV rows** `[c_kv \| k_rope]` (opaque bf16 vectors), now **NSEQ independent per-sequence windows** | **SECDED** | This *is* model KV. A flip returns a corrupt latent to `mla_attn_fp8`'s `kc_*` read → wrong attention, silently. **Now has a built-in `ECC` param** (`ECC!=0` → `ring` stores lane-partitioned SECDED codewords `RING_W = NLANES·CODE_W`, `ecc_secded #(64)` per lane, sticky `ecc_serr`/`ecc_derr`; `kv_cache_pager_ecc_tb`). **ECC lane note below.** |
-| weight_decomp.v:123 | `count_table [0:MAXLEN]` | `COUNTW` × `MAXLEN+1` | Canonical-Huffman length→count table | **SECDED** | Weight-*defining*: a flip shifts codeword boundaries → mis-decodes the entire FP8 weight stream. Corrupts model data as surely as flipping a weight. |
-| weight_decomp.v:124 | `symbol_table [0:NSYMMAX-1]` | `SYMW` × `2^SYMW` | Canonical-order FP8 weight symbols | **SECDED** | A flip emits the *wrong FP8 weight byte* on decode. Model data. |
+| kv_cache_pager.v:172 | `ring [0:NSEQ*RESIDENT-1]` | `RING_W`(=`ROW_BITS` 768, unenc.) × `NSEQ·RESIDENT`(32/seq) | Resident-window **latent KV rows** `[c_kv \| k_rope]` (opaque bf16 vectors), now **NSEQ independent per-sequence windows** | **SECDED** | This *is* model KV. A flip returns a corrupt latent to `mla_attn_q4k`'s `kc_*` read → wrong attention, silently. **Now has a built-in `ECC` param** (`ECC!=0` → `ring` stores lane-partitioned SECDED codewords `RING_W = NLANES·CODE_W`, `ecc_secded #(64)` per lane, sticky `ecc_serr`/`ecc_derr`; `kv_cache_pager_ecc_tb`). **ECC lane note below.** |
+| weight_decomp.v:123 | `count_table [0:MAXLEN]` | `COUNTW` × `MAXLEN+1` | Canonical-Huffman length→count table | **SECDED** | Weight-*defining*: a flip shifts codeword boundaries → mis-decodes the entire Q4_K weight stream. Corrupts model data as surely as flipping a weight. |
+| weight_decomp.v:124 | `symbol_table [0:NSYMMAX-1]` | `SYMW` × `2^SYMW` | Canonical-order Q4_K weight symbols | **SECDED** | A flip emits the *wrong Q4_K weight byte* on decode. Model data. |
 | weight_decomp2.v:113 | `count_table [0:CTDEP-1]` | `COUNTW` × `NCTX<<CTADW` | Per-context Huffman count table | **SECDED** | Same as above, context-indexed. |
 | weight_decomp2.v:114 | `symbol_table [0:SYDEP-1]` | `SYMW` × `NCTX<<SYMW` | Per-context canonical symbols | **SECDED** | Same as above, context-indexed. |
 | expert_cache_pf.v:112 | `tag_arr [0:SLOTS-1]` | `ID_W` × `SLOTS` | Resident expert-id per slot (directory) | **PARITY+MBIST** | Directory tag. A flip returns the *wrong* resident expert silently → parity must at least *detect* and force a miss/refetch. The cached expert **bytes are OFF-DIE** (this module only returns `resp_slot` = an HBM slot). |
@@ -67,11 +76,11 @@ greps appears here or in the §5 exclusion list.
 | flash_xbar.v:142 | `outst [0:N_CH-1]` | `OST_W` × `N_CH` | Per-channel outstanding-read counter | **PARITY+MBIST** | Flow-control counter; flip → lost/double issue → parity-detect. |
 | boot_loader.v:134 | `fifo_mem [0:BURST-1]` | `DATA_W` × `BURST`(8) | NVMe→DDR5 copy **skid FIFO** (weight/data words) | **PARITY+MBIST** | Payload-in-transit skid buffer; **both** endpoints (NVMe source, DDR5 sink) are SECDED-protected, so detect-only + MBIST here suffices. (Optionally carry the SECDED codeword through it for end-to-end coverage — C6 decision.) |
 | boot_loader.v:118–120 | `fbase_q`,`dbase_q`,`len_q [0:SEG_MAX-1]` | `ADDR_W`/`LEN_W` × `SEG_MAX` | Latched copy-segment descriptors (base/base/len) | **PARITY+MBIST** | Address/length control; a flip mis-addresses a DMA burst → parity-detect. |
-| glm_fp8_soc.v:422 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO to the cache | **PARITY+MBIST** | Queue of expert **ids** (control), not weights; flip → wrong expert fetched → parity-detect. |
-| glm_fp8_system.v:453 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO (system-level dup) | **PARITY+MBIST** | Same role as `glm_fp8_soc` efifo. |
+| glm_q4k_soc | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO to the cache | **PARITY+MBIST** | Queue of expert **ids** (control), not weights; flip → wrong expert fetched → parity-detect. |
+| glm_q4k_system | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO (system-level dup) | **PARITY+MBIST** | Same role as `glm_q4k_soc` efifo. |
 | clk_en_ctrl.v:110–112 | `en_reg`,`hold_cnt`,`gcnt [0:N_CLUSTER-1]` | 1/`HOLD_W`/`CNT_W` × `N_CLUSTER` | Clock-gate enable + hold/grace counters | **PARITY+MBIST** | Clock-gating control; flip → spurious gate/ungate (no data corruption) → MBIST the cells, parity optional. |
-| glm_fp8_soc_ms.v:445 | `kv_mem [0:L*NSEQ*KV_RESIDENT-1]` | `ROW_BITS` × `L·NSEQ·KV_RESIDENT` | Batched multi-seq TOP's **owned per-(layer,seq) resident KV store** (host writes per (seq,layer,pos); model reads combinationally) | **SECDED** | Same latent-KV **model data** as the pager `ring`, but the store the top actually OWNS. A flip returns a corrupt latent → wrong attention, silently. Overflow beyond `KV_RESIDENT` is off-die (future work). Apply the §2.1 lane-partitioned SECDED. |
-| glm_fp8_soc_ms.v:478 | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO to the routed-expert cache (multi-seq top) | **PARITY+MBIST** | Same role as `glm_fp8_soc`/`glm_fp8_system` efifo — queue of expert **ids** (control), not weights. |
+| glm_q4k_soc_ms | `kv_mem [0:L*NSEQ*KV_RESIDENT-1]` | `ROW_BITS` × `L·NSEQ·KV_RESIDENT` | Batched multi-seq TOP's **owned per-(layer,seq) resident KV store** (host writes per (seq,layer,pos); model reads combinationally) | **SECDED** | Same latent-KV **model data** as the pager `ring`, but the store the top actually OWNS. A flip returns a corrupt latent → wrong attention, silently. Overflow beyond `KV_RESIDENT` is off-die (future work). Apply the §2.1 lane-partitioned SECDED. |
+| glm_q4k_soc_ms | `efifo [0:EFIFO_DEPTH-1]` | `EIDXW` × `EFIFO_DEPTH` | Expert-id request FIFO to the routed-expert cache (multi-seq top) | **PARITY+MBIST** | Same role as `glm_q4k_soc`/`glm_q4k_system` efifo — queue of expert **ids** (control), not weights. |
 
 **ECC lane-partition note (kv_cache_pager `ring`).** `ROW_BITS` defaults to
 **768** = (KV_LORA 32 + ROPE 16) × 16b. 768 = **12 × 64**, so with the 64-bit
@@ -91,24 +100,24 @@ both split each `ROW_BITS` row into `NLANES = ceil(ROW_BITS/64)` 64-bit
 and OR every lane's error into row-level `serr`/`derr` (a DBU in **any** lane
 poisons the whole row — the conservative choice). Proven with back-door fault
 injection by `kv_cache_pager_ecc_tb` and `kv_ecc_ring_tb`. The same partitioning
-applies to `glm_fp8_soc_ms.kv_mem` (identical row width).
+applies to `glm_q4k_soc_ms.kv_mem` (identical row width).
 
 **Product-scope note (single-user box).** The product is the LOCAL, SINGLE-USER
-personal box — one box, one user, running the full GLM-5.2-FP8 model **fully
+personal box — one box, one user, running the full GLM-5.2 (UD-Q4_K_XL) model **fully
 offline / air-gapped** (nothing leaves because there is no path out — it runs with
 the ethernet unplugged; the 753 GB model is provisioned once, then never needs a
 connection; see `docs/USBC_PRODUCT_PLAN.md`). It decodes **one sequence (NSEQ=1 / B=1)**, so its
 resident KV here is just the single user's hot set + that one user's KV. The
-**batched multi-seq path** (`glm_fp8_soc_ms`, the `kv_cache_pager` `NSEQ>1` mode,
+**batched multi-seq path** (`glm_q4k_soc_ms`, the `kv_cache_pager` `NSEQ>1` mode,
 and the `NSEQ`-scaled `kv_mem`) is the SAME silicon run as continuous batching for
 the **non-target datacenter deployment** (aggregate serving of many *different*
 users); it is kept in this map because the SECDED/parity classification is
 identical in both regimes — the per-array protection rules do not change with
 `NSEQ`. It just changes how many independent KV windows the array holds.
 
-### 2.2 Active FP8 datapath — activation / KV / accumulator scratch (SECDED-class model data, single-token scope)
+### 2.2 Active Q4_K datapath — activation / KV / accumulator scratch (SECDED-class model data, single-token scope)
 
-These hold live numeric intermediates (bf16 activations, FP8-block accumulators,
+These hold live numeric intermediates (bf16 activations, fp32 GEMM accumulators,
 scores, logits). By the class rule a flip corrupts **model data**, so they are
 **SECDED-class**; but each is *transient* (rebuilt every token) and lives behind
 SECDED-protected weight/KV inputs — so they are **lower C6 priority** than the
@@ -116,24 +125,24 @@ persistent stores in §2.1. All are on-die → **MBIST-testable** regardless.
 
 | Module | Array (signal) | Width × Depth | Holds | Class | Rationale |
 |--------|----------------|---------------|-------|-------|-----------|
-| glm_matmul_fp8.v:328 | `accx [0:NB-1][0:PE_M-1][0:PE_N-1]` | `ACC_W`(48) signed × NB·PE_M·PE_N | **GEMM accumulator banks** (per-block fixed-point partial sums) | **SECDED** | Partial-sum bank; a flip directly corrupts the output activation of every matmul. Highest-leverage scratch — one flip → wrong row of the GEMM result. |
-| mla_attn_fp8.v:357 | `scores [0:PE_M-1][0:H_HEADS-1][0:SWIN-1]` | 16 × PE_M·H_HEADS·SWIN | Per-row attention **scores** scratch (multi-seq union-slot indexed) | **SECDED** | Activation; flip → wrong softmax → wrong context. |
-| mla_attn_fp8.v:358 | `vstore [0:H_HEADS-1][0:SWIN-1][0:V_DIM-1]` | 16 × H_HEADS·SWIN·V_DIM | Cached **V** rows (shared key value store, union-slot indexed) | **SECDED** | Holds V (model KV/activation); flip → corrupt attention output. |
-| mla_attn_fp8.v:359 | `probs [0:PE_M-1][0:H_HEADS-1][0:SWIN-1]` | 16 × PE_M·H_HEADS·SWIN | Softmax **probabilities** scratch | **SECDED** | Activation. |
-| mla_attn_fp8.v:227–254 | `xbuf,qlora,qlora_n,qfull,qrot,ckv_cur,krope_cur,ckv_key,ckv_n,knope_j,v_j,krope_j,ctx,outbuf` | 16 × (per-row / shared) | Q/KV projection + RoPE + context bf16 activation scratch | **SECDED** | Live activations/KV latents of the MLA datapath. |
-| mla_attn_fp8.v:445 | `ctx_acc [0:PE_M-1]` | 32 × PE_M | Per-row context fp32 accumulator | **SECDED** | Activation partial sum. |
-| mla_attn_fp8.v:548 / :568 | `a_emax [0:PE_M-1]`, `a_emax_q [0:PE_M-1]` | 8 × PE_M | Per-row bf16 **exponent-max (block scale)** | **SECDED** | Shared FP8 block scale for a whole row — a flip mis-scales every element in the row → high-leverage magnitude corruption. |
-| mla_attn_fp8.v:384 | `sel_list_r [0:PE_M-1][0:TOPK-1]` | `IDXW` × PE_M·TOPK | Per-row DSA-selected key indices (multi-seq) | **PARITY+MBIST** | Index list (control), not data. |
-| mtp_head_fp8.v:262–268 | `hbuf,ebuf,cbuf,hprime,xcur,xn,lbuf` | 16 × (MODEL_DIM / CK / VOCAB) | MTP RMSNorm/proj/decoder activation + **logits** scratch | **SECDED** | Activations and LM-head logits. |
-| moe_router_fp8.v:303/378/402 | `tk_score_in`,`s_reg`,`rs_reg [0:PE_M-1]` | 32 × PE_M | Per-row router **scores** + fold factor | **SECDED** | Gating scores (data); flip → wrong expert weighting. |
-| glm_decoder_block_fp8.v:446/476/477 | `cur_gate_f`,`sh_add_a`,`sh_add_b [0:PE_M-1]` | 32 × PE_M | Per-row gate value + adder operands | **SECDED** | Activation/gate data. |
-| glm_decoder_block_fp8.v:445 | `row_active [0:PE_M-1]` | 1 × PE_M | Per-row active flag | **PARITY+MBIST** | Control bit. |
-| glm_model_fp8.v:374 | `am_best [0:PE_M-1]` | 16 × PE_M | Per-row best logit value (argmax) | **SECDED** | Result data (drives the emitted token). |
-| glm_model_fp8.v:375 | `am_arg [0:PE_M-1]` | `TOKW` × PE_M | Per-row argmax **token index** | **PARITY+MBIST** | Index/control (the final selected token id). |
-| swiglu_expert_fp8.v:479 | `n_hval [0:MTN-1]` | 16 × MTN | SwiGLU intermediate `h` activations | **SECDED** | Activation. |
-| swiglu_expert_fp8.v:217/480 | `h_emax`,`n_h_emax [0:PE_M-1]` | 8 × PE_M | Per-row bf16 exp-max (block scale) | **SECDED** | Row block scale (see `a_emax` rationale). |
-| batched_moe.v:191 | `row_gate [0:PE_M-1]` | 16 × PE_M | Per-row gate weight | **SECDED** | Gating data. |
-| batched_moe.v:192 | `row_has [0:PE_M-1]` | 1 × PE_M | Per-row valid flag | **PARITY+MBIST** | Control bit. |
+| glm_matmul_q4k | `accx [0:NB-1][0:PE_M-1][0:PE_N-1]` | `ACC_W`(48) signed × NB·PE_M·PE_N | **GEMM accumulator banks** (per-block fixed-point partial sums) | **SECDED** | Partial-sum bank; a flip directly corrupts the output activation of every matmul. Highest-leverage scratch — one flip → wrong row of the GEMM result. |
+| mla_attn_q4k | `scores [0:PE_M-1][0:H_HEADS-1][0:SWIN-1]` | 16 × PE_M·H_HEADS·SWIN | Per-row attention **scores** scratch (multi-seq union-slot indexed) | **SECDED** | Activation; flip → wrong softmax → wrong context. |
+| mla_attn_q4k | `vstore [0:H_HEADS-1][0:SWIN-1][0:V_DIM-1]` | 16 × H_HEADS·SWIN·V_DIM | Cached **V** rows (shared key value store, union-slot indexed) | **SECDED** | Holds V (model KV/activation); flip → corrupt attention output. |
+| mla_attn_q4k | `probs [0:PE_M-1][0:H_HEADS-1][0:SWIN-1]` | 16 × PE_M·H_HEADS·SWIN | Softmax **probabilities** scratch | **SECDED** | Activation. |
+| mla_attn_q4k | `xbuf,qlora,qlora_n,qfull,qrot,ckv_cur,krope_cur,ckv_key,ckv_n,knope_j,v_j,krope_j,ctx,outbuf` | 16 × (per-row / shared) | Q/KV projection + RoPE + context bf16 activation scratch | **SECDED** | Live activations/KV latents of the MLA datapath. |
+| mla_attn_q4k | `ctx_acc [0:PE_M-1]` | 32 × PE_M | Per-row context fp32 accumulator | **SECDED** | Activation partial sum. |
+| mla_attn_q4k | `a_emax [0:PE_M-1]`, `a_emax_q [0:PE_M-1]` | 8 × PE_M | Per-row bf16 **exponent-max (block scale)** | **SECDED** | Shared bf16 block scale for a whole row — a flip mis-scales every element in the row → high-leverage magnitude corruption. |
+| mla_attn_q4k | `sel_list_r [0:PE_M-1][0:TOPK-1]` | `IDXW` × PE_M·TOPK | Per-row DSA-selected key indices (multi-seq) | **PARITY+MBIST** | Index list (control), not data. |
+| mtp_head_q4k | `hbuf,ebuf,cbuf,hprime,xcur,xn,lbuf` | 16 × (MODEL_DIM / CK / VOCAB) | MTP RMSNorm/proj/decoder activation + **logits** scratch | **SECDED** | Activations and LM-head logits. |
+| moe_router_q4k | `tk_score_in`,`s_reg`,`rs_reg [0:PE_M-1]` | 32 × PE_M | Per-row router **scores** + fold factor | **SECDED** | Gating scores (data); flip → wrong expert weighting. |
+| glm_decoder_block_q4k | `cur_gate_f`,`sh_add_a`,`sh_add_b [0:PE_M-1]` | 32 × PE_M | Per-row gate value + adder operands | **SECDED** | Activation/gate data. |
+| glm_decoder_block_q4k | `row_active [0:PE_M-1]` | 1 × PE_M | Per-row active flag | **PARITY+MBIST** | Control bit. |
+| glm_model_q4k | `am_best [0:PE_M-1]` | 16 × PE_M | Per-row best logit value (argmax) | **SECDED** | Result data (drives the emitted token). |
+| glm_model_q4k | `am_arg [0:PE_M-1]` | `TOKW` × PE_M | Per-row argmax **token index** | **PARITY+MBIST** | Index/control (the final selected token id). |
+| swiglu_expert_q4k | `n_hval [0:MTN-1]` | 16 × MTN | SwiGLU intermediate `h` activations | **SECDED** | Activation. |
+| swiglu_expert_q4k | `h_emax`,`n_h_emax [0:PE_M-1]` | 8 × PE_M | Per-row bf16 exp-max (block scale) | **SECDED** | Row block scale (see `a_emax` rationale). |
+| glm_decoder_block_q4k (folded union-skip) | `row_gate [0:PE_M-1]` | 16 × PE_M | Per-row gate weight | **SECDED** | Gating data. |
+| glm_decoder_block_q4k (folded union-skip) | `row_has [0:PE_M-1]` | 1 × PE_M | Per-row valid flag | **PARITY+MBIST** | Control bit. |
 | rmsnorm_unit.v:112/126 | `buf_mem [0:NBEATS-1]`, `sq [0:LANES-1]` | `LANES*16`/32 × depth | RMSNorm input beats + per-lane square accum | **SECDED** | Activation scratch. |
 | glm_softmax.v:71/72/138 | `xbuf`,`ebuf`,`pbuf [0:LEN-1]` | 32/32/16 × LEN | Softmax logits / exp / probability scratch | **SECDED** | Activation scratch. |
 | sampler.v:117/172 | `zbuf [0:VOCAB-1]`, `pprob [0:KEFF-1]` | 32 × depth | Temp-scaled logits + kept-slot probabilities | **SECDED** | Logit/probability data. |
@@ -153,7 +162,7 @@ persistent stores in §2.1. All are on-die → **MBIST-testable** regardless.
 
 ### 2.3 Legacy TPU core + superseded bf16 GLM path (separate — noted per task)
 
-The bf16 GLM modules are **superseded** by their `_fp8` twins (the active
+The bf16 GLM modules are **superseded** by their `_q4k` twins (the active
 datapath); the TPU tensor units are the legacy v2.0 core. Same classification
 rule applies; listed apart so C6/C7 can decide whether the legacy blocks are
 taped out at all.
@@ -163,7 +172,7 @@ taped out at all.
 | tile_memory.v:70 | `lines [0:TM_LINES-1]` | `LINE_W`(128) × `TM_LINES`(32) | Tensor **operand tiles** (shared TM) — legacy core | **SECDED** | Model data (every tensor unit's operands/results). If the TPU core ships, this is a top SECDED target. |
 | memory.v:50 | `sram [0:DMEM_DEPTH-1]` | `XLEN`(32) × `DMEM_DEPTH`(256) | Scalar **DMEM** data words — legacy core | **SECDED** | Model/scalar data. |
 | register_file.v:70 | `registers [0:REGS-1]` | `XLEN`(32) × `RF_REGS`(16) | Architectural scalar registers r0..r15 — legacy core | **PARITY+MBIST** | Tiny (16×32); a flip corrupts a scalar operand. Parity-detect + MBIST; too small to justify SECDED but must be BIST-tested. (r0 is hardwired-zero at the read mux.) |
-| mla_attn.v:190–217,418 | `xbuf,qlora,qlora_n,qfull,qrot,ckv_cur,krope_cur,ckv_n,knope_j,v_j,ctx,outbuf,krope_j`, `sel_list` | 16 × depth (+`IDXW` sel) | bf16 MLA activation scratch (**superseded** by `mla_attn_fp8`) | **SECDED** (data) / **PARITY** (`sel_list`) | Same roles as §2.2; older bf16 variant. |
+| mla_attn.v:190–217,418 | `xbuf,qlora,qlora_n,qfull,qrot,ckv_cur,krope_cur,ckv_n,knope_j,v_j,ctx,outbuf,krope_j`, `sel_list` | 16 × depth (+`IDXW` sel) | bf16 MLA activation scratch (**superseded** by `mla_attn_q4k`) | **SECDED** (data) / **PARITY** (`sel_list`) | Same roles as §2.2; older bf16 variant. |
 | mtp_head.v:207–213 | `hbuf,ebuf,cbuf,hprime,xcur,xn,lbuf` | 16 × depth | bf16 MTP activation/logit scratch (**superseded**) | **SECDED** | Activations/logits. |
 | glm_model.v:229/237/302 | `xcur`,`lbuf`,`xn` | 16 × depth | bf16 model activation/logit scratch (**superseded**) | **SECDED** | Activations/logits. |
 | glm_decoder_block.v:185–188,348 | `xbuf,nrm,hbuf,fbuf,facc` | 16/32 × depth | bf16 decoder activation + FFN accum (**superseded**) | **SECDED** | Activations/partial sums. |
@@ -178,7 +187,7 @@ modules above; the testbench models them as latency memories.
 
 | Payload | Reached via | Class | Rationale |
 |---------|-------------|-------|-----------|
-| **DDR5 payload** (weights/activations resident set) | `ddr5_xbar` `mem_*` ports; `weight_loader` / `boot_loader` `mem_*`/`ddr_*`; `glm_fp8_system(_cdc)` `wl_mem_*` | **OFF-DIE** | On the DRAM die, not ours; protected by device ECC + the `ecc_mem_wrap` boundary where it lands on-die. |
+| **DDR5 payload** (weights/activations resident set) | `ddr5_xbar` `mem_*` ports; `weight_loader` / `boot_loader` `mem_*`/`ddr_*`; `glm_q4k_system(_cdc)` `wl_mem_*` | **OFF-DIE** | On the DRAM die, not ours; protected by device ECC + the `ecc_mem_wrap` boundary where it lands on-die. |
 | **NVMe payload** (cold KV rows, cold expert weights) | `kv_cache_pager` `flash_*`; `flash_xbar` `flash_*`; `expert_cache_*` `flash_*`; `weight_decomp*` compressed input | **OFF-DIE** | Off-die **NVMe SSD (M.2 / PCIe)**; SECDED belongs at the on-die controller boundary, not in these routing blocks. The `flash_*` ports / `flash_xbar` are committed RTL identifiers for the storage-read fabric — kept as-is; in the product they front an **NVMe/PCIe host controller** (address→weight-bytes abstraction is medium-agnostic, only the NAND-specific backend is swapped). |
 
 ---
@@ -189,16 +198,16 @@ modules above; the testbench models them as latency memories.
 
 **Persistent (do these first):**
 - `kv_cache_pager.ring` (768b latent KV) — **lane-partition, ragged-lane aware** (§2.1 note); **now realized in-tree** via the pager's `ECC` param / `kv_ecc_ring.v`.
-- `glm_fp8_soc_ms.kv_mem` — the batched multi-seq top's **owned per-(layer,seq) resident KV store** (same latent-KV data as the pager ring; apply the same lane-partitioned SECDED).
+- `glm_q4k_soc_ms.kv_mem` — the batched multi-seq top's **owned per-(layer,seq) resident KV store** (same latent-KV data as the pager ring; apply the same lane-partitioned SECDED).
 - `weight_decomp.{count_table,symbol_table}`, `weight_decomp2.{count_table,symbol_table}` — weight-defining decode tables.
 - (legacy, iff taped out) `tile_memory.lines`, `memory.sram`.
 
 **Transient activation/accumulator scratch (SECDED-class; prioritize the high-leverage ones):**
-- `glm_matmul_fp8.accx` (GEMM accumulator banks) — highest-leverage.
-- `mla_attn_fp8.{scores,vstore,probs,ctx_acc,a_emax,a_emax_q, + xbuf/qlora/.../outbuf}`.
-- `mtp_head_fp8.{hbuf,ebuf,cbuf,hprime,xcur,xn,lbuf}`; `spec_chain_top.h_chain`; `spec_decode_top.emb_buf`.
-- `moe_router_fp8.{tk_score_in,s_reg,rs_reg}`; `glm_decoder_block_fp8.{cur_gate_f,sh_add_a,sh_add_b}`; `batched_moe.row_gate`; `glm_model_fp8.am_best`.
-- `swiglu_expert_fp8.{n_hval,h_emax,n_h_emax}`; `rmsnorm_unit.{buf_mem,sq}`; `glm_softmax.{xbuf,ebuf,pbuf}`; `sampler.{zbuf,kscore,pprob}`; `topk_select.{score_mem,leaf_score,t_score}`; `dsa_indexer.{qbuf,score_mem,acc_l}`.
+- `glm_matmul_q4k.accx` (GEMM accumulator banks) — highest-leverage.
+- `mla_attn_q4k.{scores,vstore,probs,ctx_acc,a_emax,a_emax_q, + xbuf/qlora/.../outbuf}`.
+- `mtp_head_q4k.{hbuf,ebuf,cbuf,hprime,xcur,xn,lbuf}`; `spec_chain_top.h_chain`; `spec_decode_top.emb_buf`.
+- `moe_router_q4k.{tk_score_in,s_reg,rs_reg}`; `glm_decoder_block_q4k.{cur_gate_f,sh_add_a,sh_add_b}`; `glm_decoder_block_q4k.row_gate` (folded union-skip); `glm_model_q4k.am_best`.
+- `swiglu_expert_q4k.{n_hval,h_emax,n_h_emax}`; `rmsnorm_unit.{buf_mem,sq}`; `glm_softmax.{xbuf,ebuf,pbuf}`; `sampler.{zbuf,kscore,pprob}`; `topk_select.{score_mem,leaf_score,t_score}`; `dsa_indexer.{qbuf,score_mem,acc_l}`.
 - Block-scale exponent fields (`*_emax`) are cheap, high-leverage SECDED wins (a flip mis-scales a whole row).
 - Lowest priority (single-pass feed-forward poly stages): `glm_act` per-lane stage regs, and the legacy/bf16 §2.3 scratch.
 
@@ -206,8 +215,8 @@ modules above; the testbench models them as latency memories.
 
 - **Cache directories:** `expert_cache_pf.{valid_arr,tag_arr,rank,pf_flag,freq}`, `expert_cache_ctrl.{valid_arr,tag_arr,rank}` — parity on **tags** matters (wrong-line-return).
 - **Predictor tables:** `expert_predictor.{freq,age_ctr}`.
-- **FIFOs & pointers:** `cdc_async_fifo.mem` (**CDC — MBIST only, no in-path decode**), `ddr5_xbar.{fifo,head,tail,cnt}`, `flash_xbar.{fifo,head,tail,cnt,outst}`, `boot_loader.{fifo_mem,fbase_q,dbase_q,len_q}`, `glm_fp8_soc.efifo`, `glm_fp8_system.efifo`.
-- **Index/queue/counter arrays:** `mla_attn_fp8.sel_list`, `glm_model_fp8.am_arg`, `sampler.kidx`, `topk_select.t_idx`, `dsa_indexer.{dim_issue_l,dim_done_l,tagq}`, `spec_chain_top.{draft_id,truth_id}`, `spec_decode_seq.{pending_draft,obuf}`, `moe_router(_fp8) index arrays`, `batched_moe.row_has`, `glm_decoder_block_fp8.row_active`.
+- **FIFOs & pointers:** `cdc_async_fifo.mem` (**CDC — MBIST only, no in-path decode**), `ddr5_xbar.{fifo,head,tail,cnt}`, `flash_xbar.{fifo,head,tail,cnt,outst}`, `boot_loader.{fifo_mem,fbase_q,dbase_q,len_q}`, `glm_q4k_soc.efifo`, `glm_q4k_system.efifo`.
+- **Index/queue/counter arrays:** `mla_attn_q4k.sel_list`, `glm_model_q4k.am_arg`, `sampler.kidx`, `topk_select.t_idx`, `dsa_indexer.{dim_issue_l,dim_done_l,tagq}`, `spec_chain_top.{draft_id,truth_id}`, `spec_decode_seq.{pending_draft,obuf}`, `moe_router(_q4k) index arrays`, `glm_decoder_block_q4k.row_has` (folded union-skip), `glm_decoder_block_q4k.row_active`.
 - **Clock/arch control:** `clk_en_ctrl.{en_reg,hold_cnt,gcnt}`, `register_file.registers` (legacy, MBIST the 16 words).
 
 ### 3.3 OFF-DIE (no on-die ECC/MBIST; protect at the controller boundary)
@@ -230,7 +239,7 @@ modules above; the testbench models them as latency memories.
 
 A broad `reg`-array sweep over `src/*.v` (single- **and** multi-dimensional
 declarations) returns **235** matches. This map classifies **every storage-class
-array in the active GLM-5.2 FP8 datapath and the entire memory system
+array in the active GLM-5.2 Q4_K datapath and the entire memory system
 individually** (§2.1–§2.2), plus the **legacy TPU core and superseded bf16 GLM
 path storage arrays** (§2.3) — i.e. 100% of the C6/C7-relevant memory surface,
 including the multi-dimensional `scores`/`vstore`/`probs` MLA arrays that the
@@ -252,14 +261,14 @@ memories):
 These are `[0:LAT-1]` alignment shift registers whose only job is to delay a
 signal by a fixed latency; they hold no addressable state and self-flush every
 few cycles. A flip is transient and overwritten. Not ECC/MBIST targets.
-- `glm_matmul_fp8.v:422–424` (`dq_v_pipe,dq_slot_pipe,dq_ash_pipe`), `:461–462` (`pd,vd`).
+- `glm_matmul_q4k` (`dq_v_pipe,dq_slot_pipe,dq_ash_pipe`, `pd,vd` pipeline delay regs).
 - `glm_fp_pipe.v:607,686–688,718,726,749–751,772–773,793–794,1019,1072`
   (`c_d,y0_d,sp_d,spv_d,xhalf_d,y0_dl,xhalf_chain,sp_chain,spv_chain,xhalf1_d,y1_dl,spv_chain2,sp_chain2,x_dl,r_dl`).
 - `glm_matmul_pipe.v:179,185` (`ps,lane_pipe`).
 
 **Excluded — additional legacy-compute stage/accumulator scratch (same SECDED-class-if-taped-out rationale as §2.3; not enumerated per-signal because these blocks are legacy TPU / superseded and hold only single-pass transient activations):**
 - `gemm_ml.v`, `gemm_systolic.v`, `glm_matmul.v` — legacy/pre-FP8 systolic GEMM
-  partial-sum and operand-staging arrays (superseded by `glm_matmul_fp8`).
+  partial-sum and operand-staging arrays (superseded by `glm_matmul_q4k`).
 - `conv2d_unit.v` — legacy TPU CONV2D line/window scratch.
 - Additional per-stage scratch in `attention_unit.v` / `softmax_unit.v` beyond
   the representative rows in §2.3 (legacy TPU tensor path).

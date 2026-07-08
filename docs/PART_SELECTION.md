@@ -1,5 +1,10 @@
 # Part selection — the minimum info to lock the rung-① / ② board BOM
 
+> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
+> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
+> `*_q4k` equivalents on main.
+
 *How the physical parts (FPGA, DDR4, NVMe, power) get **confirmed** for the offline
 single-user 753B box. This is the bridge between the FPGA-fit measurement and a real
 PCB design/BOM.* Companions: [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) (why performance =

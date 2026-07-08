@@ -4,12 +4,14 @@
 /* verilator lint_off DECLFILENAME */
 //============================================================================
 // glm_matmul_q4k.v  --  GLM-5.2 Q4_K-NATIVE GEMM datapath (local-device target)
-//                       a DROP-IN sibling of glm_matmul_pipe.v / glm_matmul_fp8.v.
+//                       a DROP-IN sibling of glm_matmul_pipe.v (prior FP8 twin
+//                       glm_matmul_fp8 preserved on branch 'fp8').
 //----------------------------------------------------------------------------
 // FUNCTION
 //   C[M,N] = A[M,K] x W[K,N], computed in the OFFICIAL GGML Q4_K numerics so the
-//   published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` weights run with NO
-//   re-quantization -- bit-exact to ggml `dequantize_row_q4_K` (tools/q4k_ref.py).
+//   Q4_K-typed weights run with NO re-quantization -- bit-exact to the ggml Q4_K
+//   reference `dequantize_row_q4_K` (tools/q4k_ref.py).  (The dynamic UD-Q4_K_XL
+//   mix also keeps Q6_K/Q8_0/F16 tensors not yet consumed by this Q4_K-only path.)
 //
 //   * Weights W arrive as GGML Q4_K: per output column pj a super-block carries
 //       - fp16  d[pj]      (super-block scale)
@@ -30,7 +32,7 @@
 // This is the CORRECT-FIRST reference core: the per-weight dequant + fp32 MAC are
 //   combinational, one K-beat per cycle, the accumulator registered each beat (a
 //   single-cycle sequential accumulate -- no hazard).  KMAX <= 256 = one Q4_K
-//   super-block along K (the caller tiles larger K, as with glm_matmul_fp8).
+//   super-block along K (the caller tiles larger K, as with glm_matmul_pipe).
 //
 // CONVENTIONS: synchronous ACTIVE-HIGH reset; NO latch; NO combinational loop
 //   (the accumulator feedback rides the per-beat register).

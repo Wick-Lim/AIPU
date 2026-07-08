@@ -7,8 +7,9 @@
 //                    (docs/Q4K_SYSTEM_PLAN.md §1.1 -- the integrated top)
 //----------------------------------------------------------------------------
 // WHAT THIS IS
-//   The Q4_K-native sibling of glm_fp8_soc.v.  Identical system: the only change
-//   is the compute die (glm_model_fp8 -> glm_model_q4k) and, as a consequence,
+//   The Q4_K-native sibling of the prior glm_fp8_soc (branch 'fp8').  Identical
+//   system: the only change is the compute die (glm_model_fp8 -> glm_model_q4k)
+//   and, as a consequence,
 //   the three weight-bus families that cross the compute-die boundary swap from
 //   FP8 (8-bit codes + bf16 [128,128]-block scales) to GGUF Q4_K (4-bit codes +
 //   per-super-block d/dmin/scales, ceil(K/256) super-blocks).  The HOST FSM, the
@@ -30,10 +31,10 @@
 //      start/prompt_tok ─┐                                   (TB-driven, the
 //      start_pos/s_len   │                                    PHY would serve)
 //                        ▼
-//            ┌────────────────────────── glm_fp8_soc ──────────────────────┐
+//            ┌────────────────────────── glm_q4k_soc ──────────────────────┐
 //            │  ┌──────────────┐  em_/gn_/aw_/rw_/fn_/lw_  (HOT weights) ── │ ◀── GDDR6 stub
-//            │  │ glm_model_fp8│  kc_  (latent KV read) ───┐                │
-//            │  │  FP8 COMPUTE │  fw_  (FFN expert pull) ──┐│                │
+//            │  │ glm_model_q4k│  kc_  (latent KV read) ───┐                │
+//            │  │ Q4_K COMPUTE │  fw_  (FFN expert pull) ──┐│                │
 //            │  └──────┬───────┘                          ││                │
 //            │   db_layer/fw_eidx (router pick)           ││ kc_idx         │
 //            │         │ routed-expert episode detect      ││               │
@@ -56,7 +57,7 @@
 //
 // HOW THE CONTROLLERS SIT IN THE DATAPATH  (observable-but-pass-through)
 //   The compute die's weight/KV PULLS are COMBINATIONAL and answered the SAME
-//   cycle (the verified handshake of glm_model_fp8) -- the die cannot be stalled
+//   cycle (the verified handshake of glm_model_q4k) -- the die cannot be stalled
 //   mid-layer.  So the HOT weights and the cache/pager BACKING (GDDR6 + Flash
 //   contents) flow to the die from the STUB ports the TB drives (exactly the
 //   bytes a real GDDR6/Flash PHY would serve), and the two controllers sit IN
@@ -118,7 +119,7 @@ module glm_q4k_soc #(
     parameter integer KV_RESIDENT = 16,     // KV ring capacity (POWER OF TWO, >= S_MAX)
     parameter integer EFIFO_DEPTH = 16,     // routed-expert request FIFO depth (POW2)
     // ====================================================================
-    // derived (do NOT override) -- mirror glm_model_fp8's port-width derivations
+    // derived (do NOT override) -- mirror glm_model_q4k's port-width derivations
     // ====================================================================
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -484,9 +485,9 @@ module glm_q4k_soc #(
     //========================================================================
     // 4) EXPERT CACHE -- expert_cache_pf (GDDR6 cache + Flash prefetch).
     //    BYTE-AGNOSTIC: a tag/slot/id controller (valid/tag/rank/freq + LFU/LRU),
-    //    NO weight bytes touched -- carried through from the FP8 SoC with ZERO
+    //    NO weight bytes touched -- carried through from the prior FP8 SoC with ZERO
     //    logic change.  Only the storage semantics move: a resident GDDR6 slot now
-    //    holds one expert's Q4_K weights (~44% fewer bytes/weight than FP8), so
+    //    holds one expert's Q4_K weights (~44% fewer bytes/weight than the prior FP8), so
     //    more experts fit per GDDR6 GB for a fixed CACHE_SLOTS budget.
     //========================================================================
     wire                 ec_flash_req;

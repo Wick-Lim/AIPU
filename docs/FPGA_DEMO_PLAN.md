@@ -63,7 +63,7 @@ remaining NB-scaling is the integer block-accumulator memory `accx` (**O(NB)** w
 |---|---|
 | `glm_matmul_fp8_tb` @ KMAX=256 (NB=2) | **ALL 224 PASS** vs exact golden |
 | `glm_matmul_fp8_tb` @ KMAX=2048 (NB=16) | **ALL 224 PASS** (many-block fold) |
-| `make bitacc` (matmul == real GLM-5.2-FP8 contract) | **14/14 + argmax 28/28**, contract bit-exact |
+| `make bitacc` [FP8 PRIOR TRACK, removed from `main` — current Q4_K bit-exact gate is `make q4k`, which proves `glm_matmul_q4k` bit-exact vs the ggml-Q4_K ref `tools/q4k_ref.py`, not the real GGUF] | **[FP8 hist.] 14/14 + argmax 28/28** |
 | full-slice `glm_model_fp8` next-token argmax | unchanged (integrated regression) |
 
 **Effect on synth.** yosys 0.66 now **elaborates + `proc`s `glm_matmul_fp8` at KMAX=16384 to a finite

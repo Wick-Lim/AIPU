@@ -1,7 +1,17 @@
-# Full-config elaboration study — glm_model_fp8 at the real 753B GLM-5.2-FP8 shape
+# Full-config elaboration study — glm_model_q4k at the real 753B GLM-5.2 (UD-Q4_K_XL) shape
+
+> **Retargeted FP8 → Q4_K.** This study was first executed on the FP8 sibling hierarchy; the
+> wrapper (`test/full_config_elab_wrap.v`) now instantiates the **drop-in Q4_K siblings**
+> (`glm_model_q4k` / `glm_decoder_block_q4k` / `mla_attn_q4k` / `moe_router_q4k` /
+> `swiglu_expert_q4k` / `glm_matmul_q4k`), which share the *identical* parameterization / FSM /
+> dataflow / latency, so the elaboration contract (width threading, `$clog2`, part-selects,
+> connectivity) carries over. Module names and build commands below are the `*_q4k` units; the
+> specific wall-times, lint counts, and prior slice-TB pass figures were **measured on that
+> original FP8-track run** and a Q4_K-tree re-run is the pending confirmation. Any residual
+> FP8-format-specific arithmetic detail (e.g. [128,128] block-scale) is that prior record.
 
 **PRODUCT_ROADMAP P1.2.** Parametrize the committed RTL *slice* (MODEL_DIM=128, 6
-layers, 8 experts, VOCAB=256) UP to the **real full GLM-5.2-FP8** config and check it
+layers, 8 experts, VOCAB=256) UP to the **real full GLM-5.2 (UD-Q4_K_XL)** config and check it
 **ELABORATES cleanly** (no width-overflow / parametrization bug), catching full-scale
 RTL issues the slice cannot. This is an **elaboration-only** study — no full-config
 simulation (intractable, see §6).
@@ -19,14 +29,14 @@ N_EXPERT=16, Q_LORA=1536. **This study pushes to the TRUE full config**
   replication-count sign, and full-hierarchy connectivity — at the **real** dims.
 - **NOT checked here:** behavior/functional correctness, timing, area, gate mapping.
   Elaboration ≠ synthesis ≠ simulation. Functional fidelity is proven **at the slice**
-  by the committed `glm_model_fp8` TBs and, on **real checkpoint weights**, by
-  [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md); the FP8 datapaths are known
-  un-synthesizable through yosys abc (no abc/full-synth attempted).
+  by the committed `glm_model_q4k` TBs and, on **real checkpoint weights**, by
+  [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md); full synthesis / abc gate-mapping
+  was not attempted (this is an elaboration-only study).
 
 ## 2. Parameter map (slice → full)
 
 Source of truth: [`configs/full_glm52.vh`](../configs/full_glm52.vh) (every value cited to
-`config.json` of `zai-org/GLM-5.2-FP8` / [`ACCEL_GLM52.md`](ACCEL_GLM52.md)).
+`config.json` of `zai-org/GLM-5.2` (UD-Q4_K_XL) / [`ACCEL_GLM52.md`](ACCEL_GLM52.md)).
 
 | Module param | Slice | **Full** | Real-config source |
 |---|---|---|---|
@@ -43,7 +53,7 @@ Source of truth: [`configs/full_glm52.vh`](../configs/full_glm52.vh) (every valu
 | S_MAX | 8 | **8** † | latent-ring / KV scratch depth |
 | PE_N / TN / LM_TN / BLK / PE_M | 4/4/4/128/1 | unchanged | microarch tiling (not model config) |
 
-**† S_MAX = 8 (ASSUMPTION, FLAGGED).** `mla_attn_fp8` sizes its attention scratch
+**† S_MAX = 8 (ASSUMPTION, FLAGGED).** `mla_attn_q4k` sizes its attention scratch
 (`scores`/`probs`/`vstore`/union) by S_MAX; the real 1M context lives in the **POSW=20**
 position field, *not* S_MAX. S_MAX is the KV latent-ring depth and is kept small for a
 tractable elaboration. It sizes counters/scratch only; the datapath-width
@@ -55,7 +65,7 @@ INTER_DENSE ≥ INTER_MOE, so the `FF_GWD ≥ FF_GWM` config-validity constraint
 [`P12_SCALEUP.md`](P12_SCALEUP.md) §3 holds (no negative replication).
 
 Wrapper (deliverable, does NOT touch `src/`): [`test/full_config_elab_wrap.v`](../test/full_config_elab_wrap.v)
-— instantiates `glm_model_fp8` with all params overridden from `full_glm52.vh`, every
+— instantiates `glm_model_q4k` with all params overridden from `full_glm52.vh`, every
 port except clk/rst left dangling (elaboration study, not a sim).
 
 ## 3. Methods
@@ -63,8 +73,8 @@ port except clk/rst left dangling (elaboration study, not a sim).
 ```
 # path A — iverilog -tnull (type/width elaboration, then stop; no sim binary)
 iverilog -g2012 -I src -I configs -tnull -pfileline=1 \
-  test/full_config_elab_wrap.v  src/glm_model_fp8.v src/glm_decoder_block_fp8.v \
-  src/mla_attn_fp8.v src/swiglu_expert_fp8.v src/moe_router_fp8.v src/glm_matmul_fp8.v \
+  test/full_config_elab_wrap.v  src/glm_model_q4k.v src/glm_decoder_block_q4k.v \
+  src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v \
   src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v \
   src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
 
@@ -94,11 +104,11 @@ INTER_MOE=2048/INTER_DENSE=12288, TOPK_ATTN=2048) elaborated the **whole hierarc
 
 > **UPDATE (SELRANGE fully cleared, byte-identical):** the 4122 SELRANGE are now **0**.
 > (a) the swiglu/moe_router exponent-max-tree pad leaves clamp their (discarded) out-of-range
-> read index; (b) `mla_attn_fp8` uses `SWIN=min(S_MAX,TOPK)` (the tight bound; also shrinks the
+> read index; (b) `mla_attn_q4k` uses `SWIN=min(S_MAX,TOPK)` (the tight bound; also shrinks the
 > full-config scratch); (c) the mla union-slot indices `rowslot2union[rr][X[TKW-1:0]]` slice X
 > to `SWINW` (the row-slot is `<= SWIN-1`, so it fits) instead of the over-wide `TKW`. All
-> byte-identical: `glm_model_fp8_tb` `{4,31,20}` (gworst_rel 0.00689655), swiglu 1024, moe_router
-> 185, mla 7 — unchanged. Only benign style lints remain (PINMISSING dangling wrapper ports; a
+> byte-identical (prior FP8-track slice TBs): the FP8-sibling model TB `{4,31,20}` (gworst_rel
+> 0.00689655), swiglu 1024, moe_router 185, mla 7 — unchanged. Only benign style lints remain (PINMISSING dangling wrapper ports; a
 > few WIDTH* on the huge full-config vectors). See the two `fix(lint)` commits.
 
 This is the authoritative full-config elaboration result: **the parameterization threads
@@ -120,7 +130,7 @@ $clog2 edge, no unknown module across the full hierarchy.**
 | **TRUE full** (MODEL_DIM=6144) | **killed at 898 s (~15 min) CPU, 346 MB, no completion** | **tool wall** |
 
 **Root cause of the wall (NOT an RTL bug):** iverilog's front-end (`ivl`) unrolls
-constant-bound behavioral `for` loops and materializes wide part-selects. `glm_model_fp8`
+constant-bound behavioral `for` loops and materializes wide part-selects. `glm_model_q4k`
 and children have many `for (i=0;i<MODEL_DIM;…)` loops over MODEL_DIM-wide vectors, so
 elaboration cost grows ~O(MODEL_DIM²) and multiplies with the other large dims
 (INTER_DENSE=12288, HV=H_HEADS·V_DIM=16384, N_EXPERT=256). VOCAB=154880 alone is *fine*
@@ -135,10 +145,10 @@ does not unroll for lint — elaborates the same true-full config in 24 s.
 `hierarchy` fails immediately (exit 1, 0 s) with:
 
 ```
-src/glm_decoder_block_fp8.v:486: ERROR: Static cast is only supported in SystemVerilog mode.
+src/glm_decoder_block_q4k.v:521: ERROR: Static cast is only supported in SystemVerilog mode.
 ```
 
-Line 486 is `if ((esc < ECW'(N_EXPERT)) && …)` — a **valid SystemVerilog** static cast.
+Line 521 is `if ((esc < ECW'(N_EXPERT)) && …)` — a **valid SystemVerilog** static cast.
 `read_verilog -sv` reads the file fine; the error only appears when `hierarchy` **re-derives**
 the module — yosys 0.66 loses the `-sv` flag on derived-module re-elaboration. It reproduces
 **at SLICE defaults with no parameter override**, so it is independent of the full-config
@@ -153,11 +163,11 @@ bug. yosys hierarchy is therefore not a usable elaboration path for this hierarc
 > `SWIN = min(S_MAX, TOPK)` clamp — see the §4 UPDATE and the two `fix(lint)` commits. The
 > mechanism is retained here as the rationale for that fix.
 
-The DSA union scratch in `mla_attn_fp8` is sized by `SWIN = TOPK` (the module's TOPK is
-`TOPK_ATTN`, wired at `glm_decoder_block_fp8.v:304` `.TOPK(TOPK_ATTN)`), so at full config
+The DSA union scratch in `mla_attn_q4k` is sized by `SWIN = TOPK` (the module's TOPK is
+`TOPK_ATTN`, wired at `glm_decoder_block_q4k.v:331` `.TOPK(TOPK_ATTN)`), so at full config
 `SWIN = 2048` → `SWINW = $clog2(2048) = 11`. But the per-row union index `ksel` is
 `reg [IDXW:0]` with `IDXW = $clog2(S_MAX=8) = 3` → **4 bits**. Expressions like
-`ksel[SWINW-1:0]` (mla_attn_fp8.v:1306/1369/1440, …) thus slice **11 bits from a 4-bit
+`ksel[SWINW-1:0]` (in `mla_attn_q4k`, the union-slot index expressions) thus slice **11 bits from a 4-bit
 reg**, which verilator reports as `SELRANGE` (+ the `{K*SCORE_W{…}}`=65536 reset fills as
 `WIDTHCONCAT`).
 
@@ -173,8 +183,8 @@ holds values 0..S_MAX-1 (fits in 4 bits) and the extra slice bits read as 0. But
 genuine, documentable width inconsistency, surfaced *only* because we set S_MAX=8 while the
 real DSA budget TOPK_ATTN=2048 sizes SWIN. It is a direct manifestation of the flagged
 **B7 caveat** (decouple the attention window from S_MAX). **This has since been done:**
-`mla_attn_fp8` now sizes its scratch window and union-slot indices by `SWIN = min(S_MAX, TOPK)`
-(`src/mla_attn_fp8.v:121`), so the slice widths agree and **SELRANGE is now 0** (byte-identical).
+`mla_attn_q4k` now sizes its scratch window and union-slot indices by `SWIN = min(S_MAX, TOPK)`
+(`src/mla_attn_q4k.v:123`), so the slice widths agree and **SELRANGE is now 0** (byte-identical).
 A fuller integration could alternatively raise S_MAX to the DSA window or make SWIN independent
 of TOPK_ATTN (B7).
 
@@ -191,20 +201,20 @@ every module passes structurally; iverilog independently passes each at every re
 
 | Module | Full-config elaboration | Notes |
 |---|---|---|
-| `glm_model_fp8` (top) | **PASS** | true VOCAB=154880 LM-head/argmax/logits threads; wide reset fills only |
-| `glm_decoder_block_fp8` | **PASS** | dense/MoE mode mux clean; INTER_DENSE≥INTER_MOE holds (no neg. replication) |
-| `mla_attn_fp8` | **PASS** | true 64-head / NOPE192 / ROPE64 / V256 / KVL512 geometry threads; the §5 S_MAX≪TOPK_ATTN width-lints are now cleared (`SWIN=min(S_MAX,TOPK)`, SELRANGE=0) |
-| `moe_router_fp8` | **PASS** | 256-expert router + topk_select clean |
-| `swiglu_expert_fp8` | **PASS** | INTER_MOE=2048 / INTER_DENSE=12288 gate/up/down clean |
-| `glm_matmul_fp8` | **PASS** | ragged [128,128] block-scale K threads at real dims (also `glm_matmul_fp8_tb` TEST 6) |
+| `glm_model_q4k` (top) | **PASS** | true VOCAB=154880 LM-head/argmax/logits threads; wide reset fills only |
+| `glm_decoder_block_q4k` | **PASS** | dense/MoE mode mux clean; INTER_DENSE≥INTER_MOE holds (no neg. replication) |
+| `mla_attn_q4k` | **PASS** | true 64-head / NOPE192 / ROPE64 / V256 / KVL512 geometry threads; the §5 S_MAX≪TOPK_ATTN width-lints are now cleared (`SWIN=min(S_MAX,TOPK)`, SELRANGE=0) |
+| `moe_router_q4k` | **PASS** | 256-expert router + topk_select clean |
+| `swiglu_expert_q4k` | **PASS** | INTER_MOE=2048 / INTER_DENSE=12288 gate/up/down clean |
+| `glm_matmul_q4k` | **PASS** | Q4_K 256-weight super-block decode + fp32-MAC K threads at real dims (`glm_matmul_q4k_tb`, bit-exact vs the ggml Q4_K reference) |
 
-**Overall: the full 753B GLM-5.2-FP8 config parametrization ELABORATES CLEANLY.** No
+**Overall: the full 753B GLM-5.2 (UD-Q4_K_XL) config parametrization ELABORATES CLEANLY.** No
 width-overflow, no unresolved/negative-width parameter, no $clog2 edge, no unknown module
 — verified end-to-end at the *true* real dims (MODEL_DIM=6144, VOCAB=154880, N_EXPERT=256,
 Q_LORA=2048, …) by verilator, and per-dimension by iverilog. Two **tool** limitations, not
 RTL bugs, were characterized (iverilog's MODEL_DIM=6144 unroll wall; yosys-0.66 `-sv`-loss
 on derived modules). The single genuine RTL observation is the **benign S_MAX≪TOPK_ATTN
-width-lint family** in `mla_attn_fp8`, a documented consequence of the flagged S_MAX choice
+width-lint family** in `mla_attn_q4k`, a documented consequence of the flagged S_MAX choice
 (B7) — functionally harmless, and since **cleared by a small width-clamp cleanup**
 (`SWIN=min(S_MAX,TOPK)`; SELRANGE now 0).
 
@@ -217,5 +227,5 @@ width-lint family** in `mla_attn_fp8`, a documented consequence of the flagged S
   `REAL_CKPT_VALIDATION.md`.)
 - **1M-context attention scratch (S_MAX)** — kept small; decoupling the window from S_MAX is
   task **B7**.
-- **Synthesis / gate mapping / area / timing** — not attempted (FP8 datapaths are
-  un-synthesizable through yosys abc by design).
+- **Synthesis / gate mapping / area / timing** — not attempted (this is an
+  elaboration-only study; no abc/full-synth run).

@@ -1,5 +1,17 @@
 # GLM-5.2-FP8 Bit-Accuracy Bridge
 
+> **⚠️ PRIOR FP8 TRACK — NOT THE CURRENT PRODUCT.** This document describes the **FP8**
+> bit-accuracy bridge (`tools/glm_fp8_ref.py`, `tools/glm_fp8_contract.py`,
+> `tools/ckpt_pack.py`, `src/weight_loader.v`, `src/glm_matmul_fp8.v`, the `make bitacc`
+> target), which is the **prior / preserved** track on branch **`fp8`** (tag
+> `fp8-verified-baseline`) — removed from `main` in commit `cbef69d`. Every tool and target
+> named below was **deleted from `main`**. The **current / main product is Q4_K-native**: its
+> bit-accuracy story is the ggml-Q4_K bridge — `tools/q4k_ref.py` (an independent Python
+> reimplementation of ggml's `dequantize_row_q4_K`) with `make q4k` proving `glm_matmul_q4k`
+> **bit-exact to that ggml-Q4_K reference** (not to the real GGUF bytes / llama.cpp runtime,
+> and Q4_K-only — no Q6_K/Q8_0/F16 mixed-type path). Kept for historical reference only — see
+> branch `fp8`.
+
 This documents the verification stance and the tooling that bridges the published
 `zai-org/GLM-5.2-FP8` checkpoint to our FP8 RTL (`src/glm_matmul_fp8.v` +
 `src/fp8_e4m3.vh`).

@@ -1,5 +1,14 @@
 # MODAL_VALIDATE — running the P1.1 product gate on a GPU (Modal)
 
+> **⚠️ PRIOR FP8 TRACK — NOT THE CURRENT PRODUCT.** This document describes the **FP8**
+> real-checkpoint GPU validation (`tools/modal_validate.py`, `tools/glm_fp8_contract.py`,
+> `tools/glm_fp8_ref.py`, against `zai-org/GLM-5.2-FP8`), which is the **prior / preserved**
+> track on branch **`fp8`** (tag `fp8-verified-baseline`) — removed from `main` in commit
+> `cbef69d`. Every tool named below was **deleted from `main`**. The **current / main product
+> is Q4_K-native** (targeting `unsloth/GLM-5.2-GGUF`); it has **no** equivalent real-GGUF /
+> llama.cpp validation yet — that gate is **[PENDING]**. Kept for historical reference only —
+> see branch `fp8`.
+
 > **What this is.** `docs/PRODUCT_ROADMAP.md` P1.1 is the **#1, BLOCKING** product
 > gate: the **real** `zai-org/GLM-5.2-FP8` checkpoint must produce the **real
 > model's tokens** through **our** FP8 arithmetic contract. `docs/BIT_ACCURACY.md`

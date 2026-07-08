@@ -1,4 +1,10 @@
 # ULTRA_PERF — Ranked Ultra-High-Performance Opportunity Report
+
+> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
+> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
+> `*_q4k` equivalents on main.
+
 ### GLM-5.2-FP8 single-module accelerator (FP8 die + DDR4/DDR5/HBM per rung + 1–4 TB NVMe SSD — the memory tier is rung-dependent, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
 
 **Scope.** Opportunities *beyond* the already-built+measured levers (flash_xbar 7.99× latency-hide,
@@ -174,7 +180,7 @@ The only thing that needs to be *invented*; the math die is ready.
    fetches at small batch (real 256-expert config), realizing this lever's aggregate footprint reduction
    **in the model**; ~no benefit at B≈256 (union≈all). The *multi-distinct-token* path is now proven at small
    batch — `glm_fp8_soc_ms` decodes B DIFFERENT sequences in one forward (`PER_ROW_SEQ`, per-row bit-exact,
-   B=2/4) with the union fetched once (`batched_moe` full B-coverage, `make bcov`, B∈{1,2,3,5,8}), and the
+   B=2/4) with the union fetched once (`batched_moe` full B-coverage, `make bcov` [FP8, removed — see branch `fp8`], B∈{1,2,3,5,8}), and the
    paged KV (#15) below is built. What still needs inventing is scaling the dispatcher/scheduler (a)/(c) to
    the datacenter B≈256 regime.
 3. **Paged KV (#15) — ✅ substrate BUILT.** `kv_cache_pager` now carries `NSEQ` independent ring windows

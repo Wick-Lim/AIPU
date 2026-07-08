@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 // glm_matmul_q4k_tb.v -- bit-exact verification of glm_matmul_q4k vs the ggml Q4_K
 // golden (tools/q4k_ref.py, vectors from tools/q4k_matmul_gen.py -> build/q4k_vec.txt).
-// Proves the published UD-Q4_K_XL weights run with NO re-quantization, bit-exact.
+// Proves the Q4_K-typed weights run with NO re-quantization, bit-exact to the
+// ggml Q4_K reference (tools/q4k_ref.py).
 module glm_matmul_q4k_tb;
     localparam integer PE_M = 2;
     localparam integer PE_N = 2;

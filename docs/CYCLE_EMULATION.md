@@ -107,7 +107,7 @@ committed system byte-identical — regression `ALL 3 TESTS PASSED`.)
 
 The slice has **miss = 3 per 3 tokens** (tiny weights → almost everything fits the cache). At the
 real config the per-token miss count is large: ~75 MoE layers × ~8 routed experts × `(1 − hit)`.
-With the GLM-trace hit rate `h ≈ 27%` (measured, `make cache-study` / `IMPROVEMENT_PLAN.md`), that
+With the GLM-trace hit rate `h ≈ 27%` (measured on the FP8 prior track, `make cache-study` [removed from `main` — see branch `fp8`] / `IMPROVEMENT_PLAN.md`), that
 is ~**hundreds of demand misses per token**. Using the **measured** per-miss cost (each miss
 exposes ≈ `FLASH_LAT` cycles, from finding 1) and the **measured** hit rate:
 

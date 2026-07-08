@@ -3,82 +3,80 @@
 `include "glm_fp_pipe_lat.vh"
 /* verilator lint_off DECLFILENAME */
 //============================================================================
-// mtp_head_fp8.v  --  GLM-5.2-FP8 Multi-Token Prediction head (the FP8-NATIVE
-//                     sibling of mtp_head.v).  num_nextn_predict_layers=1.
+// mtp_head_q4k.v  --  GLM-5.2 (Q4_K) Multi-Token Prediction head (the Q4_K-native
+//                     sibling of mtp_head.v; prior FP8 sibling mtp_head_fp8 preserved
+//                     on branch 'fp8').  num_nextn_predict_layers=1.
 //----------------------------------------------------------------------------
 // FUNCTION  (identical math + FSM + flow to mtp_head.v; the ONLY change is that
-//   the big WEIGHT matmuls run in the OFFICIAL zai-org/GLM-5.2-FP8 numerics so
-//   the published FP8 checkpoint runs with NO re-quantization)
+//   the big WEIGHT matmuls run in GGML Q4_K numerics -- the ggml-Q4_K reference
+//   tools/q4k_ref.py -- so the Q4_K-typed weights run with NO re-quantization)
 //
 //     a    = RMSNorm(h_t)                          // bf16 (modules_to_not_convert)
 //     b    = RMSNorm(embed(tok_{t+1}))             // bf16
 //     cat  = [ a ; b ]                              // concat -> 2*MODEL_DIM (bf16)
-//     h'   = W_proj @ cat                           // *** FP8 *** glm_matmul_fp8
-//     y    = decoder_block_fp8( h' , pos , kv )     // *** FP8 *** one GLM-5.2 layer
+//     h'   = W_proj @ cat                           // *** Q4_K *** glm_matmul_q4k
+//     y    = decoder_block_q4k( h' , pos , kv )     // *** Q4_K *** one GLM-5.2 layer
 //     xN   = RMSNorm_final( y )                     // bf16 shared final norm
 //     logits[V] = W_lm[V,MODEL_DIM] . xN            // *** bf16 *** glm_matmul_pipe
 //     argmax    = arg max_v logits[v]               // speculative next-next token
 //
-//   FP8 SPLIT (GLM-5.2-FP8 modules_to_not_convert preserved -- byte-for-byte the
-//   same boundary glm_decoder_block_fp8.v draws):
-//     * FP8 (E4M3 weights + per-[128,128]-block bf16 dequant scales + on-chip
-//       dynamic per-token activation->E4M3 quant):
-//         - the W_proj combine projection  (glm_matmul_fp8)
-//         - everything inside the decoder layer's big linears (glm_decoder_block_fp8)
+//   QUANT SPLIT (modules_to_not_convert preserved -- a real GLM-5.2 boundary, the
+//   same one glm_decoder_block_q4k.v draws, not FP8-specific):
+//     * Q4_K (GGML Q4_K: 4-bit codes + per-256-elem-super-block fp16 d/dmin scales;
+//       activations stay bf16 -- NO activation quant, unlike the prior FP8 track):
+//         - the W_proj combine projection  (glm_matmul_q4k)
+//         - everything inside the decoder layer's big linears (glm_decoder_block_q4k)
 //     * bf16 (UNCHANGED):
 //         - the THREE RMSNorms (a, b, final)        -- rmsnorm_unit (bf16)
 //         - the residual stream + softmax/rope tails inside the decoder block
 //         - the LM head GEMV                          -- glm_matmul_pipe (bf16).
-//           The GLM-5.2-FP8 LM head ("lm_head") is in modules_to_not_convert and
+//           The GLM-5.2 LM head ("lm_head") is in modules_to_not_convert and
 //           stays bf16, so it routes through the bf16 matmul exactly as mtp_head.v.
 //
 //   PURE ORCHESTRATOR -- REIMPLEMENTS NO ARITHMETIC.  Same serial-reuse discipline
 //   as mtp_head.v:
 //     * ONE rmsnorm_unit reused for the 3 norms (cn_which selects the gamma).
-//     * ONE glm_matmul_fp8(PE_M=1,PE_N=PROJ_TN,KMAX=2*MODEL_DIM,BLK) as the FP8
+//     * ONE glm_matmul_q4k(PE_M=1,PE_N=PROJ_TN,KMAX=2*MODEL_DIM) as the Q4_K
 //       combine projection, walked over MODEL_DIM/PROJ_TN output tiles.  The
-//       activation is the bf16 concat `cat`, dynamically quantized to E4M3 by a
-//       per-vector pow2 shift (csh) reduced combinationally from cat's exponents
-//       -- the SAME a_shift discipline swiglu_expert_fp8 / mla_attn_fp8 use.
-//     * ONE glm_decoder_block_fp8 (the verified FP8 layer) run ONCE on h'.
+//       activation is the bf16 concat `cat`, fed DIRECT (Q4_K quantizes ONLY the
+//       weights -- NO activation quant, the SAME bf16-direct discipline
+//       swiglu_expert_q4k / mla_attn_q4k use).
+//     * ONE glm_decoder_block_q4k (one GLM-5.2 decoder layer) run ONCE on h'.
 //     * ONE glm_matmul_pipe(PE_M=1,PE_N=LM_TN,KMAX=MODEL_DIM) bf16 LM-head GEMV.
 //     * a 1-elt/cycle argmax scan -- identical to mtp_head.v's tail.
 //
 //----------------------------------------------------------------------------
-// DYNAMIC ACTIVATION QUANT for the W_proj projection (activation_scheme=dynamic)
-//   glm_matmul_fp8 takes a per-row signed-8 pow2 exponent a_shift and prescales
-//   the bf16 activation by 2^a_shift before the E4M3 encode (undoing 2^-a_shift at
-//   dequant).  PE_M=1 here, so ONE a_shift for the whole `cat` vector:
-//       csh = clamp_{[-128,127]}( 134 - emax )      (emax = max bf16 exp field)
-//   so the max element's scaled exponent lands at 7, giving E4M3 maximum mantissa
-//   headroom before underflow.  emax==0 (all-zero cat) -> csh = 0.  cbuf (= cat)
-//   is fully populated by the time the projection streams, so csh is a stable
-//   combinational reduction over cbuf, latched into the matmul at each tile start.
+// ACTIVATIONS for the W_proj projection (bf16, fed DIRECT)
+//   Q4_K quantizes ONLY the weights, so unlike the prior FP8 track there is NO
+//   activation quant: the bf16 concat `cat` streams straight into glm_matmul_q4k
+//   (a_col), which multiplies it against the fp32-dequantized Q4_K weights.  The
+//   prior FP8 sibling's per-vector pow2 activation shift (csh / a_shift, the
+//   134-emax E4M3 headroom trick) is GONE.
 //
 //----------------------------------------------------------------------------
-// WEIGHT PULL INTERFACE  (vs mtp_head.v: the FP8 matmuls now pull FP8 codes +
-//   [128,128] block scales; the bf16 LM head + the three gammas are UNCHANGED)
+// WEIGHT PULL INTERFACE  (vs mtp_head.v: the Q4_K matmuls now pull Q4_K 4-bit codes
+//   + per-super-block scales; the bf16 LM head + the three gammas are UNCHANGED)
 //   * combine/final RMSNorm gamma (cn_*)   : bf16, UNCHANGED.
 //   * decoder RMSNorm gamma (gn_*)         : bf16, UNCHANGED.
-//   * W_proj weight pull (pw_*)            : pw_col = PROJ_TN FP8 E4M3 lanes (was
-//                                            bf16); pw_scale = bf16 [128,128] block
-//                                            scales for the addressed pw_ptile.
-//   * decoder attention weight pull (aw_*) : aw_col FP8 + aw_scale block scales.
+//   * W_proj weight pull (pw_*)            : pw_q = PROJ_TN Q4_K 4-bit lanes (was
+//                                            bf16); pw_d/pw_dmin/pw_scales = per-
+//                                            super-block scales for the pw_ptile tile.
+//   * decoder attention weight pull (aw_*) : aw_q Q4_K codes + aw_d/aw_dmin/aw_scales.
 //   * decoder cache read (kc_*)            : bf16 latent KV, UNCHANGED.
-//   * decoder router weight pull (rw_*)    : rw_col FP8 + rw_scale block scales.
-//   * decoder FFN expert weight pull (fw_*): fw_col/fw_col_up FP8 + fw_scale_g/_u.
+//   * decoder router weight pull (rw_*)    : rw_q Q4_K codes + rw_d/rw_dmin/rw_scales.
+//   * decoder FFN expert weight pull (fw_*): fw_q/fw_q_up Q4_K + fw_{d,dmin,scales}_{g,u}.
 //   * shared LM-head weight pull (lw_*)    : lw_col bf16, UNCHANGED (bf16 LM head).
-//   FP8 codes are pulled per K-beat (qualified by the *_req + index); block scales
+//   Q4_K codes are pulled per K-beat (qualified by the *_req + index); block scales
 //   are answered from the current tile/expert selector (latched at the matmul's
-//   start cycle, exactly as glm_decoder_block_fp8 / swiglu_expert_fp8 expect).
+//   start cycle, exactly as glm_decoder_block_q4k / swiglu_expert_q4k expect).
 //
 //----------------------------------------------------------------------------
-// LATENCY  (deterministic; handshake-driven so each FP8 leaf unit's own latency
+// LATENCY  (deterministic; handshake-driven so each Q4_K leaf unit's own latency
 //   is absorbed via its busy/out_valid -- structurally identical to mtp_head.v,
-//   only the per-tile matmul latency term changes from the bf16 to the FP8 pipe):
+//   only the per-tile matmul latency term changes from the bf16 to the Q4_K pipe):
 //   L_mtp = 2*L_rmsnorm(MODEL_DIM)
-//         + (MODEL_DIM/PROJ_TN) * L_matmul_fp8(K=2*MODEL_DIM, PE_N=PROJ_TN)
-//         + L_decoder_block_fp8(params, S)
+//         + (MODEL_DIM/PROJ_TN) * L_matmul_q4k(K=2*MODEL_DIM, PE_N=PROJ_TN)
+//         + L_decoder_block_q4k(params, S)
 //         + L_rmsnorm(MODEL_DIM)
 //         + (VOCAB/LM_TN) * L_matmul_pipe(K=MODEL_DIM, PE_N=LM_TN)   // bf16 LM head
 //         + VOCAB                                                    // argmax scan
@@ -115,13 +113,15 @@ module mtp_head_q4k #(
     parameter integer INTER_DENSE= 256,
     parameter [31:0]  RSCALE     = 32'h40200000,// 2.5 fp32
     parameter integer TN         = 4,
-    // ---- FP8 weight block size -- DeepSeek-V3 / GLM-5.2-FP8 weight_block_size=[128,128]
+    // ---- vestigial FP8 block size (weight_block_size=[128,128] from DeepSeek-V3 /
+    //      the prior GLM-5.2-FP8 track); Q4_K uses 256-elem super-blocks -- kept as
+    //      a live param threaded to glm_decoder_block_q4k ----
     parameter integer BLK        = 128,
     // ---- GEMV tile widths.  VOCAB % LM_TN == 0 ; MODEL_DIM % PROJ_TN == 0. ----
     parameter integer LM_TN      = 4,           // LM-head VOCAB cols/pass
     parameter integer PROJ_TN    = 4,           // combine-proj output cols/pass
     // ====================================================================
-    // derived (do NOT override) -- mirror decoder_block_fp8's port-width derivations
+    // derived (do NOT override) -- mirror decoder_block_q4k's port-width derivations
     // ====================================================================
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -151,7 +151,8 @@ module mtp_head_q4k #(
     parameter integer FF_KWD     = $clog2(FF_KMAX_D + 1),
     parameter integer FF_KMAX_M  = (INTER_MOE  > MODEL_DIM) ? INTER_MOE  : MODEL_DIM,
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1),
-    // ---- FP8 [128,128]-block scale counts (#K-blocks per weight family) ----
+    // ---- vestigial FP8 [128,128]-block scale counts (from the prior FP8 track;
+    //      superseded by the Q4_K 256-elem super-block counts below) ----
     parameter integer A_NB       = (A_KMAX    + BLK - 1) / BLK,  // attention scales
     parameter integer FF_NB_D    = (FF_KMAX_D + BLK - 1) / BLK,  // dense FFN scales
     parameter integer R_NB       = (FF_KMAX_M + BLK - 1) / BLK,  // router scales
@@ -171,7 +172,7 @@ module mtp_head_q4k #(
     parameter integer PKW        = $clog2(CK + 1),           // proj matmul k_len width
     parameter integer NPTILE     = MODEL_DIM / PROJ_TN,      // proj output tiles
     parameter integer PTW        = (NPTILE <= 1) ? 1 : $clog2(NPTILE),
-    parameter integer PROJ_NB    = (CK + BLK - 1) / BLK,     // proj FP8 K-block scales
+    parameter integer PROJ_NB    = (CK + BLK - 1) / BLK,     // proj vestigial FP8 K-block count
     parameter integer PROJ_NSB   = (CK + 255) / 256          // proj Q4_K super-blocks
 )(
     input  wire                          clk,
@@ -208,10 +209,10 @@ module mtp_head_q4k #(
     output wire [DIMW-1:0]               cn_idx,
     input  wire [15:0]                   cn_val,
 
-    // ---- FP8 combine-projection weight pull ----
-    //   pw_col[t]   = FP8 E4M3 W_proj[ptile*PROJ_TN+t][pw_k]
-    //   pw_scale    = bf16 [128,128] block scales for the pw_ptile output tile,
-    //                 packed pw_scale[16*(bj*PROJ_TN + t) +: 16]  (bj = K-block).
+    // ---- Q4_K combine-projection weight pull ----
+    //   pw_q[t]     = Q4_K 4-bit code W_proj[ptile*PROJ_TN+t][pw_k]
+    //   pw_d/pw_dmin/pw_scales = per-(col,super-block) Q4_K dequant params for the
+    //                 pw_ptile output tile.
     output wire                          pw_req,
     output wire [PTW-1:0]                pw_ptile,   // which MODEL_DIM output tile
     output wire [CKIW-1:0]               pw_k,       // concat reduction index 0..2*MD-1
@@ -226,7 +227,7 @@ module mtp_head_q4k #(
     output wire [DIMW-1:0]               gn_idx,
     input  wire [15:0]                   gn_val,
 
-    // ---- decoder_block attention weight pull (FP8 codes + block scales) ----
+    // ---- decoder_block attention weight pull (Q4_K codes + block scales) ----
     output wire                          aw_req,
     output wire [3:0]                    aw_sel,
     output wire [A_GRPW-1:0]             aw_grp,
@@ -243,7 +244,7 @@ module mtp_head_q4k #(
     input  wire [ROPE*16-1:0]            kc_krope,
     input  wire                          kc_valid,
 
-    // ---- decoder_block MoE router weight pull (W_g column; FP8 codes + scales) ----
+    // ---- decoder_block MoE router weight pull (W_g column; Q4_K codes + scales) ----
     output wire                          rw_req,
     output wire [R_KW-1:0]               rw_k,
     input  wire [4*N_EXPERT-1:0]         rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
@@ -251,7 +252,7 @@ module mtp_head_q4k #(
     input  wire [16*N_EXPERT*R_NSB-1:0]  rw_dmin,    // fp16 dmin
     input  wire [96*N_EXPERT*R_NSB-1:0]  rw_scales,  // 6-bit scales
 
-    // ---- decoder_block FFN expert weight pull (qualified; FP8 codes + scales) ----
+    // ---- decoder_block FFN expert weight pull (qualified; Q4_K codes + scales) ----
     output wire                          fw_req,
     output wire [1:0]                    fw_sel,
     output wire [FF_GWD-1:0]             fw_grp,
@@ -283,7 +284,7 @@ module mtp_head_q4k #(
     //========================================================================
     reg [15:0] hbuf [0:PE_M-1][0:MODEL_DIM-1]; // latched h_t  (RMSNorm source, phase 0)
     reg [15:0] ebuf [0:PE_M-1][0:MODEL_DIM-1]; // latched emb  (RMSNorm source, phase 1)
-    reg [15:0] cbuf [0:PE_M-1][0:CK-1];        // concat [a;b] (= RMSNorm outputs) (FP8 proj act)
+    reg [15:0] cbuf [0:PE_M-1][0:CK-1];        // concat [a;b] (= RMSNorm outputs) (bf16 proj act)
     reg [15:0] hprime [0:PE_M-1][0:MODEL_DIM-1];// h' = W_proj @ cat  (decoder block input)
     reg [15:0] xcur   [0:PE_M-1][0:MODEL_DIM-1];// decoder-block output y (final-norm source)
     reg [15:0] xn     [0:PE_M-1][0:MODEL_DIM-1];// final-normed (LM-head input)
@@ -346,8 +347,8 @@ module mtp_head_q4k #(
     assign cn_idx   = cn_gidx[DIMW-1:0];
 
     //========================================================================
-    // ONE glm_decoder_block_fp8 (the verified FP8 GLM-5.2 layer) run ONCE on h'.
-    //   All FP8 weight / cache pulls forwarded straight out.
+    // ONE glm_decoder_block_q4k (one GLM-5.2 decoder layer) run ONCE on h'.
+    //   All Q4_K weight / cache pulls forwarded straight out.
     //========================================================================
     reg                       db_start;
     wire                      db_busy, db_done;
@@ -381,10 +382,11 @@ module mtp_head_q4k #(
     /* verilator lint_on UNUSEDSIGNAL */
 
     //========================================================================
-    // FP8 COMBINE-PROJECTION GEMV : glm_matmul_fp8 as a 1xPROJ_TN tile, K=2*MD,
-    //   [128,128] block scales.  A row (M=1) = cat[1,2*MODEL_DIM] (bf16, dynamic
-    //   E4M3 via csh) ; W tile (N=PROJ_TN) = W_proj[ptile..][k] (FP8 E4M3) +
-    //   pw_scale block scales.  On beat k present pp_a = cat[k] and pw_col = W col.
+    // Q4_K COMBINE-PROJECTION GEMV : glm_matmul_q4k as a 1xPROJ_TN tile, K=2*MD,
+    //   per-super-block scales.  A row (M=1) = cat[1,2*MODEL_DIM] (bf16, fed DIRECT
+    //   -- no activation quant) ; W tile (N=PROJ_TN) = W_proj[ptile..][k] (Q4_K
+    //   4-bit codes) + pw_d/pw_dmin/pw_scales.  On beat k present pp_a = cat[k] and
+    //   pw_q = W col.
     //========================================================================
     reg                  pp_start;
     reg                  pp_in_valid;
@@ -415,7 +417,7 @@ module mtp_head_q4k #(
 
     //========================================================================
     // SHARED LM-HEAD GEMV : glm_matmul_pipe as a 1xLM_TN tile, K=MODEL_DIM.
-    //   bf16 (GLM-5.2-FP8 lm_head is in modules_to_not_convert -> stays bf16),
+    //   bf16 (the GLM-5.2 lm_head is in modules_to_not_convert -> stays bf16),
     //   identical to mtp_head.v's tail.
     //========================================================================
     reg                  mm_start;
@@ -569,7 +571,7 @@ module mtp_head_q4k #(
                         cn_start <= 1'b1;
                         state    <= S_NORM;
                     end else if (cn_phase == 2'd1) begin
-                        // concat ready -> launch FP8 combine projection (tile 0)
+                        // concat ready -> launch Q4_K combine projection (tile 0)
                         ptile        <= {PTW{1'b0}};
                         pp_klen      <= CK[PKW-1:0];
                         pp_start     <= 1'b1;
@@ -590,7 +592,7 @@ module mtp_head_q4k #(
                 end
             end
             //---------------------------------------------------------------- proj tile stream
-            // Present cat[k] as a_col and FP8 W_proj[ptile][k] (pw_col) as w_row
+            // Present cat[k] as a_col and Q4_K W_proj[ptile][k] (pw_q) as w_row
             // each K beat.  pk_present latches the beat index so the weight pull
             // aligns.  pw_scale + csh (a_shift) were latched into u_proj at start.
             S_PROJ: begin
@@ -619,7 +621,7 @@ module mtp_head_q4k #(
                         for (ii=0; ii<PROJ_TN; ii=ii+1)
                             hprime[rr][ptile*PROJ_TN + ii] <= pp_c[16*(rr*PROJ_TN + ii) +: 16];
                     if (ptile == (NPTILE[PTW-1:0]-1'b1)) begin
-                        // all output tiles done -> run the FP8 decoder block on h'
+                        // all output tiles done -> run the Q4_K decoder block on h'
                         // (db_start pulses here; go straight to the wait state)
                         db_start <= 1'b1;
                         state    <= S_DBW;

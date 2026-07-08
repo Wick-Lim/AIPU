@@ -27,9 +27,9 @@
 //   This is a MECHANICAL retarget of weight_loader.v: identical FSM
 //   (S_SCALE -> S_START -> S_STREAM -> S_DONE), identical latency-1 capture
 //   pipeline and start/stream timing.  Only the WEIGHT FORMAT changes:
-//     * FP8 SCALE region (one bf16 word per (K-block, col)) becomes the Q4_K
-//       HEADER region (one {d,dmin,scales} word per (col, super-block)).
-//     * FP8 CODE region (8-bit weight byte per col per beat) becomes the Q4_K
+//     * the prior FP8 SCALE region (one bf16 word per (K-block, col)) becomes the
+//       Q4_K HEADER region (one {d,dmin,scales} word per (col, super-block)).
+//     * the prior FP8 CODE region (8-bit weight byte per col per beat) becomes the Q4_K
 //       CODE region (4-bit quant code per col per beat, mm_w_q[4*PE_N]).
 //   DATA_W stays 256 (a Q4_K super-block header packs into one word; wide enough
 //   for a nibble-code beat too), aligning with the ddr5_xbar beat width.
@@ -48,8 +48,8 @@
 //                       ( k_len words )
 //   NOTE the on-disk GGUF native order is qs[128] = 4-bit nibbles for all 256
 //   weights of a super-block; the packer (tools/ckpt_pack_q4k.py) unpacks nibble
-//   k of column pj into this per-beat CODE layout so this loader (like its FP8
-//   ancestor) streams one code-row word per K-beat.
+//   k of column pj into this per-beat CODE layout so this loader (like its prior
+//   FP8 ancestor on branch 'fp8') streams one code-row word per K-beat.
 //
 //   The HEADER word for (col pj, super-block sb) is placed on the mm_w_* buses at
 //   bus slot (pj*NSB + sb) -- the EXACT (col-outer, super-block-inner, compile-

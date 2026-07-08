@@ -1,5 +1,16 @@
 # Real-checkpoint FP8 validation (CPU / numpy, no GPU)
 
+> **⚠️ PRIOR FP8 TRACK — NOT THE CURRENT PRODUCT.** This document describes the **FP8**
+> real-checkpoint validation (`tools/validate_real_ckpt.py`, `tools/glm_fp8_ref.py`,
+> `tools/glm_fp8_contract.py`, against `zai-org/GLM-5.2-FP8`), which is the **prior /
+> preserved** track on branch **`fp8`** (tag `fp8-verified-baseline`) — removed from `main` in
+> commit `cbef69d`. Every tool named below was **deleted from `main`**. The **current / main
+> product is Q4_K-native** (targeting `unsloth/GLM-5.2-GGUF`); the analogous "does our
+> arithmetic match the real published checkpoint" gate against the real GGUF bytes / llama.cpp
+> is **[PENDING]** — everything Q4_K is currently verified only against the team's own
+> ggml-Q4_K reference `tools/q4k_ref.py`. Kept for historical reference only — see branch
+> `fp8`.
+
 `tools/validate_real_ckpt.py` closes the project's #1 missing validation: it checks
 OUR FP8 arithmetic contract's **interpretation of the real published checkpoint**
 (`zai-org/GLM-5.2-FP8`, public / gated:False / no token) against the actual

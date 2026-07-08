@@ -1,5 +1,23 @@
 # AIPU — full operational flow (end-to-end)
 
+> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
+> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
+> `*_q4k` equivalents on main.
+
+> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
+> targeting `unsloth/GLM-5.2-GGUF:UD-Q4_K_XL`). **FP8 is the PRIOR / PRESERVED track** on
+> branch **`fp8`** (tag `fp8-verified-baseline`), removed from `main` in commit `cbef69d`.
+> This walkthrough still names the **FP8** blocks (`glm_fp8_system_cdc`, `glm_fp8_system`,
+> `glm_model_fp8`, `glm_decoder_block_fp8`, `moe_router_fp8`, `swiglu_expert_fp8`,
+> `glm_fp8_soc_ms`) and a **753 GB FP8** model on NVMe. The **Q4_K equivalents** that exist on
+> `main` are `glm_q4k_system_cdc`, `glm_q4k_system`, `glm_model_q4k`, `glm_decoder_block_q4k`,
+> `moe_router_q4k`, `swiglu_expert_q4k`, `glm_q4k_soc_ms`, `weight_loader_q4k.v`; the resident
+> model is the ~Q4_K GGUF, not FP8. Any "== golden / bit-exact" the body attributes to the
+> assembled model is **DUT-vs-DUT spec==greedy self-consistency**, not a numeric golden vs
+> ggml/llama.cpp (only `glm_matmul_q4k` is bit-exact, and only vs the team's own
+> `tools/q4k_ref.py`). A deeper Q4_K rewrite of this doc is deferred.
+
 How the whole accelerator runs one real GLM-5.2-FP8 token, from power-up through a decoded
 token, across every committed RTL block. Grounded in main @ current state (PE_M 4/4, grouped-MoE
 union-skip, cycle-accurate emulation) — **main develops exactly the GLM-5.2-FP8 accelerator at

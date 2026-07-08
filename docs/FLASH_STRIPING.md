@@ -142,8 +142,9 @@ single-user box running `B=1`**; large `B` only arises when batching many *diffe
 tokens together, which the personal box does not do. This paragraph is kept as analysis of what
 the *same* silicon could do batched. With `B` tokens
 processed per weight fetch (the **PE_M-batch path — now complete: DONE 4/4 across
-swiglu/router/mla/mtp, and the union-fetch integrated in `glm_decoder_block_fp8`**, all verified
-bit-exact), a layer's *union* of active experts approaches all 256 as `B` grows
+swiglu/router/mla/mtp, and the union-fetch integrated in `glm_decoder_block_fp8`** [FP8 prior
+track — branch `fp8`; Q4_K sibling is `glm_decoder_block_q4k`], all verified bit-exact on the FP8
+track), a layer's *union* of active experts approaches all 256 as `B` grows
 (`E[distinct] = 256·(1−0.96875^B)`, where `0.96875 = 1−8/256`), so the
 fetch set is large and naturally spreads across channels — the pigeonhole tail shrinks and
 `N_CH > 8` becomes useful even under strategy A. The decoder block's PE_M>1 MoE loop already

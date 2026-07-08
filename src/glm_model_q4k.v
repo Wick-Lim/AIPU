@@ -3,24 +3,26 @@
 `include "glm_fp_pipe_lat.vh"
 /* verilator lint_off DECLFILENAME */
 //============================================================================
-// glm_model_fp8.v  --  GLM-5.2-FP8 FULL FORWARD PASS for ONE token position
+// glm_model_q4k.v  --  GLM-5.2 (Q4_K) FULL FORWARD PASS for ONE token position
 //                      at the small-but-faithful slice  (ACCEL_GLM52 §2/§6/§8)
 //----------------------------------------------------------------------------
 // FUNCTION  (one decode step, single query token at position `pos`)
 //
 //    x0   = embed(token_id)                                     // bf16 table lookup
-//    x_{l+1} = decoder_block_fp8( x_l , layer=l , mode_l )  l=0..L-1
+//    x_{l+1} = decoder_block_q4k( x_l , layer=l , mode_l )  l=0..L-1
 //                where mode_l = DENSE   for l <  N_DENSE  (first_k_dense_replace)
 //                              = MoE     for l >= N_DENSE
 //    xN   = rmsnorm_final( x_L )                                // final RMSNorm (bf16)
 //    logits[V] = W_lm[V,MODEL_DIM] . xN                         // LM head GEMV (bf16)
 //    argmax = arg max_v logits[v]                               // next token
 //
-//   This is the FP8-NATIVE sibling of glm_model.v.  ONLY the per-layer attention/
-//   router/expert WEIGHT matmuls are FP8 (E4M3 codes + per-[128,128]-block bf16
-//   dequant scales + on-chip dynamic per-token activation->E4M3 quant); the token
-//   embedding, the final RMSNorm, the LM-head GEMV and the running residual stay
-//   bf16 (modules_to_not_convert).
+//   This is the Q4_K-native sibling of glm_model.v (prior FP8 sibling glm_model_fp8
+//   preserved on branch 'fp8').  ONLY the per-layer attention/router/expert WEIGHT
+//   matmuls are Q4_K (GGML Q4_K: 4-bit codes + per-256-elem-super-block fp16 d/dmin
+//   scales; activations stay bf16 -- NO activation quant, unlike the prior FP8
+//   track); the token embedding, the final RMSNorm, the LM-head GEMV and the
+//   running residual stay bf16 (a real GLM-5.2 modules_to_not_convert boundary,
+//   not FP8-specific).
 //
 //============================================================================
 // PE_M BATCHING (B query tokens decoded in lockstep)              (ULTRA_PERF#2)
@@ -29,7 +31,7 @@
 //   the number of query tokens pushed through the model at once.  The B tokens
 //   share the SAME decode step: pos, s_len, the KV cache and ALL weights -- only
 //   their token_id (and hence embedding + activations) differ.  The one
-//   glm_decoder_block_fp8 instance runs at PE_M, carrying a B-WIDE bf16 residual
+//   glm_decoder_block_q4k instance runs at PE_M, carrying a B-WIDE bf16 residual
 //   hidden; ONE weight fetch per (layer, projection, expert) feeds all B rows.
 //
 //   PER-ROW (replicated B-wide, lockstep):
@@ -59,7 +61,7 @@ module glm_model_q4k #(
     parameter integer L          = 6,           // total layers (3 dense + 3 MoE)
     parameter integer N_DENSE    = 3,            // first_k_dense_replace
     parameter integer VOCAB      = 256,
-    // ---- decoder_block_fp8 slice params (passed straight through) ----
+    // ---- decoder_block_q4k slice params (passed straight through) ----
     parameter integer H_HEADS    = 4,
     parameter integer NOPE       = 16,
     parameter integer ROPE       = 16,
@@ -80,7 +82,9 @@ module glm_model_q4k #(
     parameter integer INTER_DENSE= 256,
     parameter [31:0]  RSCALE     = 32'h40200000,// 2.5 fp32
     parameter integer TN         = 4,
-    // ---- FP8 weight block size -- GLM-5.2-FP8 weight_block_size=[128,128] ----
+    // ---- vestigial FP8 block size (weight_block_size=[128,128] from the prior
+    //      FP8 track); Q4_K uses 256-elem super-blocks -- kept as a live param
+    //      threaded to decoder_block_q4k (see A_NSB/FF_NSB_D/R_NSB below) ----
     parameter integer BLK        = 128,
     // ---- LM-head GEMV tile width (VOCAB cols/pass).  VOCAB % LM_TN == 0. ----
     parameter integer LM_TN      = 4,
@@ -90,7 +94,7 @@ module glm_model_q4k #(
     parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents via s_len_vec (P1.3d)
     parameter integer PER_ROW_SEQ = 0,  // 1 = per-row sequence ids via seq_vec (A2; kc_seq out)
     // ====================================================================
-    // derived (do NOT override) -- mirror decoder_block_fp8's port-width derivations
+    // derived (do NOT override) -- mirror decoder_block_q4k's port-width derivations
     // ====================================================================
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -121,7 +125,8 @@ module glm_model_q4k #(
     parameter integer FF_KWD     = $clog2(FF_KMAX_D + 1),
     parameter integer FF_KMAX_M  = (INTER_MOE  > MODEL_DIM) ? INTER_MOE  : MODEL_DIM,
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1),
-    // ---- FP8 [128,128]-block scale counts (#K-blocks per weight family) ----
+    // ---- vestigial FP8 [128,128]-block scale counts (from the prior FP8 track;
+    //      superseded by the Q4_K 256-elem super-block counts below) ----
     parameter integer A_NB       = (A_KMAX    + BLK - 1) / BLK,  // attention scales
     parameter integer FF_NB_D    = (FF_KMAX_D + BLK - 1) / BLK,  // dense FFN scales
     parameter integer R_NB       = (FF_KMAX_M + BLK - 1) / BLK,  // router scales
@@ -162,19 +167,19 @@ module glm_model_q4k #(
     output wire [DIMW-1:0]               em_idx,     // element index 0..MODEL_DIM-1
     input  wire [15:0]                   em_val,     // bf16 embedding element
 
-    // ---- per-layer index (annotates ALL decoder_block_fp8 pulls below) ----
+    // ---- per-layer index (annotates ALL decoder_block_q4k pulls below) ----
     output reg  [LAYW-1:0]               db_layer,   // current layer being run
     // ---- IndexShare schedule (DSA, ACCEL_GLM52 #9) ----
     output reg                           idx_fresh,  // 1 = (layer mod 4 == 3): fresh
     output reg  [LAYW-1:0]               idx_win,    // share-window id = layer>>2
 
-    // ---- decoder_block_fp8 RMSNorm gamma pull (BF16; per-layer; pre-attn/pre-FFN) ----
+    // ---- decoder_block_q4k RMSNorm gamma pull (BF16; per-layer; pre-attn/pre-FFN) ----
     output wire                          gn_req,
     output wire                          gn_which,   // 0=pre-attn, 1=pre-FFN
     output wire [DIMW-1:0]               gn_idx,
     input  wire [15:0]                   gn_val,
 
-    // ---- decoder_block_fp8 attention weight pull (per-layer; FP8 E4M3 + scales) ----
+    // ---- decoder_block_q4k attention weight pull (per-layer; Q4_K codes + scales) ----
     output wire                          aw_req,
     output wire [3:0]                    aw_sel,
     output wire [A_GRPW-1:0]             aw_grp,
@@ -184,7 +189,7 @@ module glm_model_q4k #(
     input  wire [16*PE_N*A_NSB-1:0]      aw_dmin,    // fp16 dmin
     input  wire [96*PE_N*A_NSB-1:0]      aw_scales,  // 6-bit scales
 
-    // ---- decoder_block_fp8 attention KV-cache read (per-layer; BF16) ----
+    // ---- decoder_block_q4k attention KV-cache read (per-layer; BF16) ----
     output wire                          kc_req,
     output wire [IDXW-1:0]               kc_idx,
     output wire [SEQW-1:0]               kc_seq,     // PER_ROW_SEQ=1: fetched key's sequence window
@@ -192,7 +197,7 @@ module glm_model_q4k #(
     input  wire [ROPE*16-1:0]            kc_krope,
     input  wire                          kc_valid,
 
-    // ---- decoder_block_fp8 MoE router weight pull (per-layer, W_g col; FP8 + scales) ----
+    // ---- decoder_block_q4k MoE router weight pull (per-layer, W_g col; Q4_K + scales) ----
     output wire                          rw_req,
     output wire [R_KW-1:0]               rw_k,
     input  wire [4*N_EXPERT-1:0]         rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
@@ -200,7 +205,7 @@ module glm_model_q4k #(
     input  wire [16*N_EXPERT*R_NSB-1:0]  rw_dmin,    // fp16 dmin
     input  wire [96*N_EXPERT*R_NSB-1:0]  rw_scales,  // 6-bit scales
 
-    // ---- decoder_block_fp8 FFN expert weight pull (per-layer, qualified; FP8 + scales) ----
+    // ---- decoder_block_q4k FFN expert weight pull (per-layer, qualified; Q4_K + scales) ----
     output wire                          fw_req,
     output wire [1:0]                    fw_sel,
     output wire [FF_GWD-1:0]             fw_grp,
@@ -240,7 +245,7 @@ module glm_model_q4k #(
 
     //========================================================================
     // running hidden state (bf16, MODEL_DIM elements) -- PER ROW + packed view for
-    // the decoder_block_fp8 / final rmsnorm.  Residual stays BF16 across all layers.
+    // the decoder_block_q4k / final rmsnorm.  Residual stays BF16 across all layers.
     //========================================================================
     reg [15:0] xcur [0:PE_M-1][0:MODEL_DIM-1];
     reg [PE_M*MODEL_DIM*16-1:0] xcur_vec;
@@ -254,7 +259,7 @@ module glm_model_q4k #(
     reg [15:0] lbuf [0:PE_M-1][0:VOCAB-1];
 
     //========================================================================
-    // ONE decoder_block_fp8 instance (serially reused across the L layers), PE_M
+    // ONE decoder_block_q4k instance (serially reused across the L layers), PE_M
     //   wide.  All its pulls are forwarded straight to this module's matching ports
     //   (shared by all B rows); db_layer annotates which layer's weights to answer.
     //========================================================================
@@ -294,7 +299,7 @@ module glm_model_q4k #(
 
     //========================================================================
     // FINAL RMSNorm -- PE_M replicated rmsnorm_units, lockstep off ONE shared
-    // final-gamma pull (fn_*).  BF16, NOT FP8 (modules_to_not_convert).
+    // final-gamma pull (fn_*).  BF16, NOT quantized (modules_to_not_convert).
     //========================================================================
     reg              fn_start;
     wire [PE_M-1:0]  fn_in_req, fn_g_req, fn_y_valid, fn_busy, fn_done;
@@ -389,7 +394,7 @@ module glm_model_q4k #(
     localparam [3:0]
         M_IDLE   = 4'd0,
         M_EMBED  = 4'd1,    // load embed(token_id) -> xcur (serial over rows)
-        M_LWAIT  = 4'd3,    // run decoder_block_fp8; wait db_done; xcur <= y; advance
+        M_LWAIT  = 4'd3,    // run decoder_block_q4k; wait db_done; xcur <= y; advance
         M_FNORM  = 4'd4,    // final rmsnorm(xcur) -> xn
         M_LMTILE = 4'd5,    // stream K beats for current vtile
         M_LMWAIT = 4'd6,    // wait mm_ov; store LM_TN logits/row; next vtile
@@ -490,7 +495,7 @@ module glm_model_q4k #(
             //---------------------------------------------------------------- run layer / wait
             M_LWAIT: begin
                 if (db_done) begin
-                    // x_{l+1} = decoder_block_fp8(x_l)  (per row)
+                    // x_{l+1} = decoder_block_q4k(x_l)  (per row)
                     for (rr=0; rr<PE_M; rr=rr+1)
                         for (ii=0; ii<MODEL_DIM; ii=ii+1)
                             xcur[rr][ii] <= db_y[16*(MODEL_DIM*rr + ii) +: 16];

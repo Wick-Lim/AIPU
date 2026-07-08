@@ -1,5 +1,13 @@
 # Code Coverage — Verilator structural (line / toggle / branch)
 
+> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
+> targeting `unsloth/GLM-5.2-GGUF`). **FP8 is the PRIOR / PRESERVED track** on branch **`fp8`**
+> (tag `fp8-verified-baseline`), removed from `main` in commit `cbef69d`. Coverage here is
+> **Verilator structural (line/toggle/branch) only — explicitly NOT a substitute** for the
+> functional fidelity suite. The large-integration `*_fp8` modules named in the out-of-scope
+> list below are the prior track; the Q4_K equivalents are `glm_model_q4k`,
+> `glm_decoder_block_q4k`, `mla_attn_q4k`, `glm_q4k_system*`, `glm_q4k_soc_ms`.
+
 Structural code-coverage measurement of the GLM-5.2-FP8 accelerator RTL, using
 **Verilator 5.048 `--coverage-line --coverage-toggle`** (line + toggle + the
 implied branch metric) driven by the project's existing behavioral testbenches.
@@ -128,15 +136,16 @@ configuration** — the small parameterization the unit TBs instantiate (e.g.
   rounding modes, all corner FP values, every routing pattern) were hit; it only
   measures which RTL lines/toggles/branches were structurally exercised. The
   *functional* fidelity guarantee is the separate byte-identical iverilog suite
-  (`make unittests`, `make bitacc`, `make formal`).
+  (`make unittests`, `make q4k` — the current Q4_K bit-exact gate, replacing the removed FP8
+  `make bitacc` — and `make formal`).
 - **Full-config coverage** — the production top runs at larger widths/depths
   (`PE_N`, `DDR_NCH`, `KV_RESIDENT`, layer count, `S_MAX`, expert count) than the
   measured slice. The slice→full-config equivalence is proven separately
   (`make sim-glm-compact` byte-identical token; `docs/FULL_CONFIG_ELAB.md`).
 - **Whole-datapath / capstone coverage** — the large integration TBs
-  (`glm_model_fp8` incl. the multi-seq batched runs, `glm_decoder_block_fp8`,
-  `mla_attn_fp8`, `glm_fp8_system*`, `glm_fp8_soc_ms` incl. the N-step
-  decode loop, `batched_moe` `bcov`, `spec_*`) are intentionally out of this
+  (`glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`, `glm_q4k_system*`,
+  `glm_q4k_soc_ms`, `spec_*` — plus the FP8-prior `batched_moe` `bcov` on branch `fp8`)
+  are intentionally out of this
   run (minutes-long; several depend on the FP goldens noted below). Coverage
   here targets the fast leaf/unit modules.
 

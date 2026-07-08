@@ -10,7 +10,7 @@
 //   the accept/reject bookkeeping of the speculative loop in hardware.
 //
 //   THE LOOP (K=1 draft):
-//     * a MAIN-MODEL pass (glm_model_fp8) produces the VERIFIED next token for
+//     * a MAIN-MODEL pass (glm_model_q4k) produces the VERIFIED next token for
 //       the position being decoded, AND -- via the appended MTP head -- a
 //       DRAFT for the FOLLOWING position, in the SAME pass;
 //     * the NEXT main pass VERIFIES that draft: its own logits give the true

@@ -13,8 +13,8 @@
 //   is the GEMM datapath used for the seven LARGE LINEAR WEIGHT projections:
 //
 //     W_dq, W_uq, W_dkv, W_kr(W_krope), W_uk, W_uv, W_o
-//        -> glm_matmul_q4k  (official GGML Q4_K numerics: published UD-Q4_K_XL
-//           weights dequantized EXACTLY to fp32  w = (d*sc)*q - (dmin*m)  with NO
+//        -> glm_matmul_q4k  (official GGML Q4_K numerics: the Q4_K-typed weights
+//           dequantized EXACTLY to fp32  w = (d*sc)*q - (dmin*m)  with NO
 //           re-quantization, bf16 activations fed direct), exactly like
 //           swiglu_expert_q4k wires glm_matmul_q4k.
 //
@@ -302,8 +302,8 @@ module mla_attn_q4k #(
 
     //========================================================================
     // ACTIVATIONS: bf16, fed DIRECT to glm_matmul_q4k -- Q4_K quantizes ONLY the
-    //   weights, so there is NO activation quant and NO a_shift (unlike the FP8
-    //   sibling).  Identical bf16 activation handling to swiglu_expert_q4k.
+    //   weights, so there is NO activation quant and NO a_shift (unlike the prior
+    //   FP8 sibling).  Identical bf16 activation handling to swiglu_expert_q4k.
     //========================================================================
 
     //========================================================================
@@ -322,7 +322,7 @@ module mla_attn_q4k #(
     reg [15:0] qfull     [0:PE_M-1][0:HQK-1];          // qlora_n*W_uq  (per row)
     reg [15:0] qrot      [0:PE_M-1][0:HQK-1];          // roped q       (per row)
 
-    // ckv_cur = x*W_dkv current-token latent: exercised for FP8 datapath coverage /
+    // ckv_cur = x*W_dkv current-token latent: exercised for Q4_K datapath coverage /
     // X-freeness but (as in mla_attn_tb) NOT consumed downstream -> write-only.
     /* verilator lint_off UNUSEDSIGNAL */
     reg [15:0] ckv_cur   [0:PE_M-1][0:KV_LORA-1];      // x*W_dkv  (per-row datapath coverage)
@@ -628,18 +628,18 @@ module mla_attn_q4k #(
     //========================================================================
     localparam [4:0]
         S_IDLE  = 5'd0,
-        S_QDQ   = 5'd1,    // x*W_dq -> qlora                 (FP8, batched rows)
+        S_QDQ   = 5'd1,    // x*W_dq -> qlora                 (Q4_K, batched rows)
         S_QNORM = 5'd2,    // RMSNorm(qlora) -> qlora_n       (bf16, per row)
-        S_QUQ   = 5'd3,    // qlora_n*W_uq -> qfull           (FP8, batched rows)
+        S_QUQ   = 5'd3,    // qlora_n*W_uq -> qfull           (Q4_K, batched rows)
         S_QROPE = 5'd4,    // rope q_rope per head            (bf16, per row)
-        S_KVDKV = 5'd5,    // x*W_dkv -> ckv_cur              (FP8, batched rows)
-        S_KVKR  = 5'd6,    // x*W_kr -> krope_cur             (FP8, batched rows)
+        S_KVDKV = 5'd5,    // x*W_dkv -> ckv_cur              (Q4_K, batched rows)
+        S_KVKR  = 5'd6,    // x*W_kr -> krope_cur             (Q4_K, batched rows)
         S_KRROPE= 5'd7,    // rope shared k_rope              (bf16, per row)
         S_DSA   = 5'd8,    // dsa_indexer select keys -- PER ROW (serialized over rows)
         S_KEY   = 5'd9,    // per UNION key: norm/W_uk/W_uv (shared)/assemble/score (per row)
         S_SOFT  = 5'd10,   // per head softmax over scores    (bf16, per row)
         S_CTX   = 5'd11,   // weighted-V context              (bf16 fp32-acc, per row)
-        S_OUT   = 5'd12,   // ctx*W_o -> out                  (FP8, batched rows)
+        S_OUT   = 5'd12,   // ctx*W_o -> out                  (Q4_K, batched rows)
         S_DONE  = 5'd13,
         S_UNION = 5'd14,   // build the distinct-key UNION across rows' selections
         S_DSAPF = 5'd15;   // (DSA_REAL_IDX) pre-fetch per-key index vectors -> kidx_buf
@@ -670,8 +670,8 @@ module mla_attn_q4k #(
         K_RDREQ=4'd0,  // request cache read for selected key s
         K_RDWAIT=4'd1, // wait kc_valid; latch c_kv[j], k_rope[j]  (SHARED)
         K_NWAIT=4'd3,  // RMSNorm(c_kv[j]) -> ckv_n                (SHARED)
-        K_UK=4'd4,     // ckv_n*W_uk -> knope_j (per head)   FP8   (SHARED)
-        K_UV=4'd5,     // ckv_n*W_uv -> v_j     (per head)   FP8   (SHARED)
+        K_UK=4'd4,     // ckv_n*W_uk -> knope_j (per head)   Q4_K  (SHARED)
+        K_UV=4'd5,     // ckv_n*W_uv -> v_j     (per head)   Q4_K  (SHARED)
         K_SCORE=4'd7,  // per head: q_h . K_{h,j} -> scores[row][h][s]  bf16 (per row)
         K_NEXTH=4'd8,  // advance head in score loop
         K_NEXT=4'd9;   // advance selected key s
@@ -732,7 +732,7 @@ module mla_attn_q4k #(
 
     //------------------------------------------------------------------------
     // (No activation shift: Q4_K feeds bf16 activations DIRECT to glm_matmul_q4k.
-    //  The FP8 sibling's per-row a_shift / dyn_shift machinery is GONE.  The score
+    //  The prior FP8 sibling's per-row a_shift / dyn_shift machinery is GONE.  The score
     //  pass uses the bf16 engine; AS_CKVN is shared -> identical across rows.)
     //------------------------------------------------------------------------
 
@@ -948,7 +948,7 @@ module mla_attn_q4k #(
                     for (rr=0; rr<PE_M; rr=rr+1)
                         for (s_i=0; s_i<MODEL_DIM; s_i=s_i+1)
                             xbuf[rr][s_i] <= x_vec[16*(MODEL_DIM*rr + s_i) +: 16];
-                    // launch FP8 GEMV: x*W_dq -> qlora  (K=MODEL_DIM, OUT=Q_LORA)
+                    // launch Q4_K GEMV: x*W_dq -> qlora  (K=MODEL_DIM, OUT=Q_LORA)
                     gv_asrc  <= AS_X;
                     gv_sel   <= SEL_DQ;
                     gv_klen  <= KW'(MODEL_DIM);
@@ -984,7 +984,7 @@ module mla_attn_q4k #(
                     for (rr=0; rr<PE_M; rr=rr+1)
                         qlora_n[rr][rn_yidx_q[$clog2(Q_LORA)-1:0]] <= rnq_y_out[16*rr +: 16];
                 if (rnq_done[0]) begin
-                    // FP8 GEMV: qlora_n*W_uq -> qfull  (K=Q_LORA, OUT=HQK)
+                    // Q4_K GEMV: qlora_n*W_uq -> qfull  (K=Q_LORA, OUT=HQK)
                     gv_asrc  <= AS_QLN;
                     gv_sel   <= SEL_UQ;
                     gv_klen  <= KW'(Q_LORA);
@@ -1028,7 +1028,7 @@ module mla_attn_q4k #(
                 end
                 if (rp_done[0]) begin
                     if (gv_head == H_HEADS[$clog2(H_HEADS+1)-1:0] - 1'b1) begin
-                        // FP8 GEMV: x*W_dkv -> ckv_cur
+                        // Q4_K GEMV: x*W_dkv -> ckv_cur
                         gv_asrc  <= AS_X;
                         gv_sel   <= SEL_DKV;
                         gv_klen  <= KW'(MODEL_DIM);
@@ -1049,7 +1049,7 @@ module mla_attn_q4k #(
             S_KVDKV: begin
                 if (gv_go) gv_go <= 1'b0;
                 else if (gv_done) begin
-                    // FP8 GEMV: x*W_kr -> krope_cur  (K=MODEL_DIM, OUT=ROPE)
+                    // Q4_K GEMV: x*W_kr -> krope_cur  (K=MODEL_DIM, OUT=ROPE)
                     gv_asrc  <= AS_X;
                     gv_sel   <= SEL_KR;
                     gv_klen  <= KW'(MODEL_DIM);
@@ -1280,7 +1280,7 @@ module mla_attn_q4k #(
                         end
                         if (rnk_y_valid) ckv_n[rn_yidx_k[$clog2(KV_LORA)-1:0]] <= rnk_y_out;
                         if (rnk_done) begin
-                            // FP8 GEMV: ckv_n*W_uk -> knope_j (K=KV_LORA, OUT=HNOPE) SHARED
+                            // Q4_K GEMV: ckv_n*W_uk -> knope_j (K=KV_LORA, OUT=HNOPE) SHARED
                             gv_asrc  <= AS_CKVN;
                             gv_sel   <= SEL_UK;
                             gv_klen  <= KW'(KV_LORA);
@@ -1300,7 +1300,7 @@ module mla_attn_q4k #(
                                     knope_j[gv_grp*PE_N+tt] <= mm_c[16*tt +:16];
                         end
                         if (gv_done) begin
-                            // FP8 GEMV: ckv_n*W_uv -> v_j (K=KV_LORA, OUT=HV) SHARED
+                            // Q4_K GEMV: ckv_n*W_uv -> v_j (K=KV_LORA, OUT=HV) SHARED
                             gv_asrc  <= AS_CKVN;
                             gv_sel   <= SEL_UV;
                             gv_klen  <= KW'(KV_LORA);
@@ -1541,7 +1541,7 @@ module mla_attn_q4k #(
                     CX_NEXT: begin
                         if (cx_d == V_DIM[$clog2(V_DIM+1)-1:0]-1'b1) begin
                             if (cx_head==H_HEADS[$clog2(H_HEADS+1)-1:0]-1'b1) begin
-                                // FP8 GEMV: ctx*W_o -> out  (K=HV, OUT=MODEL_DIM)
+                                // Q4_K GEMV: ctx*W_o -> out  (K=HV, OUT=MODEL_DIM)
                                 gv_asrc  <= AS_CTX;
                                 gv_sel   <= SEL_O;
                                 gv_klen  <= KW'(HV);

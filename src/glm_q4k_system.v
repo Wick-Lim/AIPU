@@ -8,7 +8,8 @@
 //                        DDR5 fabric + the weight-side DMA loader)
 //                       (docs/Q4K_SYSTEM_PLAN.md §1.3 -- the largest top)
 //----------------------------------------------------------------------------
-// Q4_K RETARGET (vs. glm_fp8_system):  ONE contract change -- the compute die
+// Q4_K RETARGET (vs. the prior glm_fp8_system on branch 'fp8'):  ONE contract
+//   change -- the compute die
 //   glm_model_fp8 -> glm_model_q4k -- drives everything.  The three weight-bus
 //   families that cross the die boundary swap FP8 (8-bit codes + bf16 [128,128]
 //   block scales) -> GGUF Q4_K (4-bit codes + per-super-block d/dmin/scales,
@@ -32,7 +33,7 @@
 //   memory CONTROLLERS (expert_cache_pf + kv_cache_pager) over one Flash
 //   channel, with all the die's weight/KV bytes served the SAME cycle by the
 //   TB GDDR6/Flash STUBS (the verified combinational PULL contract -- the die
-//   cannot be stalled mid-layer).  glm_fp8_system KEEPS that exact, verified
+//   cannot be stalled mid-layer).  glm_q4k_system KEEPS that exact, verified
 //   compute path and ADDS the two remaining production-fabric blocks INTO the
 //   datapath so the memory now FLOWS THROUGH the real multichannel fabric:
 //
@@ -45,10 +46,10 @@
 //       the channel-parallel bandwidth path REAL in the elaborated datapath:
 //       ddr5_xbar's response counters advance as the token is generated.
 //
-//     * weight_loader -- the WEIGHT-side DMA / pull master for glm_matmul_fp8.
+//     * weight_loader -- the WEIGHT-side DMA / pull master for glm_matmul_q4k.
 //       It is driven on the HOT / REPRESENTATIVE weight tile: at each compute
-//       launch it loads one tile descriptor (bf16 block scales + FP8 weight
-//       rows) from a fast staging tier and DRIVES the matmul pull stream
+//       launch it loads one tile descriptor (Q4_K super-block scale headers +
+//       4-bit weight rows) from a fast staging tier and DRIVES the matmul pull stream
 //       (mm_start / mm_w_scale / mm_w_row / mm_in_valid).  Its tile-fetch
 //       ADDRESSES are MIRRORED into ddr5_xbar, realizing the multichannel
 //       bandwidth for the weight stream.
@@ -56,10 +57,10 @@
 //============================================================================
 // BLOCK DIAGRAM  (one decode step)
 //
-//   HOST ─ start/prompt/pos/s_len ─▶┌───────────── glm_fp8_system ───────────┐
+//   HOST ─ start/prompt/pos/s_len ─▶┌───────────── glm_q4k_system ───────────┐
 //                                   │  ┌──────────────┐                       │
-//                                   │  │ glm_model_fp8│  hot-weight PULLS ─────┼─▶ GDDR6 stub (compute bytes)
-//                                   │  │  FP8 COMPUTE │  (em/gn/aw/rw/fw/fn/lw)│        │  (addr mirror)
+//                                   │  │ glm_model_q4k│  hot-weight PULLS ─────┼─▶ GDDR6 stub (compute bytes)
+//                                   │  │ Q4_K COMPUTE │  (em/gn/aw/rw/fw/fn/lw)│        │  (addr mirror)
 //                                   │  │  (verified)  │  kc_* KV read ────────┐│        ▼
 //                                   │  └──────┬───────┘                       ││  ┌───────────┐
 //                                   │  mdl_start │ db_layer/fw_eidx           ││  │ DDR5 XBAR │─▶ N_CH DDR5 stub
@@ -95,11 +96,12 @@
 //     ddr5_xbar's single requester port; bank_rot stripes consecutive accepted
 //     reads round-robin across channels so the N_CH bandwidth is exercised.
 //   THROUGH weight_loader (the matmul weight-pull master, hot/representative tile):
-//     - One descriptor per compute launch (mdl_start): bf16 block scales + FP8
-//       rows for a representative attention-projection tile.  It drives the full
-//       mm_start/mm_w_scale/mm_w_row/mm_in_valid pull stream a glm_matmul_fp8
-//       consumes -- observable, X-clean -- and its fetch addresses feed the xbar.
-//   STILL via the STUB (the compute MATH, unperturbed -- exactly as glm_fp8_soc):
+//     - One descriptor per compute launch (mdl_start): Q4_K super-block scale
+//       headers + 4-bit rows for a representative attention-projection tile.  It
+//       drives the full mm_start/mm_w_scale/mm_w_row/mm_in_valid pull stream a
+//       glm_matmul_q4k consumes -- observable, X-clean -- and its fetch addresses
+//       feed the xbar.
+//   STILL via the STUB (the compute MATH, unperturbed -- exactly as glm_q4k_soc):
 //     - The die's actual weight CODES/SCALES + kc_* KV bytes are served the same
 //       cycle by the TB GDDR6/Flash stub ports (the verified combinational pull
 //       contract).  ddr5_xbar + weight_loader sit IN the datapath as the
@@ -144,18 +146,18 @@ module glm_q4k_system #(
     parameter integer EFIFO_DEPTH = 16,     // routed-expert request FIFO depth (POW2)
     // ---- C8 loopback: physically route ddr5_xbar's returned bytes into the die ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-loopback module.  The die's
-    //       attention-weight code lanes (aw_col) come straight from the same-cycle
+    //       attention-weight code lanes (aw_q) come straight from the same-cycle
     //       combinational GDDR6 stub, and ddr5_xbar's returned data stays a counted
     //       OBSERVATION-only output (the C8 gap: returned bytes not fed to the die).
-    //   1 = ON: the die's aw_col FP8 code lanes are SOURCED from ddr5_xbar's returned
+    //   1 = ON: the die's aw_q Q4_K code lanes are SOURCED from ddr5_xbar's returned
     //       read data.  Because the die's weight pull is COMBINATIONAL (same-cycle,
     //       un-stallable) but the xbar answers only after ROW_LAT, the loopback
     //       STALLS the die by clock-gating (die_clk = clk & enable): on each aw beat
     //       it issues a banked DDR5 read (TAG_LBAW) encoding {layer,sel,grp,k},
     //       freezes the die until that beat's response returns, presents the returned
-    //       lanes on the die's aw_col, then advances the die exactly one edge.  Every
+    //       lanes on the die's aw_q, then advances the die exactly one edge.  Every
     //       other weight/KV family still comes same-cycle from the stub (unperturbed).
-    //       No glm_model_fp8 edit is needed -- the die is stalled EXTERNALLY by
+    //       No glm_model_q4k edit is needed -- the die is stalled EXTERNALLY by
     //       gating its clock, which a synchronous die tolerates bit-exactly (its
     //       per-edge input trajectory is unchanged, so the committed token is
     //       identical to the LOOPBACK=0 run).  See the new local proof TB.
@@ -175,7 +177,7 @@ module glm_q4k_system #(
     //       serves every family same-cycle on the edges the die actually takes), the
     //       committed token is IDENTICAL to the OFF run -- but the die now waits
     //       ~FLASH_LAT per miss, so the measured start->tok_valid latency GROWS by
-    //       exactly ec_demand_stall_cycles.  No glm_model_fp8 edit is needed; the
+    //       exactly ec_demand_stall_cycles.  No glm_model_q4k edit is needed; the
     //       cache/FIFO/Flash-arbiter all keep running on the ungated clk so the
     //       fetch that clears the stall always completes (no deadlock).
     parameter integer EXPERT_STALL = 0,
@@ -195,9 +197,9 @@ module glm_q4k_system #(
     //            weight_loader unchanged (BYTE-IDENTICAL to the pre-DECOMP module).
     //   1 = weight_decomp (order-0 canonical Huffman): the wl_mem backing image is
     //            the LOSSLESSLY-COMPRESSED weight-word byte stream; it is streamed
-    //            through weight_decomp, the decoded FP8 bytes are re-assembled into
+    //            through weight_decomp, the decoded Q4_K bytes are re-assembled into
     //            WL_DATA_W words in the loader's sequential read order, and the
-    //            loader (hence the observable FP8 code beats) consumes DECOMPRESSED
+    //            loader (hence the observable Q4_K code beats) consumes DECOMPRESSED
     //            codes from that reconstruction buffer.
     parameter integer DECOMP      = 0,
     parameter integer WD_MAXLEN   = 15,     // weight_decomp: max canonical code length
@@ -208,7 +210,7 @@ module glm_q4k_system #(
     parameter integer WD_EOB_SYM  = 256,    // weight_decomp: end-of-block symbol
     parameter integer RECON_DEPTH = 2048,   // decompressed-word reconstruction RAM depth
     // ====================================================================
-    // derived (do NOT override) -- mirror glm_model_fp8's port-width derivations
+    // derived (do NOT override) -- mirror glm_model_q4k's port-width derivations
     // ====================================================================
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -240,7 +242,7 @@ module glm_q4k_system #(
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1),
     // ---- Q4_K super-block counts (256-elem super-blocks; #super-blocks per K) ----
     //   ceil(K/256), mirroring glm_model_q4k -- these size the d/dmin/scales buses
-    //   (was A_NB/FF_NB_D/R_NB = ceil(K/128) FP8 block counts).
+    //   (was A_NB/FF_NB_D/R_NB = ceil(K/128) prior-FP8 block counts).
     parameter integer A_NSB      = (A_KMAX    + 255) / 256,   // attention super-blocks
     parameter integer FF_NSB_D   = (FF_KMAX_D + 255) / 256,   // dense FFN super-blocks
     parameter integer R_NSB      = (FF_KMAX_M + 255) / 256,   // router super-blocks
@@ -686,7 +688,7 @@ module glm_q4k_system #(
     //========================================================================
     // 7) WEIGHT LOADER -- the matmul weight-pull DMA on the hot/representative
     //    tile.  Loaded once per compute launch (mdl_start); reads its tile from
-    //    the latency-1 staging memory (TB) and drives the glm_matmul_fp8 pull
+    //    the latency-1 staging memory (TB) and drives the glm_matmul_q4k pull
     //    stream.  Its fetch addresses feed ddr5_xbar (§8).
     //========================================================================
     wire                       wl_mm_start;
@@ -804,7 +806,7 @@ module glm_q4k_system #(
             .out_ready(1'b1), .eob(wd_eob)
         );
 
-        // reassemble decoded FP8 bytes (LE) into WL_DATA_W words; write recon RAM
+        // reassemble decoded Q4_K bytes (LE) into WL_DATA_W words; write recon RAM
         reg  [WL_DATA_W-1:0]  recon [0:RECON_DEPTH-1];
         reg  [RAW-1:0]        word_idx;
         reg  [1:0]            byte_lane;
@@ -974,17 +976,17 @@ module glm_q4k_system #(
     /* verilator lint_on UNUSEDSIGNAL */
 
     //========================================================================
-    // 9) C8 LOOPBACK -- feed ddr5_xbar's returned bytes into the die's aw_col.
-    //    (LOOPBACK==0 : this generate ties die_clk=clk and die_aw_col=stub, so the
+    // 9) C8 LOOPBACK -- feed ddr5_xbar's returned bytes into the die's aw_q.
+    //    (LOOPBACK==0 : this generate ties die_clk=clk and die_aw_q=stub, so the
     //     module is BYTE-IDENTICAL to the pre-loopback design.)
     //
     //    The die's attention-weight pull is COMBINATIONAL: it drives {db_layer,
-    //    aw_sel,aw_grp,aw_k} and expects the PE_N FP8 lanes the SAME cycle.  The
+    //    aw_sel,aw_grp,aw_k} and expects the PE_N Q4_K lanes the SAME cycle.  The
     //    xbar answers only ROW_LAT cycles later, so we STALL the die by gating its
     //    clock (die_clk = clk & enable, enable latched on the low phase => glitch-
     //    free).  Per aw beat:  freeze the die, issue a banked DDR5 read (TAG_LBAW)
     //    whose address encodes the exact {layer,sel,grp,k}, capture the tagged
-    //    response, present its low PE_N*8 bits on die_aw_col, then release the die
+    //    response, present its low PE_N*4 bits on die_aw_q, then release the die
     //    for exactly one edge (which retires the staged lanes and advances aw_k).
     //    Because the die is synchronous, freezing its clock is transparent: at every
     //    die edge ALL its inputs equal what they'd be in the LOOPBACK==0 run (the

@@ -3,28 +3,31 @@
 `include "glm_fp_pipe_lat.vh"
 /* verilator lint_off DECLFILENAME */
 //============================================================================
-// glm_decoder_block_fp8.v  --  ONE GLM-5.2-FP8 decoder layer (ACCEL_GLM52 §2,§6)
+// glm_decoder_block_q4k.v  --  ONE GLM-5.2 (Q4_K) decoder layer (ACCEL_GLM52 §2,§6)
 //----------------------------------------------------------------------------
-// FUNCTION  (the FP8-NATIVE sibling of glm_decoder_block.v -- IDENTICAL FSM,
-//   dataflow, dense/MoE modes, streamed residual adds and FFN combine; the ONLY
-//   change is that the big LINEAR WEIGHT matmuls run FP8 instead of bf16)
+// FUNCTION  (the Q4_K-native sibling of glm_decoder_block.v; prior FP8 sibling
+//   glm_decoder_block_fp8 preserved on branch 'fp8' -- IDENTICAL FSM, dataflow,
+//   dense/MoE modes, streamed residual adds and FFN combine; the ONLY change is
+//   that the big LINEAR WEIGHT matmuls run Q4_K instead of bf16)
 //
-//     h = x + mla_attn_fp8( rmsnorm(x), pos, kv_cache )      // attention sub-block
+//     h = x + mla_attn_q4k( rmsnorm(x), pos, kv_cache )      // attention sub-block
 //     y = h + FFN(          rmsnorm(h) )                      // FFN sub-block
 //
 //   FFN is selected by the MODE input:
-//     MODE==0 (DENSE, first_k_dense_replace layers): ONE swiglu_expert_fp8 at
+//     MODE==0 (DENSE, first_k_dense_replace layers): ONE swiglu_expert_q4k at
 //             INTER_DENSE, no router.    FFN(z) = swiglu(z).
-//     MODE==1 (MoE):  moe_router_fp8(z) picks TOPK of N_EXPERT experts; each routed
-//             expert runs swiglu_expert_fp8(z, expert_weights) scaled by its routed
-//             gate; the ALWAYS-ON shared expert runs swiglu_expert_fp8(z, shared)
+//     MODE==1 (MoE):  moe_router_q4k(z) picks TOPK of N_EXPERT experts; each routed
+//             expert runs swiglu_expert_q4k(z, expert_weights) scaled by its routed
+//             gate; the ALWAYS-ON shared expert runs swiglu_expert_q4k(z, shared)
 //             with weight 1; combine = Σ_e gate_e * y_e + y_shared (fp32 accum).
 //
-//   FP8 SPLIT (modules_to_not_convert preserved):  the bf16 residual STREAM, the
-//   two pre-RMSNorms, softmax/rope/sigmoid/topk tails stay bf16 EXACTLY as
-//   glm_decoder_block.v.  ONLY the leaf units' big weight GEMMs are FP8 (E4M3
-//   weights + per-[128,128]-block bf16 dequant scales + on-chip dynamic per-token
-//   activation->E4M3 quant).  The residual adds are bf16 (glm_fp.vh, §6).
+//   QUANT SPLIT (modules_to_not_convert preserved -- a real GLM-5.2 boundary, not
+//   FP8-specific):  the bf16 residual STREAM, the two pre-RMSNorms,
+//   softmax/rope/sigmoid/topk tails stay bf16 EXACTLY as glm_decoder_block.v.
+//   ONLY the leaf units' big weight GEMMs are Q4_K (GGML Q4_K: 4-bit codes +
+//   per-256-elem-super-block fp16 d/dmin scales; activations stay bf16 -- NO
+//   activation quant, unlike the prior FP8 track).  The residual adds are bf16
+//   (glm_fp.vh, §6).
 //
 //============================================================================
 // PE_M BATCHING (B residual-hidden ROWS share ONE weight fetch)    (ULTRA_PERF#2)
@@ -32,8 +35,8 @@
 //   PE_M (default 1 == byte-identical to the committed single-token layer) is the
 //   number of token ROWS (the residual hidden) carried through the layer at once.
 //   The B rows share the SAME decode step: pos, s_len, the KV cache, the per-layer
-//   gammas and ALL weight matrices.  The three FP8 leaf wrappers
-//   (mla_attn_fp8 / moe_router_fp8 / swiglu_expert_fp8) are ALREADY PE_M-capable:
+//   gammas and ALL weight matrices.  The three Q4_K leaf wrappers
+//   (mla_attn_q4k / moe_router_q4k / swiglu_expert_q4k) are ALREADY PE_M-capable:
 //   each streams PE_M activation rows against ONE shared weight fetch and emits
 //   PE_M result rows, so the weight pull streams (aw_*/rw_*/fw_*) are IDENTICAL to
 //   PE_M=1 -- ONE Flash fetch feeds all B rows.  This module just carries a B-WIDE
@@ -50,7 +53,7 @@
 //       rows -> the cycle structure is UNCHANGED.
 //
 //   PER-ROW MoE ROUTING (the one place rows genuinely diverge):
-//     moe_router_fp8 emits per-row {sel_idx, sel_weight}; rows may pick DIFFERENT
+//     moe_router_q4k emits per-row {sel_idx, sel_weight}; rows may pick DIFFERENT
 //     experts.  Because ONE expert's weights are fetched per evaluation (shared by
 //     all rows), the combine iterates the expert evaluations and ACCUMULATES into
 //     a row ONLY when that row selected the current expert (row_active), with that
@@ -66,26 +69,27 @@
 //   single-row datapath (identical ports), so the committed TBs instantiate this
 //   unchanged.
 //----------------------------------------------------------------------------
-// EXPERT REUSE STRATEGY (MoE mode -- SERIAL, one swiglu_expert_fp8 instance)
-//   ONE swiglu_expert_fp8(INTER_MOE) instance is time-multiplexed over the routed
+// EXPERT REUSE STRATEGY (MoE mode -- SERIAL, one swiglu_expert_q4k instance)
+//   ONE swiglu_expert_q4k(INTER_MOE) instance is time-multiplexed over the routed
 //   experts followed by the 1 shared expert (NEVAL+1 evaluations).  Before each
 //   evaluation the orchestrator drives the FFN weight-pull select (fw_eidx /
 //   fw_shared) ALONGSIDE the expert's own (w_sel/w_grp/w_k + block-scale) request,
-//   so the system answers the correct expert's FP8 column + [128,128] scales that
+//   so the system answers the correct expert's Q4_K codes + super-block scales that
 //   cycle.  After each routed expert's y the orchestrator scales it by each row's
 //   routed gate (fp32 mul) and adds into that row's per-element fp32 accumulator
 //   (only for rows that selected the expert); the shared expert is added weight 1.
 //
 //----------------------------------------------------------------------------
-// WEIGHT PULL INTERFACE (FP8 E4M3 codes + per-[128,128]-block bf16 scales -- the
-//   request/response streams are INDEPENDENT of PE_M: ONE fetch feeds all B rows)
+// WEIGHT PULL INTERFACE (Q4_K 4-bit codes + per-256-elem-super-block fp16 d/dmin +
+//   6-bit block scales -- the request/response streams are INDEPENDENT of PE_M: ONE
+//   fetch feeds all B rows)
 //     * gamma pull (gn_*)            : bf16 RMSNorm learned scale (UNCHANGED).
-//     * attention weight pull (aw_*) : aw_col = PE_N FP8 E4M3 lanes;
-//                                      aw_scale = bf16 [128,128] block scales.
+//     * attention weight pull (aw_*) : aw_q = PE_N Q4_K 4-bit lanes;
+//                                      aw_d/aw_dmin/aw_scales = per-super-block scales.
 //     * attention cache read (kc_*)  : latent KV cache (UNCHANGED, bf16).
-//     * router weight pull (rw_*)    : rw_col = N_EXPERT FP8 E4M3 lanes of W_g[k,*].
-//     * FFN expert weight pull (fw_*): fw_col / fw_col_up = TN FP8 E4M3 lanes;
-//                                      fw_scale_g / fw_scale_u = bf16 block scales;
+//     * router weight pull (rw_*)    : rw_q = N_EXPERT Q4_K 4-bit lanes of W_g[k,*].
+//     * FFN expert weight pull (fw_*): fw_q / fw_q_up = TN Q4_K 4-bit lanes;
+//                                      fw_d_*/fw_dmin_*/fw_scales_* = super-block scales;
 //                                      qualified by fw_shared / fw_eidx.
 //
 //----------------------------------------------------------------------------
@@ -94,7 +98,7 @@
 module glm_decoder_block_q4k #(
     // ---- model / slice config (small-but-faithful) ----
     parameter integer MODEL_DIM  = 128,
-    // ---- mla_attn_fp8 slice params (passed straight through) ----
+    // ---- mla_attn_q4k slice params (passed straight through) ----
     parameter integer PER_ROW_POS = 0,   // 1 = per-row query positions via pos_vec (P1.3a)
     parameter integer PER_ROW_SLEN= 0,   // 1 = per-row causal extents via s_len_vec (P1.3d)
     parameter integer PER_ROW_SEQ = 0,   // 1 = per-row sequence ids via seq_vec (A2; kc_seq out)
@@ -119,7 +123,9 @@ module glm_decoder_block_q4k #(
     parameter integer INTER_DENSE= 256,         // dense-front inter size
     parameter [31:0]  RSCALE     = 32'h40200000,// routed_scaling_factor 2.5 fp32
     parameter integer TN         = 4,           // swiglu output-tile width
-    // ---- FP8 weight block size -- DeepSeek-V3 / GLM-5.2-FP8 weight_block_size=[128,128]
+    // ---- vestigial FP8 block size (weight_block_size=[128,128] from DeepSeek-V3 /
+    //      the prior GLM-5.2-FP8 track); Q4_K uses 256-elem super-blocks -- kept as
+    //      a live param threaded to the leaf units ----
     parameter integer BLK        = 128,
     // ---- PE_M : residual-hidden ROWS (batch B) sharing one weight fetch ----
     parameter integer PE_M       = 1,
@@ -131,7 +137,7 @@ module glm_decoder_block_q4k #(
     parameter integer HNOPE      = H_HEADS * NOPE,
     parameter integer HV         = H_HEADS * V_DIM,
     parameter integer EIDXW      = (N_EXPERT <= 1) ? 1 : $clog2(N_EXPERT),
-    // mla_attn_fp8 re-derived sizings (mirror its own derivations for port widths)
+    // mla_attn_q4k re-derived sizings (mirror its own derivations for port widths)
     parameter integer A_KMAX     = (MODEL_DIM > Q_LORA) ?
                                ((MODEL_DIM > KV_LORA) ?
                                 ((MODEL_DIM > HV) ? MODEL_DIM : HV)
@@ -157,7 +163,8 @@ module glm_decoder_block_q4k #(
     parameter integer FF_KWD     = $clog2(FF_KMAX_D + 1),
     parameter integer FF_KWM     = $clog2(FF_KMAX_M + 1),
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1), // router KMAX = same family
-    // ---- FP8 [128,128]-block scale counts (#K-blocks per weight family) ----
+    // ---- vestigial FP8 [128,128]-block scale counts (from the prior FP8 track;
+    //      superseded by the Q4_K 256-elem super-block counts) ----
     parameter integer A_NB       = (A_KMAX    + BLK - 1) / BLK,  // attention scales
     parameter integer FF_NB_D    = (FF_KMAX_D + BLK - 1) / BLK,  // dense FFN scales
     parameter integer FF_NB_M    = (FF_KMAX_M + BLK - 1) / BLK,  // MoE  FFN scales
@@ -199,7 +206,7 @@ module glm_decoder_block_q4k #(
     output wire [$clog2(MODEL_DIM)-1:0] gn_idx,     // gamma element index
     input  wire [15:0]                  gn_val,     // gamma[gn_idx] (bf16) -- SHARED
 
-    // ---- attention weight pull (forwarded mla_attn_fp8 w_*; FP8 codes + scales) ----
+    // ---- attention weight pull (forwarded mla_attn_q4k w_*; Q4_K codes + scales) ----
     output wire                         aw_req,
     output wire [3:0]                   aw_sel,     // 0=W_dq..6=W_o
     output wire [A_GRPW-1:0]            aw_grp,
@@ -209,7 +216,7 @@ module glm_decoder_block_q4k #(
     input  wire [16*PE_N*A_NSB-1:0]     aw_dmin,    // fp16 dmin
     input  wire [96*PE_N*A_NSB-1:0]     aw_scales,  // 6-bit scales
 
-    // ---- attention cache read (forwarded mla_attn_fp8 kc_*) ----
+    // ---- attention cache read (forwarded mla_attn_q4k kc_*) ----
     output wire                         kc_req,
     output wire [IDXW-1:0]              kc_idx,
     output wire [SEQW-1:0]              kc_seq,     // PER_ROW_SEQ=1: fetched key's sequence window
@@ -217,7 +224,7 @@ module glm_decoder_block_q4k #(
     input  wire [ROPE*16-1:0]           kc_krope,
     input  wire                         kc_valid,
 
-    // ---- MoE router weight pull (W_g column; FP8 codes + scales) ----
+    // ---- MoE router weight pull (W_g column; Q4_K codes + scales) ----
     output wire                         rw_req,
     output wire [R_KW-1:0]              rw_k,
     input  wire [4*N_EXPERT-1:0]        rw_q,       // N_EXPERT Q4_K 4-bit = W_g[k,*]
@@ -225,7 +232,7 @@ module glm_decoder_block_q4k #(
     input  wire [16*N_EXPERT*R_NSB-1:0] rw_dmin,    // fp16 dmin
     input  wire [96*N_EXPERT*R_NSB-1:0] rw_scales,  // 6-bit scales
 
-    // ---- FFN expert weight pull (swiglu_expert_fp8 w_*), qualified by which expert ----
+    // ---- FFN expert weight pull (swiglu_expert_q4k w_*), qualified by which expert ----
     output wire                         fw_req,
     output wire [1:0]                   fw_sel,     // 0=GATE,1=UP,2=DOWN (swiglu)
     output wire [FF_GWD-1:0]            fw_grp,     // dense-sized group (>= moe)
@@ -312,7 +319,7 @@ module glm_decoder_block_q4k #(
     assign gn_idx   = rn_gidx[$clog2(MODEL_DIM)-1:0];
 
     //========================================================================
-    // mla_attn_fp8 sub-block (full attention; FP8 weight projections).  PE_M rows
+    // mla_attn_q4k sub-block (full attention; Q4_K weight projections).  PE_M rows
     // share ONE w_*/kc_* stream (forwarded to aw_*/kc_*).
     //========================================================================
     reg                       at_start;
@@ -338,7 +345,7 @@ module glm_decoder_block_q4k #(
     /* verilator lint_on UNUSEDSIGNAL */
 
     //========================================================================
-    // moe_router_fp8 (MoE mode).  Its FP8 W_g pull is forwarded to rw_*.  PE_M
+    // moe_router_q4k (MoE mode).  Its Q4_K W_g pull is forwarded to rw_*.  PE_M
     // rows produce per-row {sel_idx, sel_weight} off ONE shared W_g stream.
     //========================================================================
     reg                       rt_start;
@@ -364,9 +371,9 @@ module glm_decoder_block_q4k #(
     reg [15:0]      sel_w   [0:PE_M-1][0:TOPK-1];
 
     //========================================================================
-    // FFN expert (one DENSE swiglu_expert_fp8 + one MoE instance), both PE_M wide.
+    // FFN expert (one DENSE swiglu_expert_q4k + one MoE instance), both PE_M wide.
     //   Only the instance matching `mode_q` is started; the other stays idle.  Both
-    //   share the normalized input nrm_vec and pull their FP8 weights+scales through
+    //   share the normalized input nrm_vec and pull their Q4_K weights+scales through
     //   the SAME fw_* ports (qualified by fw_shared / fw_eidx, shared by all rows).
     //========================================================================
     // ---- dense expert ----
@@ -422,7 +429,7 @@ module glm_decoder_block_q4k #(
 
     // FFN weight-pull MUX: forward whichever expert instance is active (shared by
     // all PE_M rows).  Widths: dense grp/k are the WIDE family (FF_GWD/FF_KWD >=
-    // moe's), so the moe fields zero-extend.  FP8 col/scale responses are width-
+    // moe's), so the moe fields zero-extend.  Q4_K code/scale responses are width-
     // shared (same TN) -- dense uses all FF_NB_D scale K-blocks, moe slices low FF_NB_M.
     // CONFIG GUARD (task B4 followup): the zero-extensions below assume the dense
     // FFN is at least as wide as the MoE FFN (FF_GWD >= FF_GWM, FF_KWD >= FF_KWM),
@@ -432,9 +439,9 @@ module glm_decoder_block_q4k #(
     // malformed netlist -- fail LOUDLY instead of silently.
     initial begin
         if (FF_GWM > FF_GWD)
-            $fatal(1, "glm_decoder_block_fp8: FF_GWM(%0d) > FF_GWD(%0d) -- MoE FFN wider than dense; fw_grp zero-extension requires INTER_DENSE >= INTER_MOE", FF_GWM, FF_GWD);
+            $fatal(1, "glm_decoder_block_q4k: FF_GWM(%0d) > FF_GWD(%0d) -- MoE FFN wider than dense; fw_grp zero-extension requires INTER_DENSE >= INTER_MOE", FF_GWM, FF_GWD);
         if (FF_KWM > FF_KWD)
-            $fatal(1, "glm_decoder_block_fp8: FF_KWM(%0d) > FF_KWD(%0d) -- MoE FFN wider than dense; fw_k zero-extension requires INTER_DENSE >= INTER_MOE", FF_KWM, FF_KWD);
+            $fatal(1, "glm_decoder_block_q4k: FF_KWM(%0d) > FF_KWD(%0d) -- MoE FFN wider than dense; fw_k zero-extension requires INTER_DENSE >= INTER_MOE", FF_KWM, FF_KWD);
     end
 
     assign fw_req = mode_q ? em_wreq : ed_wreq;
@@ -460,11 +467,11 @@ module glm_decoder_block_q4k #(
     localparam [4:0]
         T_IDLE   = 5'd0,
         T_RN1    = 5'd1,    // pre-attn rmsnorm(x) -> nrm
-        T_ATTN   = 5'd2,    // mla_attn_fp8(nrm) -> at_out
+        T_ATTN   = 5'd2,    // mla_attn_q4k(nrm) -> at_out
         T_RADD1  = 5'd3,    // h = x + at_out (bf16, per-elt, per-row)
         T_RN2    = 5'd4,    // pre-ffn rmsnorm(h) -> nrm
         T_FFN_D  = 5'd5,    // dense swiglu(nrm) -> fbuf
-        T_ROUTE  = 5'd6,    // moe_router_fp8(nrm) -> sel
+        T_ROUTE  = 5'd6,    // moe_router_q4k(nrm) -> sel
         T_EXPW   = 5'd8,    // wait expert done
         T_ACC    = 5'd9,    // scale+accumulate expert y into facc (1 elt/cycle/row)
         T_FCOMB  = 5'd10,   // finalize fbuf from facc (MoE, 1 elt/cycle/row)
@@ -692,7 +699,7 @@ module glm_decoder_block_q4k #(
                     for (rr=0; rr<PE_M; rr=rr+1)
                         nrm[rr][rn_widx[$clog2(MODEL_DIM)-1:0]] <= rn_y_out[16*rr +: 16];
                 if (rn_done[0]) begin
-                    at_start <= 1'b1;                // launch MLA attention (FP8)
+                    at_start <= 1'b1;                // launch MLA attention (Q4_K)
                     state    <= T_ATTN;
                 end
             end

@@ -1,4 +1,23 @@
-# Product Roadmap — GLM-5.2-FP8 accelerator (product, not research)
+# Product Roadmap — GLM-5.2 accelerator (product, not research)
+
+> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native**, targeting the
+> published `unsloth/GLM-5.2-GGUF:UD-Q4_K_XL` checkpoint (GGML Q4_K). **FP8 is the PRIOR /
+> PRESERVED track** on branch **`fp8`** (tag `fp8-verified-baseline`), removed from `main` in
+> commit `cbef69d`. Everything in the body below still describes the **FP8** flow (the P1.1
+> real-checkpoint gate, `glm_model_fp8`, `glm_fp8_soc_ms`, `tools/glm_fp8_ref.py`,
+> `tools/ckpt_pack.py`, `make bitacc`/`make bcov` — **all deleted from `main`**). The Q4_K
+> equivalents are `glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`, `moe_router_q4k`,
+> `swiglu_expert_q4k`, `mtp_head_q4k`, `glm_q4k_soc(_ms)`, `glm_q4k_system(_cdc)`,
+> `weight_loader_q4k.v`, `tools/q4k_ref.py`, `tools/ckpt_pack_q4k.py`.
+>
+> **Honest scope of the Q4_K proof** (per the evidence ledger): `make q4k` proves the Q4_K
+> GEMM core (`glm_matmul_q4k`) **bit-exact to the team's own ggml-Q4_K reference**
+> (`tools/q4k_ref.py`) — **not** "bit-exact to the real UD-Q4_K_XL file": the RTL is
+> **Q4_K-only** (no Q6_K/Q8_0/F16, which the dynamic UD mix uses) and is never checked against
+> the real GGUF bytes or llama.cpp arithmetic. The assembled model is exercised only as
+> **spec==greedy self-consistency** (DUT-vs-DUT), with **no** end-to-end numeric golden. Every
+> tok/s, FPGA-fit, BOM/TCO, and LOI figure is **[EST]/[PENDING]**, not measured. **A deeper
+> Q4_K rewrite of this doc's body is deferred** (see DEFERRED-REWRITE list).
 
 The `prototype` branch (frozen at `47fb7f8`) holds the **research prototype**: the full FP8
 datapath + memory system + ultra-perf batching stack, **bit-exact and mechanism-proven at a
@@ -51,7 +70,7 @@ ship it.*
 |---|---|---|
 | Correctness scope | operator bit-exact + a **truncated full-model token chain on real weights** (dense→MoE seam, real 256-expert route, DSA threaded, argmax-identical on a real prompt — DSA-IndexShare + fused-expert blockers retired) | the **full 753 GB checkpoint** produces the real model's tokens **at full depth** end-to-end |
 | Scale | small faithful slice (128/6/8); the **full 753B config elaborates clean** (verilator, 0 errors) | full config *simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
-| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0; **a batched multi-seq top `glm_fp8_soc_ms` (PE_M=B model + real NSEQ-window pager + host FSM: prefill B seqs → 1 forward → commit B tokens; per-row bit-exact)**; **`DSA_REAL_IDX=1` (query-dependent IndexShare) works under multi-seq via a per-sequence `kidx_buf` pre-fetch**; **a REAL per-layer KV store (`kv_mem`) owned by the top** (host writes per (seq,layer,pos), model reads combinationally); **real draft chaining (`spec_chain_top`) + batched_moe full B-coverage (`make bcov`, B∈{1,2,3,5,8})**; **multi-step continuous-batching DECODE LOOP (`glm_fp8_soc_ms` `N_STEPS>1`: one start decodes N tokens/seq, argmax fed back, extent/pos grow, decode-token KV written to `kv_mem` and attended — each row's step-k token bit-exact vs a standalone PE_M=1 model decoding that seq alone N steps)** | a resident dense DRAFT model (K_eff↑, needs weights); real-checkpoint (P1.1, GPU) |
+| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0; **a batched multi-seq top `glm_fp8_soc_ms` (PE_M=B model + real NSEQ-window pager + host FSM: prefill B seqs → 1 forward → commit B tokens; per-row bit-exact)**; **`DSA_REAL_IDX=1` (query-dependent IndexShare) works under multi-seq via a per-sequence `kidx_buf` pre-fetch**; **a REAL per-layer KV store (`kv_mem`) owned by the top** (host writes per (seq,layer,pos), model reads combinationally); **real draft chaining (`spec_chain_top`) + batched_moe full B-coverage (`make bcov` [FP8, removed — see branch `fp8`], B∈{1,2,3,5,8})**; **multi-step continuous-batching DECODE LOOP (`glm_fp8_soc_ms` `N_STEPS>1`: one start decodes N tokens/seq, argmax fed back, extent/pos grow, decode-token KV written to `kv_mem` and attended — each row's step-k token bit-exact vs a standalone PE_M=1 model decoding that seq alone N steps)** | a resident dense DRAFT model (K_eff↑, needs weights); real-checkpoint (P1.1, GPU) |
 | Memory | DDR5/NVMe/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (+ clk_throttle) + directed TBs at slice; **verilator line/toggle/branch coverage** (`make coverage`, 87.8% line merged) | coverage *closure*, constrained-random regression, gate-level sim, k-induction, production-width formal |
 | Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
@@ -88,7 +107,7 @@ one thing the slice cannot.
   (NB=ceil(KMAX/BLK); at the product KMAX=16384 → NB=128, i.e. 256 FP pipes + ~40k delay FFs *per PE*),
   so lint-"elaborates-clean" ≠ buildable. Rewrote it as a **sequential** fold (one fp32_mul + one
   fp32_add reused over all blocks), **O(NB²)→O(1)** FP pipes, **bit-exact** (matmul TB 224/224 at NB=2
-  and NB=16; `make bitacc` 14/14 + argmax 28/28; slice-model argmax unchanged). yosys now elaborates
+  and NB=16; `make bitacc` [FP8, removed — Q4_K gate is `make q4k`] 14/14 + argmax 28/28; slice-model argmax unchanged). yosys now elaborates
   `glm_matmul_fp8` at KMAX=16384 (was an elaboration hang) — the product config is now buildable.
 - P1.3 Close the prototype correctness gaps for product: **per-position causal KV** (replace the
   PE_M shared-pos decode-batch regime with a real per-row position/KV). **Done so far:** per-row
@@ -118,7 +137,7 @@ one thing the slice cannot.
   (L*NSEQ windows x KV_RESIDENT positions), written by the host prefill/decap per (seq, layer, pos)
   and read combinationally by the model (window = db_layer*NSEQ+kc_seq), replacing the TB stub
   (verified: all 3 SoC cases pass with kv_mem serving, dense + sparse).  **batched_moe full
-  B-coverage: DONE** (`make bcov` — B∈{1,2,3,5,8} × routing patterns {same,distinct,random,overlap},
+  B-coverage: DONE** (`make bcov` [FP8, removed — see branch `fp8`] — B∈{1,2,3,5,8} × routing patterns {same,distinct,random,overlap},
   each re-proving batched_moe(PE_M=B) == B independent PE_M=1 expert runs BIT-EXACT with every union
   expert fetched once).  **Real draft chaining: DONE** (`spec_chain_top` — the MTP head runs
   recurrently on its chain hidden-state `h_mtp` to mint K drafts, then a PE_M=K+1 batched-verify in

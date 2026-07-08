@@ -1,5 +1,18 @@
 # Formal Verification — memory-system controllers (BMC)
 
+> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
+> targeting `unsloth/GLM-5.2-GGUF`); **FP8 is the PRIOR / PRESERVED track** on branch **`fp8`**
+> (tag `fp8-verified-baseline`). The formal work here is on the **memory-system / control-plane
+> controllers** (`ddr5_xbar`, `flash_xbar`, `boot_loader`, `kv_cache_pager` ±ECC,
+> `expert_cache_pf`, `spec_decode_seq`, `clk_throttle`) which are **track-agnostic** — they
+> carry no FP8/Q4_K numeric datapath, so this doc needs no per-track rewrite. **Scope
+> honesty:** these proofs cover routing/one-hot exclusivity, FIFO occupancy & no
+> overflow/underflow, token-accounting, ECC encode/decode identity, and done-gates — **NO
+> formal proof touches the Q4_K (or FP8) numeric datapath.** BMC (`make formal`) is **bounded**
+> (holds only for the first K cycles from reset, on small tractable param instances;
+> `expert_cache_pf` is proven with prefetch **disabled**, `PF_ENABLE=0`); the **unbounded**
+> results are the k-induction runs in `make formal-ind` (see below).
+
 Bounded model checking (BMC) of the production memory-system controllers, proving safety
 properties with **yosys `write_smt2` + `yosys-smtbmc -s z3`** (SymbiYosys is not installed;
 yosys 0.66 + z3 are). Harnesses live in `test/formal/*_fv.v` — each instantiates the **committed,

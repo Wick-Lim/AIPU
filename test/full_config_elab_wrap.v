@@ -22,7 +22,7 @@
 //   = 2048/512 are the safetensors-CONFIRMED ranks (docs/REAL_CKPT_VALIDATION.md).
 //
 //   ASSUMPTIONS FLAGGED (not free model config -- see docs/FULL_CONFIG_ELAB.md):
-//     * S_MAX = 8  -- the attention scratch (scores/probs/vstore in mla_attn_fp8)
+//     * S_MAX = 8  -- the attention scratch (scores/probs/vstore in mla_attn_q4k)
 //       is sized by S_MAX; the real 1M context lives in the POSW=20 position
 //       field, NOT in S_MAX.  S_MAX is the latent-ring / KV scratch depth and is
 //       kept modest for a tractable elaboration (decoupling window from context

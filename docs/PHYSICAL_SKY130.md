@@ -1,5 +1,10 @@
 # Physical characterization — REAL sky130 standard cells
 
+> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
+> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
+> `*_q4k` equivalents on main.
+
 > **Scope note — ASIC is the rung-③ volume endgame, not "out of scope"** (see
 > [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). The **near-term** product path is an **FPGA card**
 > (ladder rungs ①②, [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2); a custom **ASIC** is the

@@ -1,7 +1,18 @@
-# Single-Package GLM-5.2-FP8 Inference System — design note
+# Single-Package GLM-5.2 (Q4_K) Inference System — design note
 
-> **Scope.** A system design for running the *published* `zai-org/GLM-5.2-FP8`
-> checkpoint on **one module** — a custom FP8 compute die + **64 GB DDR5** (the fast working
+> **Drafted on the prior FP8 track — memory system is format-agnostic.** This single-package
+> design was first written for the FP8 datapath; the **current product datapath is Q4_K**
+> (`glm_q4k_soc` / `glm_q4k_soc_ms` over `glm_model_q4k`, a **Q4_K compute die**), and the weight
+> store is the **~467 GB `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`** (~38% smaller than the 753 GB FP8
+> checkpoint). The **memory-hierarchy / streaming / expert-cache analysis below is format-agnostic**
+> and carries over unchanged; the **concrete FP8 byte counts, per-token footprints, energy ratios,
+> and BOM numbers are the prior-FP8-track figures** and need Q4_K re-derivation (the store and
+> per-token footprint scale down ~proportionally with the ~38% smaller weights — all **[EST]**).
+> RTL/test names of the form `*_fp8` below map to their `*_q4k` equivalents on main (branch `fp8`
+> preserves the FP8 track).
+
+> **Scope.** A system design for running the *published* `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`
+> weights on **one module** — a custom Q4_K compute die + **64 GB DDR5** (the fast working
 > memory) + a **1–4 TB NVMe SSD** (the whole model) — instead of a multi-chip HBM cluster. It targets
 > "the real 753B model runs, at interactive-ish speed," e.g. as a **local, single-user** USB-C
 > external accelerator — a **fully offline / air-gapped** box that runs the full 753B frontier model
@@ -12,7 +23,7 @@
 > **64 GB DDR5 / ~400–600 GB/s** config described throughout is the **funded custom-board (rung 2)**
 > point on the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — *not* the only spec. Performance is set by
 > **memory bandwidth**, memory bandwidth by the silicon's IO pins + hard PHYs, and that by the build
-> budget, so the product ships as a **3-rung ladder** running the *same* bit-exact FP8 RTL, only the
+> budget, so the product ships as a **3-rung ladder** running the *same* bit-exact Q4_K RTL, only the
 > memory interface changing: **rung 1** (prove-it, now) a low-end FPGA + **DDR4 ~4 ch (~100 GB/s)** +
 > 1 NVMe → **~5–8 tok/s [EST]**; **rung 2** (post-seed) this **DDR5 8–12 ch (or HBM), ~300–600 GB/s**
 > custom board → **~15–40 tok/s [EST]**; **rung 3** (at volume) a SoC/ASIC with HBM stacks (~TB/s) →
@@ -32,7 +43,7 @@
 >
 > Numbers tagged **[EST]** are system-level estimates (market-/physics-derived), not measured
 > RTL results. The compute datapath this wraps is the verified RTL in this repo (see
-> [`ACCEL_GLM52.md`](ACCEL_GLM52.md) and the `*_fp8` units); the memory/streaming system here
+> [`ACCEL_GLM52.md`](ACCEL_GLM52.md) and the `*_q4k` units); the memory/streaming system here
 > is **designed, not built**.
 >
 > **Compute die → FPGA card now, ASIC at volume (the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)
@@ -52,9 +63,9 @@
 
 ## 1. Goal
 
-One module that runs GLM-5.2-FP8 (753B params, ~40B active/token, 1M context) by **storing
+One module that runs GLM-5.2 (UD-Q4_K_XL, 753B params, ~40B active/token, 1M context) by **storing
 the whole model on a cheap NVMe SSD and streaming the per-token working set through fast DDR5
-into an FP8 compute die** — exploiting MoE sparsity (8/256 experts/layer) so only a small
+into a Q4_K compute die** — exploiting MoE sparsity (8/256 experts/layer) so only a small
 fraction of the 753 GB is touched per token. Optimize for **cost + interactive speed** (a
 USB-C external accelerator) over peak throughput.
 
@@ -76,7 +87,7 @@ So the design problem is a **memory hierarchy + streaming** problem.
                  ┌──────────────────────────── MODULE ─────────────────────────┐
                  │                                                              │
    token ──▶     │   ┌───────────────┐  weight-pull   ┌────────────────────┐    │
-                 │   │  FP8 COMPUTE  │◀──(w_req/w_col)─│ 64 GB DDR5        │    │
+                 │   │ Q4_K COMPUTE  │◀──(w_req/w_col)─│ 64 GB DDR5        │    │
                  │   │     DIE       │   bf16 acts     │ (~400–600 GB/s, 8–12ch)    │    │
    logits ◀──    │   │ MLA·MoE·SwiGLU│──▶ bf16 out     │  • hot weights ~28GB│    │
                  │   │ + MTP + bf16  │                 │  • KV working window│    │
@@ -108,8 +119,8 @@ a 70B laptop model fails frontier quality, an 8×H100 rig fails price/form-facto
 fails the unplugged test.
 
 Three components, three roles:
-- **FP8 compute die** — the verified RTL (MLA attention, MoE, SwiGLU, RoPE, RMSNorm, LM head,
-  MTP) with FP8 E4M3 weight matmuls + bf16 tail. Pulls weights via a streaming interface.
+- **Q4_K compute die** — the verified RTL (MLA attention, MoE, SwiGLU, RoPE, RMSNorm, LM head,
+  MTP) with GGML Q4_K weight matmuls (dequant → fp32 MAC) + bf16 tail. Pulls weights via a streaming interface.
 - **64 GB DDR5** — the *fast working memory*: everything reused every token (hot weights), the
   KV working window, and the **routed-expert cache**. (~400–600 GB/s at 8–12 channels ≈ exactly the ~300–600 GB/s this workload needs, since it
   is NVMe/PCIe-bound — HBM's/GDDR6's higher BW would be wasted.)
@@ -209,10 +220,12 @@ batch 1 = 26.5 %, batch 8 = 29.7 %, batch 32 = 50.5 %. Each lever moves one term
 | **Speculative/MTP** | **÷K** weight passes (K tokens/pass) | **~×K** |
 | **NVMe/PCIe bandwidth** (hardware) | raises **NVMe_BW** (more lanes / drives) | linear |
 
-**This project runs FP8** — the published `zai-org/GLM-5.2-FP8` checkpoint, faithfully, no
-re-quantization. So the throughput levers are the **FP8-compatible** ones; INT4 is *off the
-faithful path* (it means re-quantizing the model ourselves and owning the quality risk) and is
-listed only as an escape hatch. Aggregate tokens/s on the FP8 path (NVMe 50 / 100 GB/s
+**This project runs the published Q4_K weights** (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`),
+faithfully, no re-quantization — the quantified FP8 model in this section is the **prior-track**
+analysis (byte counts pending Q4_K re-derivation; the Q4_K store is already ~38% smaller). So the
+throughput levers are the faithful ones; further INT-style re-quant is *off the faithful path* (it
+means re-quantizing the model ourselves and owning the quality risk) and is listed only as an
+escape hatch. Aggregate tokens/s on the (prior-track FP8) path (NVMe 50 / 100 GB/s
 **aggregate** — striped across many PCIe lanes / multiple NVMe drives, **not** a single M.2 [EST];
 prefetch on):
 
@@ -263,7 +276,7 @@ can't be statically placed — it's a **caching + scheduling** problem:
   `expert_cache_ctrl` at 34 GB cache: batch 1 / 8 / 32 → **26.5 % / 29.7 % / 50.5 %** hit rate
   (same router picks, only access order changes — isolating batching as the lever). **The stronger
   batching lever is expert-*union* reuse** — fetch each layer's union of selected experts once and
-  share it across B rows — now realized in RTL: `glm_decoder_block_fp8`'s PE_M>1 MoE loop fetches
+  share it across B rows — now realized in RTL: `glm_decoder_block_q4k`'s PE_M>1 MoE loop fetches
   **only** the union (`T_ESCAN` scan + `any_has` skip), and the PE_M batch-widen is **DONE 4/4**
   (swiglu/router/mla/mtp), all bit-exact. This reframes aggregate batching from the ~1.5×
   hit-rate view (§7.2) to a **6–8× aggregate** lever near B≈256 (a **non-target batched/datacenter regime**; the product itself runs B=1); see
@@ -304,8 +317,8 @@ The dominant dynamic energy is **moving ~16–22 GB/token of weights**. Keeping 
 weights from a host over USB/PCIe. Among the fast-tier options DDR5 is the **lowest-power**
 choice (mainstream, not the high-speed/high-power GDDR6; its per-bit energy is above an
 in-package HBM stack but it uses far fewer, slower devices than GDDR6). On the compute side
-FP8's 4×4-mantissa multiply (measured: `glm_matmul_fp8` uses 18× 7-bit multipliers vs fp32's
-24×24) keeps the die's dynamic power and DSP/area down. Net: a few tens of W — needs a
+Q4_K's dequant→fp32 MAC (the weights arrive as 4-bit codes; the prior-track FP8 `glm_matmul_fp8`
+measured 18× 7-bit multipliers vs fp32's 24×24) keeps the die's dynamic power and DSP/area down. Net: a few tens of W — needs a
 heatsink/fan (a small box, not a thin USB stick), powerable over USB-C PD (~60–100 W).
 
 > **Honest energy caveat (research-backed).** Prefetch + caching hide NVMe *latency* but **cannot
@@ -340,16 +353,16 @@ NVMe/PCIe-bound.
 ## 12. Mapping to the committed RTL
 
 **What this repo already provides (the compute die):**
-- The full GLM-5.2-FP8 operator datapath, fp64/faithful-fp8 verified: `fp8_e4m3`,
-  `glm_matmul_fp8`, `swiglu_expert_fp8`, `mla_attn_fp8`, `moe_router_fp8`,
-  `glm_decoder_block_fp8`, and the capstone **`glm_model_fp8`** (full forward pass, next-token
-  argmax matches the fp8 golden).
+- The full GLM-5.2 (UD-Q4_K_XL) operator datapath: `glm_matmul_q4k`, `swiglu_expert_q4k`,
+  `mla_attn_q4k`, `moe_router_q4k`, `glm_decoder_block_q4k`, and the capstone **`glm_model_q4k`**
+  (full forward pass, next-token argmax; the Q4_K GEMM core is bit-exact to the ggml Q4_K
+  reference `tools/q4k_ref.py` — the assembled model has no numeric golden yet).
 - **Streaming weight-pull interfaces** (`w_req`/`w_col` + per-[128,128]-block bf16 scales) on
   every unit — the weight *source is abstracted*, so DDR5/NVMe/host can drive them.
-- The **`mtp_head`** for speculative decoding.
-- **PE_M batch-widening (4/4)** on all FP8 wrappers (`swiglu_expert_fp8` / `moe_router_fp8` /
-  `mla_attn_fp8` / `mtp_head_fp8`) — B token-rows share one weight fetch, verified bit-exact — and
-  **union-skip grouped MoE** in `glm_decoder_block_fp8` (PE_M>1 fetches only the selected-expert
+- The **`mtp_head_q4k`** for speculative decoding.
+- **PE_M batch-widening (4/4)** on all Q4_K wrappers (`swiglu_expert_q4k` / `moe_router_q4k` /
+  `mla_attn_q4k` / `mtp_head_q4k`) — B token-rows share one weight fetch, verified bit-exact — and
+  **union-skip grouped MoE** in `glm_decoder_block_q4k` (PE_M>1 fetches only the selected-expert
   union: `T_ESCAN` scan + `any_has` skip), the batch-axis footprint-reduction lever (ULTRA_PERF #1).
 - A small-scale DMA append/gather streaming datapath (`tpu_soc`/`axi_master_dma`/
   `scatter_gather`/`cdc_async_fifo`) exercising the control logic.
@@ -359,7 +372,7 @@ NVMe/PCIe-bound.
   caches from is still a model/stub.
 - The **KV-cache pager** `kv_cache_pager` (append + DSA-gather window, `NSEQ` independent ring
   windows, optional SECDED-ECC); its backing memory is still a model/stub. A batched
-  multi-sequence SoC top (`glm_fp8_soc` / `glm_fp8_soc_ms`) wires the model + pager + expert
+  multi-sequence SoC top (`glm_q4k_soc` / `glm_q4k_soc_ms`) wires the model + pager + expert
   cache + a host prefill/decode FSM together.
 
 **What this design adds (not built — the system layer):**

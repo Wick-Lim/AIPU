@@ -1,5 +1,10 @@
 # Low-power design — the bit-exact path to a cool single box
 
+> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
+> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
+> `*_q4k` equivalents on main.
+
 **Requirement:** the accelerator must be low-power. **Decision (this project):** stay **byte-identical**
 (output == real GLM-5.2-FP8 golden), push a **single box as low as possible**, and add fidelity-trade
 levers only if the bit-exact floor misses. This doc is the honest energy budget, the lever ladder,

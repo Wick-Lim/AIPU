@@ -3,9 +3,11 @@
 
 The verification golden for the Q4_K hardware core (src/q4k.vh, glm_matmul_q4k.v),
 targeting the published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` model. This reimplements
-ggml's `dequantize_row_q4_K` (ggml/src/ggml-quants.c) EXACTLY, so the RTL can be
-proven bit-exact to the file people actually download (the moat, moved from the FP8
-safetensors to the published GGUF).
+ggml's `dequantize_row_q4_K` (ggml/src/ggml-quants.c) EXACTLY, so the RTL's Q4_K path
+can be proven bit-exact to THIS reference. NOTE: this file IS the golden, so that
+proof is bit-exactness vs this reimplementation -- matching the real published GGUF
+bytes end-to-end (including the Q6_K/Q8_0/F16 tensors of the dynamic UD-Q4_K_XL mix,
+which this Q4_K-only datapath does not yet consume) is a separate, OPEN validation.
 
 GGML Q4_K super-block (QK_K = 256 weights, 144 bytes):
     ggml_half d;         # fp16 super-block scale
@@ -64,7 +66,7 @@ def dequantize_row_q4_K(blocks):
 
 # ---------------------------------------------------------------- matmul contract
 # The GEMM contract the hardware core (glm_matmul_q4k.v) computes, bit-exact:
-#   weights: published UD-Q4_K_XL, dequantized EXACTLY (above), NO re-quantization.
+#   weights: the Q4_K-typed tensors, dequantized EXACTLY (above), NO re-quantization.
 #   activations: bf16 (same interface as glm_matmul_pipe).
 #   per output: out[m][n] = bf16( SUM_k fp32(a[m][k]) * w_deq[k][n] ), the fp32
 #   products sequentially fp32-accumulated in K order (the streaming order the RTL

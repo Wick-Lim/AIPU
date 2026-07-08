@@ -1,5 +1,10 @@
 # Functional verification at REAL GLM-5.2 operator dimensions
 
+> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
+> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
+> `*_q4k` equivalents on main.
+
 Moves scale confidence from "verified only at the tiny slice + structural elaboration
 (task B4)" to **functionally verified at REAL GLM-5.2 operator dimensions** — the FP8
 operator TBs, run at real per-head / per-block / per-expert sizes against their

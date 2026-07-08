@@ -3,7 +3,8 @@
 //============================================================================
 // glm_q4k_soc_ms.v -- MULTI-SEQUENCE batched SoC top (Q4_K local-device track)
 //----------------------------------------------------------------------------
-// Q4_K-native sibling of glm_fp8_soc_ms (see docs/Q4K_SYSTEM_PLAN.md §1.2).
+// Q4_K-native sibling of the prior glm_fp8_soc_ms (branch 'fp8'; see
+// docs/Q4K_SYSTEM_PLAN.md §1.2).
 // IDENTICAL retarget to §1.1: u_model die swap glm_model_fp8 -> glm_model_q4k,
 // the three weight-bus families FP8 -> Q4_K (aw_col/aw_scale ->
 // aw_q/aw_d/aw_dmin/aw_scales; rw_col/rw_scale -> rw_q/rw_d/rw_dmin/rw_scales;
@@ -23,8 +24,8 @@
 // The weight-pull responders (em_*/gn_*/aw_*/rw_*/fw_*/fn_*/lw_*) are
 // PE_M-AGNOSTIC and pass straight through to the model, same as the PE_M=1 SoC.
 // Includes the routed-expert cache (expert_cache_pf): a resident GDDR6 slot now
-// holds one expert's Q4_K weights (~44% fewer bytes than FP8), so more experts
-// fit per GB -- byte-agnostic controller, doc-only vs the FP8 top.
+// holds one expert's Q4_K weights (~44% fewer bytes than the prior FP8), so more
+// experts fit per GB -- byte-agnostic controller, doc-only vs the prior FP8 top.
 //
 // REAL PER-LAYER KV STORE: this module OWNS the KV data in kv_mem -- L*NSEQ
 // windows (one per (layer, sequence)) x KV_RESIDENT positions.  The host WRITES
@@ -32,7 +33,7 @@
 // COMBINATIONALLY (window = db_layer*NSEQ+kc_seq, position = kc_idx), kc_valid =
 // 1-cycle registered kc_req.  KV latent rows are BF16, NOT quantized
 // (ROW_BITS=(KV_LORA+ROPE)*16 is invariant), so this path is FORMAT-IDENTICAL to
-// the FP8 top.  The pager runs alongside as the per-sequence resident-window /
+// the prior FP8 top.  The pager runs alongside as the per-sequence resident-window /
 // Flash-overflow timing model.
 //
 // HOST FSM (one batched decode step):
@@ -79,7 +80,7 @@ module glm_q4k_soc_ms #(
     //   across sequences, so the cache sees fewer distinct fetches than B separate
     //   decodes.  Demand-only here (prefetch tied off) for a self-contained top.
     //   Each resident slot holds one expert's Q4_K weights (~44% fewer bytes/weight
-    //   than FP8) -- the controller is byte-agnostic, so this is a doc-only note.
+    //   than the prior FP8) -- the controller is byte-agnostic, so this is a doc-only note.
     parameter integer CACHE_SLOTS = 4,
     parameter integer EFIFO_DEPTH = 16,
     // ---- derived (do NOT override) ----
@@ -112,7 +113,7 @@ module glm_q4k_soc_ms #(
     parameter integer FF_KWD     = $clog2(FF_KMAX_D+1),
     parameter integer R_KW       = $clog2(FF_KMAX_M+1),
     // ---- Q4_K super-block counts (256-elem super-blocks; ceil(K/256)) ----
-    //   FP8 counted 128-wide K-blocks (_NB); Q4_K counts 256-wide super-blocks
+    //   the prior FP8 counted 128-wide K-blocks (_NB); Q4_K counts 256-wide super-blocks
     //   (_NSB) -- one (d fp16, dmin fp16, scales 96-bit) header per col per SB.
     parameter integer A_NSB      = (A_KMAX    + 255) / 256,  // attention super-blocks
     parameter integer FF_NSB_D   = (FF_KMAX_D + 255) / 256,  // dense FFN super-blocks
@@ -194,7 +195,7 @@ module glm_q4k_soc_ms #(
     //  model's PER-LAYER read (db_layer, kc_seq, kc_idx) is served COMBINATIONALLY
     //  from kv_mem[db_layer*NSEQ+kc_seq][kc_idx]; kc_valid is the 1-cycle registered
     //  ack of kc_req.  KV latent rows are BF16 (not quantized) -- format-identical
-    //  to the FP8 top.  kc_req/kc_idx/kc_seq are exposed for observability.
+    //  to the prior FP8 top.  kc_req/kc_idx/kc_seq are exposed for observability.
     output wire                          kc_req,
     output wire [IDXW-1:0]               kc_idx,
     output wire [SEQW-1:0]               kc_seq,     // multi-seq: which sequence's window
@@ -467,7 +468,7 @@ module glm_q4k_soc_ms #(
     //    windows x KV_RESIDENT positions, one row per (layer, sequence, position);
     //    the host writes it during prefill/decap and the model reads it
     //    COMBINATIONALLY (kc_valid = registered kc_req).  window = layer*NSEQ + seq.
-    //    KV rows are BF16 (unquantized) so this is format-identical to the FP8 top.
+    //    KV rows are BF16 (unquantized) so this is format-identical to the prior FP8 top.
     //    (Cold / Flash overflow of kv_mem beyond KV_RESIDENT is future work; the
     //    pager above already models that window/timing.)
     //------------------------------------------------------------------------
@@ -495,7 +496,7 @@ module glm_q4k_soc_ms #(
     //    the cache sees the batched (shared) episode stream -- fewer distinct Flash
     //    fetches than B independent decodes (the continuous-batching bandwidth win
     //    on the dominant expert-weight traffic).  A resident slot holds one
-    //    expert's Q4_K weights (byte-agnostic controller; doc-only vs FP8).
+    //    expert's Q4_K weights (byte-agnostic controller; doc-only vs the prior FP8).
     //    Prefetch is tied off here.
     //------------------------------------------------------------------------
     wire moe_layer  = (db_layer >= N_DENSE[LAYW-1:0]);

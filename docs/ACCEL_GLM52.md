@@ -1,5 +1,20 @@
 # ACCEL_GLM52 — A Correctness-First Accelerator to RUN GLM-5.2 (`GlmMoeDsaForCausalLM`)
 
+> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
+> targeting `unsloth/GLM-5.2-GGUF:UD-Q4_K_XL`). **FP8 is the PRIOR / PRESERVED track** on
+> branch **`fp8`** (tag `fp8-verified-baseline`), removed from `main` in commit `cbef69d`.
+> Where this doc names `*_fp8` modules (e.g. `glm_model_fp8`, `glm_decoder_block_fp8`,
+> `mla_attn_fp8`, `glm_fp8_soc_ms`) or FP8-specific TBs (`glm_model_fp8_multiseq*_tb`), read
+> the **Q4_K equivalents**: `glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`,
+> `glm_q4k_soc_ms`. **Honesty correction to the claims below:** the multi-sequence "per-row
+> argmax/logits **bit-exact**" results are **DUT-vs-DUT self-consistency** (a batched run
+> equals independent per-seq runs of the *same* model), **not** a numeric golden vs
+> ggml/llama.cpp; and those specific multiseq TBs are **FP8, on branch `fp8`**. The only
+> bit-exact-vs-ggml result on `main` is the Q4_K GEMM core (`make q4k` →
+> `glm_matmul_q4k`), bit-exact to the team's own ggml-Q4_K reference (`tools/q4k_ref.py`),
+> **not** the real GGUF/llama.cpp, and **Q4_K-only** (no Q6_K/Q8_0/F16). A deeper Q4_K rewrite
+> of this doc is deferred.
+
 > Chief-architect synthesis. ONE coherent architecture combining **compute-completeness**
 > (every real GLM-5.2 operator → a concrete hardware unit) with **memory-for-scale**
 > (tiered memory + expert/weight streaming + 1M-context latent-KV paging).

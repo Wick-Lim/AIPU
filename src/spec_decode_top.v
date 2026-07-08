@@ -2,17 +2,17 @@
 /* verilator lint_off DECLFILENAME */
 //============================================================================
 // spec_decode_top.v  --  GLM-5.2 MTP SPECULATIVE-DECODE LOOP TOP
-//                        (docs/SYSTEM_SINGLE_PACKAGE.md -- the FP8 throughput lever)
+//                        (docs/SYSTEM_SINGLE_PACKAGE.md -- the Q4_K throughput lever)
 //----------------------------------------------------------------------------
 // PURPOSE
 //   The on-chip autoregressive decode loop that ties the three verified units
 //   together into DeepSeek-V3-style K=1 MTP speculative decoding:
 //
-//     * glm_model_fp8  (u_main) -- the MAIN model: one full FP8 forward pass ->
+//     * glm_model_q4k  (u_main) -- the MAIN model: one full Q4_K forward pass ->
 //                       the VERIFIED next token (argmax) AND the hidden state h_t
 //                       (its final-RMSNorm output, exposed via the additive
 //                       h_state port -- the LM-head input vector).
-//     * mtp_head_fp8   (u_mtp)  -- the DRAFT head: given (h_t, embed(verified))
+//     * mtp_head_q4k   (u_mtp)  -- the DRAFT head: given (h_t, embed(verified))
 //                       it produces the speculative t+2 DRAFT token (argmax).
 //     * spec_decode_seq(u_seq)  -- the accept/reject CONTROLLER: per main pass it
 //                       commits the verified token (+ a bonus when the prior
@@ -30,10 +30,10 @@
 //----------------------------------------------------------------------------
 // THE LOOP (one main pass per outer iteration; K=1 draft)
 //   token cursor: cur_tok @ cur_pos.  For pass i = 0 .. num_passes-1:
-//     1. MAIN  : run glm_model_fp8(token_id=cur_tok, pos=cur_pos)
+//     1. MAIN  : run glm_model_q4k(token_id=cur_tok, pos=cur_pos)
 //                  -> verified = argmax , h_t = h_state.
 //     2. EMBED : gather embed(verified) from the system (e_* pull) -> emb_vec.
-//     3. MTP   : run mtp_head_fp8(h_t, emb_vec, pos=cur_pos)  -> draft = argmax.
+//     3. MTP   : run mtp_head_q4k(h_t, emb_vec, pos=cur_pos)  -> draft = argmax.
 //     4. FEED  : pulse spec_decode_seq.pass_valid with
 //                  verified_tok = verified,
 //                  draft_tok    = draft,
@@ -52,7 +52,7 @@
 //   handshake-driven (every sub-unit launch waits that unit's done pulse).
 //============================================================================
 module spec_decode_top #(
-    // ---- model / slice config (mirrors glm_model_fp8 / mtp_head_fp8) ----
+    // ---- model / slice config (mirrors glm_model_q4k / mtp_head_q4k) ----
     parameter integer MODEL_DIM  = 128,
     parameter integer L          = 6,
     parameter integer N_DENSE    = 3,
@@ -79,8 +79,8 @@ module spec_decode_top #(
     parameter integer PROJ_TN    = 4,           // MTP combine-proj cols/pass
     parameter integer DRAFT_K    = 1,           // GLM-5.2 ships K=1
     // ====================================================================
-    // derived (do NOT override) -- copied verbatim from glm_model_fp8 /
-    //                              mtp_head_fp8 so every pull port matches width.
+    // derived (do NOT override) -- copied verbatim from glm_model_q4k /
+    //                              mtp_head_q4k so every pull port matches width.
     // ====================================================================
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -118,7 +118,7 @@ module spec_decode_top #(
     parameter integer DIMW       = (MODEL_DIM <= 1) ? 1 : $clog2(MODEL_DIM),
     parameter integer NVTILE     = VOCAB / LM_TN,
     parameter integer VTW        = (NVTILE <= 1) ? 1 : $clog2(NVTILE),
-    // MTP combine-projection derived (mtp_head_fp8)
+    // MTP combine-projection derived (mtp_head_q4k)
     parameter integer CK         = 2 * MODEL_DIM,
     parameter integer CKIW       = $clog2(CK),
     parameter integer NPTILE     = MODEL_DIM / PROJ_TN,
@@ -307,7 +307,7 @@ module spec_decode_top #(
     wire [TOKW-1:0]            t_argmax;
 
     //========================================================================
-    // u_main : the FULL FP8 main model (verified next token + hidden state).
+    // u_main : the FULL Q4_K main model (verified next token + hidden state).
     //========================================================================
     glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
@@ -340,7 +340,7 @@ module spec_decode_top #(
     );
 
     //========================================================================
-    // u_mtp : the FP8 MTP draft head (h_t + embed(verified) -> t+2 draft).
+    // u_mtp : the Q4_K MTP draft head (h_t + embed(verified) -> t+2 draft).
     //========================================================================
     mtp_head_q4k #(
         .MODEL_DIM(MODEL_DIM), .VOCAB(VOCAB),

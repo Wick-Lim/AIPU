@@ -19,10 +19,10 @@
 //
 //   THE Q4_K SPLIT (this module's whole reason to exist):
 //     * The router gate GEMV (logits = x @ W_g) runs through glm_matmul_q4k --
-//       the official GGML Q4_K numerics: W_g is published GGML Q4_K
-//       (unsloth/GLM-5.2-GGUF UD-Q4_K_XL) -- per output column a super-block of
-//       4-bit codes q with fp16 d/dmin + packed 6-bit block scales/mins,
-//       dequantized EXACTLY to fp32  w = (d*sc)*q - (dmin*m)  with NO
+//       the official GGML Q4_K numerics: W_g is a GGML Q4_K-typed weight -- per
+//       output column a super-block of 4-bit codes q with fp16 d/dmin + packed
+//       6-bit block scales/mins, dequantized EXACTLY to fp32
+//       w = (d*sc)*q - (dmin*m)  with NO
 //       re-quantization; the activation x is bf16 fed DIRECT (no a_shift, no
 //       activation quant); products are fp32 MACs accumulated in K order, then
 //       rounded to bf16.  SAME drop-in glm_matmul_q4k wiring as swiglu_expert_q4k.
@@ -63,10 +63,10 @@
 //
 //----------------------------------------------------------------------------
 // ACTIVATIONS (bf16, fed DIRECT -- Q4_K quantizes ONLY the weights)
-//   Unlike the FP8 path there is NO activation quant and NO a_shift: each token
+//   Unlike the prior FP8 path there is NO activation quant and NO a_shift: each token
 //   row's bf16 x vector streams straight into glm_matmul_q4k, which multiplies it
 //   against the fp32-dequantized weights.  The ONLY quantized operand is W_g
-//   (published GGML Q4_K, dequantized exactly per super-block -- no re-quant).
+//   (a GGML Q4_K-typed weight, dequantized exactly per super-block -- no re-quant).
 //
 //----------------------------------------------------------------------------
 // DATAFLOW / FSM  (deterministic, handshake-driven off the matmul out_valid;

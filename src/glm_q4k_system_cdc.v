@@ -8,7 +8,8 @@
 //                           (docs/Q4K_SYSTEM_PLAN.md §1.4 -- the synth-glm-q4k
 //                            whole-chip sign-off top.)
 //----------------------------------------------------------------------------
-// Q4_K RETARGET (vs. glm_fp8_system_cdc):  the compute box u_core swaps
+// Q4_K RETARGET (vs. the prior glm_fp8_system_cdc on branch 'fp8'):  the compute
+//   box u_core swaps
 //   glm_fp8_system -> glm_q4k_system (ONE contract change).  This CDC wrapper
 //   only FORWARDS buses across the async-FIFO boundary, so the retarget is a
 //   pure WIDTH/FORMAT re-port of the weight-side ports it carries through:
@@ -160,7 +161,7 @@ module glm_q4k_system_cdc #(
     parameter integer R_KW       = $clog2(FF_KMAX_M + 1),
     // ---- Q4_K super-block counts (256-elem super-blocks; #super-blocks per K) ----
     //   ceil(K/256), mirroring glm_q4k_system -- these size the d/dmin/scales
-    //   buses (was A_NB/FF_NB_D/R_NB = ceil(K/128) FP8 block counts).
+    //   buses (was A_NB/FF_NB_D/R_NB = ceil(K/128) prior-FP8 block counts).
     parameter integer A_NSB      = (A_KMAX    + 255) / 256,
     parameter integer FF_NSB_D   = (FF_KMAX_D + 255) / 256,
     parameter integer R_NSB      = (FF_KMAX_M + 255) / 256,

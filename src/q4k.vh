@@ -6,8 +6,10 @@
 // PURPOSE
 //   GLM-5.2 for a LOCAL DEVICE ships as GGUF k-quants (unsloth/GLM-5.2-GGUF :
 //   UD-Q4_K_XL).  This header is the single canonical definition of the GGML
-//   Q4_K weight numerics so the published GGUF runs with NO re-quantization --
-//   bit-exact to ggml `dequantize_row_q4_K` (tools/q4k_ref.py golden).  Every
+//   Q4_K weight numerics so the Q4_K-typed weights run with NO re-quantization --
+//   bit-exact to the ggml Q4_K reference `dequantize_row_q4_K` (tools/q4k_ref.py
+//   golden).  (The dynamic UD-Q4_K_XL mix also keeps some Q6_K/Q8_0/F16 tensors
+//   NOT yet consumed by this Q4_K-only datapath.)  Every
 //   function here is a SYNTHESIZABLE, PURELY COMBINATIONAL `function automatic`
 //   (no state, no clocks), included via `include "q4k.vh"`.
 //

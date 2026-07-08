@@ -1,5 +1,10 @@
 # P1.2 — full-config parameter scale-up (elaboration study)
 
+> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
+> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
+> `*_q4k` equivalents on main.
+
 Task **B4** of the product next-steps plan: establish the *structural* contract for
 scaling the committed RTL slice up to the real GLM-5.2 shape, without attempting a
 full-config functional simulation (which is infeasible — see §4).
@@ -146,7 +151,7 @@ result:
 See [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P1.3 for the rest of the multi-seq stack
 (the `glm_fp8_soc_ms` batched top + host FSM, its `N_STEPS>1` continuous-batching decode
 loop, the real `kv_mem` KV store, `DSA_REAL_IDX=1` under multi-seq, `kv_cache_pager` NSEQ
-windows, and `batched_moe` full B-coverage `make bcov`).
+windows, and `batched_moe` full B-coverage `make bcov` [FP8, removed — see branch `fp8`]).
 
 ## 6. What is explicitly OUT of scope for P1.2
 

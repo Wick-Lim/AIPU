@@ -1,5 +1,14 @@
 # GLM-5.2-FP8 Datapath — Area / Timing Characterization (PPA_FP8)
 
+> **⚠️ PRIOR FP8 TRACK — NOT THE CURRENT PRODUCT.** This document characterizes the **FP8**
+> datapath (`glm_matmul_fp8`, `weight_loader.v`, `glm_fp8_system_cdc`, …), which is the
+> **prior / preserved** track on branch **`fp8`** (tag `fp8-verified-baseline`) — it was
+> removed from `main` in commit `cbef69d`. The **current / main product is Q4_K-native**
+> (GGML Q4_K, targeting `unsloth/GLM-5.2-GGUF:UD-Q4_K_XL`) and does **not** use the modules
+> below. The Q4_K product does not yet have a published PPA characterization of its own; the
+> Q4_K GEMM core (`src/glm_matmul_q4k.v`) awaits an equivalent yosys/LUT4 pass. Kept for
+> historical reference only — see branch `fp8`.
+
 **All numbers below are `[synth-estimate, yosys generic/abc — not a placed-and-routed FPGA result]`.**
 (A real sky130 standard-cell placement of `glm_matmul_fp8` exists as realizability evidence — see
 [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md). The product path is an FPGA card — the prove-it and
