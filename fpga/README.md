@@ -20,9 +20,10 @@ parallelism/capacity shrinks to target a small dev-board part.
 ## Files
 | File | What |
 |---|---|
-| `synth_ku3p.tcl` | Vivado batch: read the 24 Q4_K sources → `synth_design` (compact generics) → place → route → utilization + timing reports |
-| `constraints.xdc` | `create_clock` for `host_clk` + `core_clk` + async CDC groups (timing/CDC only — **pin locations are board-specific**, add from your board's master XDC) |
-| `run_fit.sh` | runs the tcl in the Vivado Docker container (installs the tool's runtime libs, sources `settings64.sh`) |
+| `synth_ku3p.tcl` | Vivado batch: read the 24 Q4_K sources → **(1)** `synth_design` of the raw product top `glm_q4k_system_cdc` → `util_synth.rpt` (pure resource fit, no pins); **(2)** `synth_design` + place + route of `bringup_harness` → `util_routed.rpt` + `timing.rpt` (routed Fmax) |
+| `bringup_harness.v` | SYNTHESIZABLE P&R harness: wraps the exact product top but buries its thousands of wide memory-side ports (DDR/flash/KV/dequant buses + `logits`) behind an on-chip LFSR/CRC, so I/O collapses to 5 clock/control pins + 1 output → **routable**. Non-constant LFSR drivers keep the datapath from being pruned, so the routed fit is real. Verified: iverilog elaborates + yosys `hierarchy -check`/`check -assert` clean (no comb loop from the registered feedback) |
+| `constraints.xdc` | `create_clock` for `host_clk` + `core_clk` + async CDC groups (timing/CDC only — **pin locations are board-specific**, add from your board's master XDC). Same clock/reset port names on both the system and the harness, so it applies to either top |
+| `run_fit.sh` | runs the tcl in the Vivado Docker container (pins the container MAC for the license hostid, mounts `Xilinx.lic`, installs the tool's runtime libs, sources `settings64.sh`) |
 | `out/` | reports land here (`util_synth.rpt`, `util_routed.rpt`, `timing.rpt`, checkpoints) |
 
 ## Run
@@ -54,13 +55,11 @@ keeps the node-locked license valid across container runs.
 ## Honest notes
 - **First real fit** — expect Vivado to surface synthesis-specific issues the structural
   yosys gate did not (width/timing/inference warnings); iterate.
-- **Wide top-level ports**: `glm_q4k_system_cdc` exposes many memory-/logits-side bits
-  (`logits`=VOCAB·16, `h_state`, DDR/Flash buses). Full P&R may fail on **I/O count** on a
-  real package unless those wide ports are buried in a bring-up harness (model the memory
-  responses internally, expose only the host pins). Until that harness exists, **synth-only**
-  (`report_utilization` after `synth_design`) gives the resource fit without pin placement;
-  routed Fmax needs the harness. `run_fit.sh` attempts full P&R — if it fails on I/O or OOM,
-  fall back to synth-only.
+- **Wide top-level ports** (resolved): `glm_q4k_system_cdc` exposes thousands of
+  memory-/logits-side bits (`logits`=VOCAB·16, `h_state`, DDR/Flash/KV/dequant buses).
+  Full P&R would fail on **I/O count** on a real package. `bringup_harness.v` buries all
+  of them behind an on-chip LFSR/CRC (expose only host pins), so the tcl's step (2) routes
+  the harness for the real Fmax; step (1) still reports pure-product resources synth-only.
 - **RAM**: compact-system P&R is memory-heavy; if `route_design` OOMs on the Docker
   allocation, raise Docker Desktop memory or run synth-only first.
 

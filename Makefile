@@ -19,7 +19,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-smoke spec-slow formal formal-ind lint host-test synth-glm cdc coverage clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-smoke spec-slow formal formal-ind lint host-test synth-glm fit-harness cdc coverage clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, and the memory-controller formal proofs.
@@ -433,6 +433,25 @@ GLM_Q4K_CDC_SRCS := src/glm_q4k_system_cdc.v src/glm_q4k_system.v src/cdc_async_
 synth-glm:
 	$(YOSYS) -q -p "read_verilog -sv -I src $(GLM_Q4K_CDC_SRCS); \
 	                hierarchy -top glm_q4k_system_cdc -check; proc; opt; check -assert; stat"
+
+# ---- FPGA-fit bring-up harness gate (keeps fpga/bringup_harness.v in sync) ----
+# The P&R harness (fpga/bringup_harness.v) wraps glm_q4k_system_cdc and buries its
+# thousands of wide memory-side ports so a real routed fit is possible. This gate
+# fails if the harness's ~110 named port connections drift from the product top's
+# ports (a DUT port rename/resize breaks elaboration here) and if the harness's own
+# LFSR/CRC feedback ever forms a comb loop / latch. Fast: iverilog elaboration +
+# yosys top-only check -assert (DUT treated as a box; its internals are gated by
+# synth-glm above).  Not part of `all` -- run in the fpga fit path.
+fit-harness:
+	@$(IVERILOG) $(IFLAGS) -s bringup_harness -o $(BUILD_DIR)/bringup_harness_elab \
+	    fpga/bringup_harness.v $(GLM_Q4K_CDC_SRCS) >/dev/null 2>&1 \
+	    && echo "[fit-harness] iverilog elaboration OK" \
+	    || { echo "FAILED: fit-harness iverilog elaboration (harness/DUT port drift?)"; exit 1; }
+	@$(YOSYS) -q -p "read_verilog -sv -I src fpga/bringup_harness.v $(GLM_Q4K_CDC_SRCS); \
+	                 hierarchy -top bringup_harness -check; select bringup_harness; \
+	                 proc; check -assert" \
+	    && echo "[fit-harness] yosys check -assert: 0 problems (no comb loop / latch)" \
+	    || { echo "FAILED: fit-harness yosys structural check"; exit 1; }
 
 # ---- CDC structural sign-off for the 2-clock product top (task C8) ----------
 # Asserts every host_clk<->core_clk crossing in glm_q4k_system_cdc flows through a
