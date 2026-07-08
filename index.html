@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AIPU — a frontier AI model on your desk, fully offline</title>
-<meta name="description" content="A local, single-user appliance that runs the full 753-billion-parameter GLM-5.2 model fully offline — air-gapped, bit-exact to the real checkpoint, and owned outright. Frontier AI where the cloud can't go.">
+<meta name="description" content="A local, single-user appliance that runs the full 753-billion-parameter GLM-5.2 model fully offline — air-gapped, GGUF-native (Q4_K), and owned outright. Verified RTL, measured evidence, honest gaps. Frontier AI where the cloud can't go.">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://wick-lim.github.io/AIPU/">
 <meta name="color-scheme" content="light">
@@ -12,11 +12,11 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AIPU">
 <meta property="og:title" content="AIPU — a frontier AI model on your desk, fully offline">
-<meta property="og:description" content="Runs the full 753B GLM-5.2 model with the ethernet unplugged — air-gapped, bit-exact to the real checkpoint, a single-user appliance you own. Verified RTL, measured evidence, honest gaps.">
+<meta property="og:description" content="Runs the full 753B GLM-5.2 model (Q4_K GGUF) with the ethernet unplugged — air-gapped, a single-user appliance you own. Verified RTL, measured evidence, honest gaps.">
 <meta property="og:url" content="https://wick-lim.github.io/AIPU/">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="AIPU — a frontier AI model on your desk, fully offline">
-<meta name="twitter:description" content="The full 753B GLM-5.2 model, running with the ethernet unplugged. Air-gapped, bit-exact, yours. Verified RTL and measured evidence.">
+<meta name="twitter:description" content="The full 753B GLM-5.2 model, running with the ethernet unplugged. Air-gapped, GGUF-native, yours. Verified RTL and measured evidence — with the gaps documented.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%2314181F'/%3E%3Crect%20x='11'%20y='7'%20width='4.5'%20height='18'%20rx='1.2'%20fill='%23C27C34'/%3E%3C/svg%3E">
 <style>
   :root{
@@ -203,7 +203,7 @@
 <div class="topbar">
   <div class="wrap">
     <div class="brand">AIPU<b>·</b>local frontier-AI appliance</div>
-    <div class="topmeta">Offline · air-gapped · GLM-5.2-FP8</div>
+    <div class="topmeta">Offline · air-gapped · GLM-5.2 · Q4_K GGUF</div>
   </div>
 </div>
 
@@ -215,7 +215,7 @@
     <div class="facts">
       <div class="fact reveal"><div class="n">753<span class="u">B</span></div><div class="k">params, run locally</div></div>
       <div class="fact reveal"><div class="n">5–40<span class="u">tok/s</span></div><div class="k">single-user, staged [est]</div></div>
-      <div class="fact reveal"><div class="n">100<span class="u">%</span></div><div class="k">bit-exact vs real ckpt</div></div>
+      <div class="fact reveal"><div class="n">467<span class="u">GB</span></div><div class="k">Q4_K GGUF · on the box</div></div>
       <div class="fact reveal"><div class="n">0<span class="u">net</span></div><div class="k">internet required · air-gapped</div></div>
     </div>
   </div>
@@ -246,64 +246,67 @@
 <section>
   <div class="wrap">
     <div class="sechead"><span class="idx">02</span><h2>The product: a frontier model at a seat price, not a datacenter price</h2></div>
-    <p class="lede">A single-user box (an FPGA card) that streams the whole quantized model from an <b>NVMe SSD</b> through a fast <b>DDR</b> cache into an FP8 compute die. <b>Everything lives on the box</b> — model, cache, compute — and the host link carries <b>only token IDs</b>, so it runs with the ethernet unplugged. <b>Deliberately memory-bandwidth-bound to be cheap</b>: the NVMe holds the 753 GB model, the die stays small, speed comes from memory bandwidth — not an expensive datacenter GPU. Performance is <b>staged by hardware</b> (see the ladder below).</p>
+    <p class="lede">A single-user box (an FPGA card) that streams the whole quantized model from an <b>NVMe SSD</b> through a fast <b>DDR</b> cache into a <b>Q4_K compute die</b>. <b>Everything lives on the box</b> — model, cache, compute — and the host link carries <b>only token IDs</b>, so it runs with the ethernet unplugged. <b>Deliberately memory-bandwidth-bound to be cheap</b>: the NVMe holds the 467 GB Q4_K model, the die stays small, speed comes from memory bandwidth — not an expensive datacenter GPU. Performance is <b>staged by hardware</b> (see the ladder below).</p>
     <div class="spec">
-      <div class="cell"><div class="lab">Model store</div><div class="val">1–4 TB NVMe <small>· full 753B</small></div></div>
+      <div class="cell"><div class="lab">Model store</div><div class="val">1–4 TB NVMe <small>· 467 GB Q4_K</small></div></div>
       <div class="cell"><div class="lab">Hot-weight cache</div><div class="val">fast DDR <small>· DDR4→DDR5/HBM</small></div></div>
-      <div class="cell"><div class="lab">Compute</div><div class="val">FP8 E4M3 die</div></div>
+      <div class="cell"><div class="lab">Compute</div><div class="val">Q4_K die <small>· GGUF-native</small></div></div>
       <div class="cell"><div class="lab">Deployment</div><div class="val">1 seat · B=1 <small>· interactive</small></div></div>
     </div>
     <div class="flow">
-      <span class="b">NVMe SSD</span><span class="ar">→</span><span class="b">DDR hot cache</span><span class="ar">→</span><span class="b">FP8 die</span><span class="ar">→</span><span class="b">next token</span>
+      <span class="b">NVMe SSD</span><span class="ar">→</span><span class="b">DDR hot cache</span><span class="ar">→</span><span class="b">Q4_K die</span><span class="ar">→</span><span class="b">next token</span>
       <span style="color:var(--ink3)">— the whole thesis in one line</span>
     </div>
-    <p class="note">Offline alone is table-stakes (a 70B laptop model is offline too). The moat is the <b>combination</b> — offline + a <b>full frontier</b> model (753B) + an <b>appliance / seat price</b>. The 753 GB weights are provisioned once (itself doable offline); updates are a physical re-provision.</p>
+    <p class="note">Offline alone is table-stakes (a 70B laptop model is offline too). The moat is the <b>combination</b> — offline + a <b>full frontier</b> model (753B) + an <b>appliance / seat price</b>, in <b>deterministic silicon your security team can sign off on</b>. The 467 GB weights are provisioned once (itself doable offline); updates are a physical re-provision. The model is the published <b>GGUF k-quant</b> — the format local inference already runs — not a bespoke re-quantization.</p>
     <div class="spec" style="margin-top:18px">
       <div class="cell"><div class="lab">Rung ① prove-it (now)</div><div class="val">~5–8 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">budget FPGA + DDR4 · the demo</div></div>
       <div class="cell"><div class="lab">Rung ② product</div><div class="val">~15–40 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">custom board, DDR5/HBM</div></div>
       <div class="cell"><div class="lab">Rung ③ ASIC (volume)</div><div class="val">~40+ <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">lower cost + power at scale</div></div>
     </div>
-    <p class="note" style="margin-top:12px">Performance is set by <b>memory bandwidth = the chip's IO/PHY</b> (compute is cheap — the die idles behind the memory system). So it's staged honestly: <b>prove it cheap on an FPGA → custom board → ASIC at volume</b>. Same bit-exact model on every rung; only the bandwidth the silicon feeds it changes.</p>
+    <p class="note" style="margin-top:12px">Performance is set by <b>memory bandwidth = the chip's IO/PHY</b> (compute is cheap — the die idles behind the memory system). So it's staged honestly: <b>prove it cheap on an FPGA → custom board → ASIC at volume</b>. Same GGUF model on every rung; only the bandwidth the silicon feeds it changes. The tok/s figures are <b>bandwidth-roofline [EST]s</b>, gated on the FPGA demo below.</p>
   </div>
 </section>
 
 <section>
   <div class="wrap">
-    <div class="sechead"><span class="idx">03</span><h2>Measured, not claimed — the real moat</h2><span class="chip m"><span class="tick"></span>verification-first</span></div>
-    <p class="lede">Most hardware pitches are slides. This one is <b>verified RTL</b>. The differentiator is a correctness guarantee: the datapath is bit-exact to the published checkpoint, and the memory controllers are formally proven. For a box your <b>security team must sign off on</b>, "provably the same answer as the real model — and it runs unplugged" is the close.</p>
+    <div class="sechead"><span class="idx">03</span><h2>Verified RTL — proven, elaborated, and the gaps named</h2><span class="chip m"><span class="tick"></span>verification-first</span></div>
+    <p class="lede">Most hardware pitches are slides. This one is <b>verified RTL</b>, gated in CI. The Q4_K math is <b>bit-exact to the GGML k-quant reference</b> and the memory controllers are <b>formally proven</b>. What is <b>not yet</b> proven is stated as plainly as what is — a whole-model golden and real-file validation are in build. For a box a <b>security team must sign off on</b>, an honest verification ledger is the close, not a blanket claim.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Evidence</th><th>Against</th><th>Result</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td><span class="what">Operator bit-accuracy</span><div class="src">vs real GLM-5.2-FP8 safetensors</div></td><td>published checkpoint</td><td class="num"><span class="c">9216/9216</span> · argmax 16/16</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
-          <tr><td><span class="what">FP8 E4M3 arithmetic</span><div class="src">all 256 decodes + 256² multiply pairs</div></td><td>fp64 golden</td><td class="num"><span class="c">66,069</span> · 0 fail</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
-          <tr><td><span class="what">Memory-system controllers</span><div class="src">formal BMC, z3</div></td><td>bounded + k-induction</td><td class="num">7 controllers proven</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
-          <tr><td><span class="what">Full 753B config</span><div class="src">6144 / 78L / 256-expert / 154880</div></td><td>verilator, true dims</td><td class="num"><span class="c">0</span> errors</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
-          <tr><td><span class="what">Real sky130 placement + STA</span><div class="src">FP8 matmul · OpenROAD ORFS <span style="color:var(--ink3)">· routing needs x86 host</span></div></td><td>SkyWater sky130hd</td><td class="num">legal · <span class="c">+15.9 ns</span> slack</td><td><span class="chip m"><span class="tick"></span>measured</span></td></tr>
+          <tr><td><span class="what">Q4_K GEMM bit-accuracy</span><div class="src">vs GGML Q4_K dequant reference</div></td><td>ggml k-quant golden</td><td class="num"><span class="c">160/160</span> tiles bit-exact</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
+          <tr><td><span class="what">Q4_K dequant + operators</span><div class="src">6-bit scale codec · swiglu · MoE router</div></td><td>per-op Q4_K golden</td><td class="num"><span class="c">18 / 240 / 40</span> · 0 fail</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
+          <tr><td><span class="what">Memory-system controllers</span><div class="src">formal BMC + k-induction, z3</div></td><td>bounded + unbounded</td><td class="num">7 controllers proven</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
+          <tr><td><span class="what">Full 753B config</span><div class="src">6144 / 78L / 256-expert / 154880</div></td><td>elaboration, true dims</td><td class="num"><span class="c">0</span> errors</td><td><span class="chip e">elaborated</span></td></tr>
+          <tr><td><span class="what">Whole-chip structural gate</span><div class="src">glm_q4k_system_cdc · yosys check-assert</div></td><td>two-clock product top</td><td class="num">0 unresolved</td><td><span class="chip e">elaborated</span></td></tr>
+          <tr><td><span class="what">Assembled-model fidelity</span><div class="src">end-to-end Q4_K forward vs golden</div></td><td>whole-forward golden</td><td class="num">golden in build</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
+          <tr><td><span class="what">Real UD-Q4_K_XL / mixed-type</span><div class="src">Q6_K / Q8_0 / F16 tensors + real file</div></td><td>published GGUF</td><td class="num">datapath: Q4_K first</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
           <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~15–40 tok/s</td><td><span class="chip e">[est]</span></td></tr>
         </tbody>
       </table>
     </div>
+    <p class="note">Every "proven" row is reproducible from the repo (<span class="mono">make q4k</span>, <span class="mono">make formal</span>). "Proven" here means <b>bit-exact to our own GGML k-quant reimplementation</b>; matching the <b>real published GGUF file</b> end-to-end (mixed Q6_K/Q8_0/F16 tensors) and the assembled whole-model golden are the <b>open</b> items above — named, not buried.</p>
   </div>
 </section>
 
 <section>
   <div class="wrap">
-    <div class="sechead"><span class="idx">04</span><h2>De-risked this cycle: the FPGA-fit wall</h2></div>
+    <div class="sechead"><span class="idx">04</span><h2>The path to silicon: the FPGA-fit gate</h2></div>
     <div class="flag">
       <div class="top">
-        <div class="stamp">▍ New result</div>
-        <h3>The biggest unknown — "can the die fit a real FPGA?" — now has a named target part, a measured demand that fits it, and a priced proof.</h3>
+        <div class="stamp">▍ Next gate</div>
+        <h3>The biggest hardware unknown — "does the die fit a real, affordable FPGA?" — now has a named target part, a priced board, and one bounded run left to close it.</h3>
       </div>
       <div class="body">
         <div>
-          <p>The FPGA fit sets the box's BOM, and the BOM sets the per-seat price the whole business rests on. One FP8 compute unit already <b>maps to real FPGA silicon</b> (~17.8 K LUT-equiv + 20 hardware DSP, 77 s) — the baseline flow's "timeout" was a tool limit, not a design one.</p>
-          <p style="margin-top:12px">This cycle it got concrete: the target part is named — a <b>Kintex UltraScale+ XCKU3P</b> (600 DSP48E2, DDR4 + PCIe). The compact whole-system's <b>measured multiply demand — 346 multipliers — fits that DSP budget with headroom</b>, and the buildable proof is <b>priced: a ~$958 dev board</b> (≈$500 used), not a research program. What remains is the routed fit + Fmax on the vendor tool — a bounded task on named hardware.</p>
+          <p>The FPGA fit sets the box's BOM, and the BOM sets the per-seat price the whole business rests on. The compute datapath <b>elaborates at full 753B scale</b> and the whole chip passes the structural sign-off (<span class="mono">yosys check-assert</span>, 0 unresolved) — the design is coherent end-to-end, not a sketch.</p>
+          <p style="margin-top:12px">The target part is named — a <b>Kintex UltraScale+ XCKU3P</b> (600 DSP48E2, DDR4 + PCIe) — and the buildable proof is <b>priced: a ~$958 dev board</b> (≈$500 used), not a research program. What remains is the one gate that needs the vendor tool: the <b>Q4_K datapath's routed fit + Fmax on Vivado</b>, which converts the roofline [EST]s into a measured tok/s. That run is the honest next milestone — not yet done.</p>
         </div>
         <div class="metrics">
           <div class="r"><span class="l">Target FPGA</span><span class="v ok">XCKU3P · 600 DSP</span></div>
-          <div class="r"><span class="l">Compute-unit map</span><span class="v ok">✓ 77 s · 20 DSP</span></div>
-          <div class="r"><span class="l">Whole-sys ×-demand</span><span class="v ok">346 / 600 · fits</span></div>
+          <div class="r"><span class="l">Full-scale elaborate</span><span class="v ok">✓ 753B · 0 err</span></div>
+          <div class="r"><span class="l">Whole-chip gate</span><span class="v ok">✓ check-assert</span></div>
           <div class="r"><span class="l">Buildable proof</span><span class="v">~$958 board</span></div>
           <div class="r"><span class="l">Routed fit + Fmax</span><span class="v no">Vivado · next</span></div>
         </div>
@@ -336,7 +339,7 @@
         <div class="row"><span class="seg">Healthcare</span><span class="d">Huge, PHI-bound — risk-averse, long validation</span></div>
       </div>
     </div>
-    <p class="note">The pitch is not "cheaper tokens" (the cloud is cheaper if you're allowed to use it) and not "avoid the breach" (that competes with doing nothing). It's <b>the only turnkey way to run a frontier model where the cloud can't go — unplugged, air-gapped, and yours — at a desk price.</b></p>
+    <p class="note">The pitch is not "cheaper tokens" (the cloud is cheaper if you're allowed to use it) and not "avoid the breach" (that competes with doing nothing). It's <b>the only turnkey way to run a frontier model where the cloud can't go — unplugged, air-gapped, and yours — at a desk price.</b> The alternative that <em>can</em> go offline — a big-RAM workstation running the same GGUF — is a build you babysit, not a signed-off appliance.</p>
   </div>
 </section>
 
@@ -346,15 +349,15 @@
     <div class="gates">
       <div class="gate">
         <div class="n">STEP 1</div>
-        <h3>Real-checkpoint fidelity</h3>
-        <p>Prove the full 753B weights produce the real model's tokens end-to-end through the datapath. The bridge is built; it needs one GPU run.</p>
-        <div class="need">status · in progress</div>
+        <h3>Whole-model fidelity</h3>
+        <p>The Q4_K operators are bit-exact to the k-quant reference; next is the <b>assembled end-to-end golden</b> — the full 753B forward reproducing the reference tokens through the Q4_K core, plus validation against the real published GGUF (mixed-type tensors).</p>
+        <div class="need">status · leaf-exact · whole-model golden in build</div>
       </div>
       <div class="gate">
         <div class="n">STEP 2</div>
         <h3>Measured fit → a demo on silicon</h3>
-        <p>The target part is named (XCKU3P) and the proof is priced — a ~$958 dev board. Next: the routed fit + Fmax (Vivado), then that board running real weights → a measured tok/s.</p>
-        <div class="need">status · part named · fit-demand measured (§04)</div>
+        <p>The target part is named (XCKU3P) and the proof is priced — a ~$958 dev board. Next: the Q4_K routed fit + Fmax (Vivado), then that board running real weights → a measured tok/s.</p>
+        <div class="need">status · part named · Vivado routed fit next (§04)</div>
       </div>
       <div class="gate">
         <div class="n">STEP 3</div>
@@ -379,11 +382,12 @@
   <div class="wrap">
     <div class="sechead"><span class="idx">07</span><h2>Honest limits</h2><span class="chip e">documented, not hidden</span></div>
     <div class="risks">
-      <div class="risk"><div class="r">Not silicon yet</div><div class="t">Throughput / BOM figures are <b>roofline [EST]s</b>, not a routed FPGA — the demo (§04, §06) is what makes them measured. Everything tagged measured above <b>is</b> reproducible.</div></div>
+      <div class="risk"><div class="r">Not silicon yet</div><div class="t">Throughput / BOM figures are <b>roofline [EST]s</b>, not a routed FPGA — the demo (§04, §06) is what makes them measured. Everything tagged <b>proven</b> above <b>is</b> reproducible from the repo.</div></div>
+      <div class="risk"><div class="r">Whole-model golden open</div><div class="t">The Q4_K <b>operators</b> are bit-exact to the k-quant reference; the <b>assembled 753B forward</b> and validation against the <b>real published GGUF</b> (mixed Q6_K/Q8_0/F16 tensors) are <b>in build, not done</b> — listed as open, not glossed.</div></div>
       <div class="risk"><div class="r">Narrow by design</div><div class="t">This wins only where <b>frontier scale + must-run-offline</b> both bind. That intersection is the <b>intended niche</b>, not a bug — a Mac runs 70B; the cloud runs online; we run the full model, unplugged.</div></div>
       <div class="risk"><div class="r">One box, one seat</div><div class="t">A <b>personal appliance</b> (B=1), not a multi-user server. Batched/datacenter serving is a capability of the same silicon, not this product.</div></div>
-      <div class="risk"><div class="r">Model-agnostic</div><div class="t">Built first for GLM-5.2 — a top open-weight model today. The box is an <b>FPGA</b>, so it isn't tied to one model: <b>retarget to whichever frontier open-weight model you trust</b> — RTL work, not new hardware. The independence edge is <b>local + offline</b>, model of your choice.</div></div>
     </div>
+    <p class="note" style="margin-top:16px">Model-agnostic by construction: built first for <b>GLM-5.2</b> (a top open-weight model today), but the box is an <b>FPGA</b> — <b>retarget to whichever frontier open-weight GGUF you trust</b>, RTL work, not new hardware. A prior FP8 datapath (bit-exact to the FP8 checkpoint) is preserved in the repo's history on branch <span class="mono">fp8</span>; the current product track is <b>Q4_K</b>, chosen because GGUF k-quants are the local-inference-native format and ~38% smaller on disk.</p>
   </div>
 </section>
 
@@ -391,9 +395,9 @@
   <div class="wrap" style="display:block">
     <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:16px;align-items:baseline">
       <div class="brand">AIPU<b>·</b>local frontier-AI appliance</div>
-      <div class="mono">Offline frontier-AI appliance · figures marked [EST] are roofline projections, not routed silicon</div>
+      <div class="mono">Offline frontier-AI appliance · GLM-5.2 Q4_K · figures marked [EST] are roofline projections, not routed silicon</div>
     </div>
-    <p class="note">Every claim traces to the project's open verification record — measured items are reproducible against <b>github.com/Wick-Lim/AIPU</b>. Throughput, BOM, and per-seat price are estimates until the FPGA demo lands. Built with an honest-gaps-documented ethos: nothing here is hidden.</p>
+    <p class="note">Every claim traces to the project's open verification record — items tagged <b>proven</b> are reproducible against <b>github.com/Wick-Lim/AIPU</b> (<span class="mono">make q4k</span>, <span class="mono">make formal</span>); items tagged <b>open</b> are named, in-build gaps. Throughput, BOM, and per-seat price are estimates until the FPGA demo lands. Built with an honest-gaps-documented ethos: nothing here is hidden.</p>
   </div>
 </footer>
 
