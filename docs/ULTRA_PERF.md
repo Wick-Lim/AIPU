@@ -1,54 +1,74 @@
 # ULTRA_PERF — Ranked Ultra-High-Performance Opportunity Report
 
-> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
-> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
-> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
-> `*_q4k` equivalents on main.
+> **Current track: Q4_K local-inference.** This is a **perf-optimization study** for the current
+> product — the **Q4_K** GLM-5.2 datapath on `main` (target weight store: the published
+> `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, **467 GB**). See [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md) and the honest verification ledger in the
+> [`README`](../README.md). The RTL/tests referenced are the `*_q4k` units on `main`
+> (`glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`, `swiglu_expert_q4k`, `moe_router_q4k`,
+> `mtp_head_q4k`, `glm_matmul_q4k`, `glm_q4k_soc(_ms)`, `glm_q4k_system(_cdc)`, `weight_loader_q4k`).
+>
+> **Prior FP8 track (branch `fp8` + tag `fp8-verified-baseline`).** Several *measured* perf multipliers
+> quoted below (flash_xbar latency-hide, weight_decomp ratio, MTP throughput, idle-gate %, flash_layout
+> balance) were measured on the **prior FP8 datapath**. The mechanisms are format-agnostic, but the
+> numbers are **prior-FP8 measurements** — a **Q4_K re-run is PENDING** and no Q4_K equivalent is
+> fabricated here. They are labelled **[prior-FP8]** wherever they appear.
 
-### GLM-5.2-FP8 single-module accelerator (FP8 die + DDR4/DDR5/HBM per rung + 1–4 TB NVMe SSD — the memory tier is rung-dependent, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
+### GLM-5.2 single-module accelerator (Q4_K die + DDR4/DDR5/HBM per rung + 1–N NVMe SSD — the memory tier is rung-dependent, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
 
-**Scope.** Opportunities *beyond* the already-built+measured levers (flash_xbar 7.99× latency-hide,
-weight_decomp 1.34×, MTP K=2 +23%, clk_en_ctrl 74% idle-gate, flash_layout +40% balance, the −87.6% BFP
-accumulator, fmax fixes, predictor-prefetch [measured no-op]). Numbers marked **[EST]** are model estimates,
-not measured. Compute is bit-exact to real GLM-5.2-FP8 (docs/BIT_ACCURACY.md); levers that change outputs are
-flagged **NOT bit-exact**.
+**Scope.** Opportunities *beyond* the already-built levers (flash_xbar latency-hide, weight_decomp,
+MTP K=2, clk_en_ctrl idle-gate, flash_layout balance, fmax fixes, predictor-prefetch [measured no-op]).
+The perf multipliers for those levers are **[prior-FP8]** (branch `fp8`; Q4_K re-measure PENDING) — see the
+banner above. Numbers marked **[EST]** are roofline model estimates, not measured silicon. **Numeric
+honesty:** the Q4_K GEMM core is **bit-exact to the team's own ggml reference `tools/q4k_ref.py`** (a
+*self-referential* golden, not the real GGUF bytes or llama.cpp) — see [`COVERAGE.md`](COVERAGE.md) /
+[`FORMAL.md`](FORMAL.md) and the README verification table. Bit-exactness to the **real published
+UD-Q4_K_XL GGUF / llama.cpp is NOT validated** (OPEN): the file has never been downloaded, the RTL uses
+**bf16 activations + fp32 accumulate** while llama.cpp uses **Q8_K-quantized activations + integer dot** —
+a *different arithmetic contract*. Levers that change outputs are flagged **NOT bit-exact**.
 
-> **Local-device retarget (Q4_K).** `main` develops the **Q4_K local-inference track** — the target weight
-> store is the published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` (**467 GB**, ~38% smaller than the 753 GB FP8
-> checkpoint; the per-token hot / routed byte counts below scale down ~proportionally, so these tok/s [EST]
-> are conservative for Q4_K). The moat becomes **bit-exact to the published UD-Q4_K_XL GGUF (no
-> re-quantization; generally lossless per Unsloth)**; numerics are bit-exact to ggml. FP8 is preserved on
-> branch **`fp8`** + tag **`fp8-verified-baseline`** ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
+> **Q4_K vs FP8 (why the retarget helps the roofline).** UD-Q4_K_XL is **467 GB** (~38% smaller than the
+> 753 GB FP8 checkpoint; ~0.6 B/param avg vs ~1.0). The workload is **memory-bandwidth-bound**, so fewer
+> bytes/token ⇒ more tok/s at the same bandwidth — Q4_K is ~**1.6× faster** than FP8 on the same rung
+> **[EST]**. Every per-token byte figure below is the Q4_K figure (~0.6× the prior-FP8 count). **Honest
+> gaps (ledger):** the RTL is **Q4_K-only** (`grep -ril 'q6_k|q8_0' src/` = 0; no `w_type` field in
+> `weight_loader_q4k`), so it **cannot consume a real UD-Q4_K_XL checkpoint as-is** — the dynamic mix keeps
+> sensitive tensors at Q6_K/Q8_0/F16, which would have to be re-quantized to Q4_K (voids the lossless
+> premise) or pre-dequantized to bf16. Mixed-type support is **NOT-YET**.
 
 > **Naming note (storage backend).** The committed RTL identifiers — `flash_xbar`, `FLASH_LAT`,
 > `flash_req`, `flash_seq`, `flash_layout`, `flash_is_expert`, `flash_expert_id`, … — are kept
 > **as-is** and are *not* renamed. `flash_xbar` is the medium-agnostic **storage-read fabric**
 > (address → weight bytes, with latency-hiding) that in the product sits in front of the
 > **NVMe/PCIe host-controller backend**: the NAND-specific backend is swapped for NVMe, while the
-> crossbar's read-request/latency abstraction and the compute die / `weight_loader` /
-> `expert_cache_pf` / `kv_cache_pager` are **unchanged**.
+> crossbar's read-request/latency abstraction and the compute die / `weight_loader_q4k` /
+> `expert_cache_pf` / `kv_cache_pager` are **unchanged**. **Honest caveat (ledger):** `ddr5_xbar` /
+> `flash_xbar` as committed are **single-lane** (1 beat/cycle, ~32 GB/s @1 GHz) and in the integrated top
+> the fabric is **observation-only** (the die pulls weights combinationally from a TB stub). The
+> ~100 GB/s+ figures below are **rung-dependent bandwidth targets** that require added lanes/channels +
+> real PHYs — **out of scope for the current RTL**, set by the silicon you buy
+> ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
 
 > **Product identity — a LOCAL, single-user box that works fully offline / air-gapped (read this
 > first).** The headline is **frontier AI with the ethernet unplugged**: this accelerator is a
-> **personal appliance — one box, one user, running the full 753 B GLM-5.2-FP8 model locally, no
-> internet and no cloud, ever**. Lead with the *capability* that unlocks — run a frontier model in the
-> classified / regulated / disconnected places you're locked out of today, and own it outright — not the
-> defense. **Nothing leaves because there is no path out**; non-egress is the *proof*, not the pitch, and
-> the audit is literally *"does it still work with the ethernet cable unplugged?"* (yes). That bar is one
-> **no cloud can clear — including "secured cloud" (in-VPC / zero-retention / TEE enclaves), which all
-> still need a connection**. Honest caveats: the 753 GB of weights are provisioned **once** (itself
-> doable offline) and model updates are **physical** re-provisioning; and offline *alone* is table-stakes
-> for any local box — the moat is the **combination of offline + full frontier (753 B) + appliance/seat
-> price** (see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The performance number that
-> matters is therefore **single-user interactive throughput**, and it is **rung-dependent** — set by the
-> memory bandwidth the silicon can feed, which is set by the rung you build
-> ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST] on the near-term prove-it FPGA (rung ①),
-> ~15–40 tok/s [EST] on the funded custom board (rung ②)** with the faithful levers stacked (the doc's old
-> flat ~25–40 was implicitly the rung-② funded number — the "Single-user" roofline row in §4). Any **aggregate-serving / datacenter-batch**
-> figures below (B≈256, ~50 tok/s *aggregate*, **per-user ~0.14 tok/s**) describe a **DIFFERENT,
-> non-target deployment** kept here only as analysis of what the same silicon *could* do batched —
-> that per-user latency does **not** describe the box you plug in. When in doubt, the single-user
-> numbers are the product.
+> **personal appliance — one box, one user, running the full 753 B GLM-5.2 model locally (Q4_K weights,
+> 467 GB), no internet and no cloud, ever**. Lead with the *capability* that unlocks — run a frontier
+> model in the classified / regulated / disconnected places you're locked out of today, and own it
+> outright — not the defense. **Nothing leaves because there is no path out**; non-egress is the *proof*,
+> not the pitch, and the audit is literally *"does it still work with the ethernet cable unplugged?"*
+> (yes). That bar is one **no cloud can clear — including "secured cloud" (in-VPC / zero-retention / TEE
+> enclaves), which all still need a connection**. Honest caveats: the **467 GB** of weights are
+> provisioned **once** (itself doable offline) and model updates are **physical** re-provisioning; and
+> offline *alone* is table-stakes for any local box — the moat is the **combination of offline + full
+> frontier (753 B) + appliance/seat price** (see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)). The
+> performance number that matters is therefore **single-user interactive throughput**, and it is
+> **rung-dependent** — set by the memory bandwidth the silicon can feed, which is set by the rung you
+> build ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST] on the near-term prove-it FPGA
+> (rung ①), ~15–40 tok/s [EST] on the funded custom board (rung ②)** with the faithful levers stacked. Any
+> **aggregate-serving / datacenter-batch** figures below (B≈256, ~50 tok/s *aggregate*, **per-user
+> ~0.14 tok/s**) describe a **DIFFERENT, non-target deployment** kept here only as analysis of what the
+> same silicon *could* do batched — that per-user latency does **not** describe the box you plug in. When
+> in doubt, the single-user numbers are the product.
 
 **The one equation.** The workload is NVMe/PCIe-bandwidth-bound:
 `tok/s ≈ NVMe_BW / [(1−h)·footprint] · K`. **`NVMe_BW`/`DDR_BW` are themselves set by the rung's IO pins +
@@ -62,23 +82,33 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 
 ## 1. Headline table — TOP opportunities (ranked by impact × feasibility)
 
+> **Status legend.** A **✅ RTL-present** mechanism means the Q4_K module carries the structure. It does
+> **not** mean the *assembled Q4_K path* is numerically verified: the ledger is explicit that **no
+> end-to-end functional golden for the assembled `glm_model_q4k` exists** — the model/decoder/mla/mtp-level
+> TBs run the **generic bf16 twin** (`src/glm_model.v`, zero Q4_K), not the `_q4k` product, and the batched
+> `PE_M`/union/paged-KV paths were verified **bit-exact on the prior FP8 track (branch `fp8`)**, not on
+> Q4_K. Where a row says a mechanism was "verified bit-exact", that is a **[prior-FP8]** result unless
+> stated otherwise. What *is* checked on Q4_K end-to-end: `spec_decode_top` **19/19 spec==greedy**
+> (DUT-vs-DUT self-consistency, the "greedy golden" is itself a `glm_model_q4k` — a lossless-speculation
+> safety property, **not** a numeric golden), + `spec_batched/chain` via `make spec-slow`.
+
 | # | Opportunity | Mechanism (1-line) | Quantified impact **[EST]** | Where | Effort | Ceiling? |
 |---|-------------|--------------------|------------------------------|-------|--------|----------|
-| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **INTEGRATED in `glm_decoder_block_fp8`** | Fetch the per-layer expert *union* once from the NVMe SSD, reuse across B token-rows (the PE_M>1 grouped MoE now scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; union-fetch + multi-seq batched top (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) + paged KV realized at small B (datacenter B≈256 scheduler remains) | rtl-here | high | ✅ |
-| 2 | **PE_M batch-widening of FP8 wrappers** — ✅ **DONE (4/4), verified** | **All four** FP8 wrappers (swiglu/router/mla/**mtp**) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Verified bit-exact in the regression: **swiglu 513, router 192, mla 6, mtp 44** (+ mla `ppos`/`pslen`/`sparse-perrow`); the weight-share check confirms *"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"* — e.g. mtp `{cn/pw/gn/aw/kc/fw/lw}` beats identical at PE_M=3 (0 extra weight BW) | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW | **rtl-here** | **✅ done** | (enabler) |
-| 3 | **Stronger weight decompressor (context-modeled)** — ✅ **BUILT (`weight_decomp2`), measured ~1.4–1.5×** | Spend idle die on an order-1 context-modeled Huffman decoder in the NVMe→DDR5 refill path | 1.34×→**~1.4–1.5×** (measured, `weight_decomp2(ctx)`) fewer NVMe bytes → ~16→~18 tok/s, ~3.8→~3.4 J/tok | **rtl-here** | **✅ done** | ✅ |
+| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **RTL-present in `glm_decoder_block_q4k`** | Fetch the per-layer expert *union* once from the NVMe SSD, reuse across B token-rows (the PE_M>1 grouped MoE scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; multi-seq batched top (`glm_q4k_soc_ms`, `PER_ROW_SEQ`) + paged KV. **Union-skip verified bit-exact [prior-FP8]; Q4_K assembled-path golden = NOT-YET** | rtl-here | high | ✅ |
+| 2 | **PE_M batch-widening of the Q4_K wrappers** — ✅ **RTL-present (4/4)** | **All four** wrappers (`swiglu_expert_q4k`/`moe_router_q4k`/`mla_attn_q4k`/`mtp_head_q4k`) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Weight-share property (*"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"*) verified bit-exact **[prior-FP8]** | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW. **Q4_K unit TBs: functional/invariant, not a PE_M golden** | **rtl-here** | RTL done | (enabler) |
+| 3 | **Stronger weight decompressor (context-modeled)** — ✅ **RTL-present (`weight_decomp2`)** | Spend idle die on an order-1 context-modeled Huffman decoder in the NVMe→DDR5 refill path | ~1.3–1.5× fewer streamed bytes **[prior-FP8, on the FP8 byte stream]** → **Q4_K applicability PENDING** (Q4_K is *already* 4-bit — an extra entropy coder gains less; re-measure needed) | **rtl-here** | RTL done | ✅? |
 | 4 | **Resident dense draft model → high-K spec decode** | ~1–3B DDR5-resident draft proposes K=4–8; target verifies in one pass | K_eff 1.7→**3–5** → ~2–3× single-user, **bit-exact** | rtl-here* | high | ✅ |
-| 5 | **Batched single-pass verification** — ✅ **BUILT (`spec_batched_top`/`spec_chain_top`), verified** | Forward {base + D draft} positions *together* as a PE_M=K+1 batch in ONE weight-load (spec NVMe ÷(K+1)) | The gate for spec NVMe gain, now **realized**; spec==greedy (bit-exact). Remaining lift is draft α (#4) | **rtl-here** | **✅ done** | ✅ |
-| 6 | **Contextual activation sparsity in SwiGLU** | Low-rank predictor → fetch only active W_up cols / W_down rows | ~1.5–3× fewer routed bytes (22→8–14 GB); **NOT bit-exact** | **rtl-here** | high | ✅ |
+| 5 | **Batched single-pass verification** — ✅ **RTL-present (`spec_batched_top`/`spec_chain_top`)** | Forward {base + D draft} positions *together* as a PE_M=K+1 batch in ONE weight-load (spec NVMe ÷(K+1)) | The gate for spec NVMe gain, **built**; **spec==greedy holds on Q4_K** (`spec_decode_top` 19/19 DUT-vs-DUT; `make spec-slow`). Remaining lift is draft α (#4) | **rtl-here** | RTL done | ✅ |
+| 6 | **Contextual activation sparsity in SwiGLU** | Low-rank predictor → fetch only active W_up cols / W_down rows | ~1.5–3× fewer routed bytes (~14→~5–9 GB); **NOT bit-exact** | **rtl-here** | high | ✅ |
 | 7 | **Dynamic top-k expert pruning (k_eff<8)** | Threshold-mask tiny renormalized gates in the router FSM | ~1.3–1.6× fewer routed bytes; cheapest big lever; **NOT bit-exact** | **rtl-here** | low | ✅ |
 | 8 | **Exact router-driven prefetch + K-token union** | Run cheap router GEMV for K spec tokens → exact union prefetch | Demand-stall 81%→~99% + ~1.5–2× byte-dedup; **bit-exact** | **rtl-here** | med | ✅ |
-| 9 | **Unmask + compress the 28 GB hot-weight DDR5 read** | Point weight_decomp at hot path; amortize K×; +DDR5 channels | The *next* wall: ~21 GB/56→42 ms → ~24 tok/s hot-bound floor | **rtl-here** | med | ✅ |
-| 10 | **IndexShare (DSA index once / 4 layers)** | Cache index-list; skip dsa_indexer on 3 of 4 layers (model-faithful) | At 1M ctx: index-read 10→2.5 GB/tok → keeps long-ctx NVMe-bound | **rtl-here** | med | ✅ |
+| 9 | **Unmask + compress the hot-weight DDR5 read** | Point weight_decomp at hot path; amortize K×; +DDR5 channels | The *next* wall: the ~9 GB hot-set becomes DDR-bound (rung-② ~15–40 band) | **rtl-here** | med | ✅ |
+| 10 | **IndexShare (DSA index once / 4 layers)** | Cache index-list; skip dsa_indexer on 3 of 4 layers (model-faithful) | At 1M ctx: index-read cut ~4× → keeps long-ctx NVMe-bound | **rtl-here** | med | ✅ |
 | 11 | **Parallel/pipelined DSA indexer** | Replace in-order 1-MAC dot with 128-lane reduction tree | At 1M ctx: ~0.05→~6 tok/s (kills O(S)·7-cyc drain); **bit-exact** | **rtl-here** | high | ✅ |
 | 12 | **MLA weight absorption (attend in 512-dim latent)** | Fold W_uk into q, W_uv into W_o; drop per-key up-projection | Removes ~3.2e5 per-key GEMMs/tok; **bit-exact** (matmul reassoc) | **rtl-here** | high | ✅ |
-| 13 | **Near-storage / computational-storage expert compute** — the **rung-③ endgame** | Move FP8 MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling (breaks the FPGA IO/PHY wall). **No J/tok win** | **rung ③** | high | ✅ |
+| 13 | **Near-storage / computational-storage expert compute** — the **rung-③ endgame** | Move the Q4_K dequant+MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling (breaks the FPGA IO/PHY wall). **No J/tok win** | **rung ③** | high | ✅ |
 | 14 | **Batch × MTP multiply** | Run all B streams' MTP drafts in the same grouped pass | ~1.7× *on top of* batch → ~60–85 tok/s aggregate @B≈256 | **rtl-here** | low | (compose) |
-| 15 | **Paged multi-sequence KV cache** — ✅ **BUILT (`kv_cache_pager` NSEQ windows + `glm_fp8_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler now **realized**: B>1 *distinct users* decode in one forward, per-row bit-exact (proven B=2/4) | **rtl-here** | **✅ done** | (enabler) |
+| 15 | **Paged multi-sequence KV cache** — ✅ **RTL-present (`kv_cache_pager` NSEQ windows + `glm_q4k_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler for B>1 *distinct users* in one forward. **Verified per-row bit-exact [prior-FP8] at B=2/4; Q4_K assembled golden = NOT-YET** | **rtl-here** | RTL done | (enabler) |
 
 \* #4 RTL substrate (g_kn verifier) exists; the draft *weights* are a training task.
 
@@ -95,35 +125,45 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   It needs custom CSD/PIM / near-memory silicon — an ASIC/SoC with HBM + near-memory compute is **exactly what
   breaks the FPGA's IO/PHY bandwidth ceiling**, so it is **not "out of scope forever" but the volume endgame
   (rung ③)**: not now (no volume, no capital), real later for cost-down + performance + power at manufacturing
-  volume. It does **not** cut J/token (the sense energy is the cost). The compute core is reusable verified RTL.
-- **Aggregate batching (#1/#2/#3-knee)** — ⚠️ **NOT the product; a secondary "what-if" for a datacenter
-  deployment of the same silicon.** Reframes batching from the doc's "~1.5×" (a B=32, LRU-hit-rate artifact)
-  to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch half is now integrated + verified
-  in `glm_decoder_block_fp8`** (PE_M>1 fetches only the selected-expert union), and a real **multi-sequence
-  batched top** (`glm_fp8_soc_ms`, `PER_ROW_SEQ`) decodes B distinct users in one forward with paged per-seq
-  KV — proven per-row bit-exact at B=2/4. New knee at **B≈256** (all 256 experts active:
-  `E[distinct]=256·(1−0.96875^B)`), new ceiling = the compute roofline **~50 tok/s aggregate @100 GB/s
-  NVMe [EST]**, reached near B≈355. **But per-user latency floors at ~0.14 tok/s at that batch — so THIS regime
-  is offline/throughput serving, NOT the local personal box.** The personal box runs at B=1 (single-user row
-  above); this bullet just documents that the RTL *also supports* batched serving if a datacenter product is
-  ever wanted.
-- **Stronger weight decomp (#3)** — only thing that uses the 75%-idle die to cut the *actual* wall. **Now
-  built** (`weight_decomp2`, order-1 context-modeled Huffman, measured ~1.4–1.5× lossless): 1.34→~1.5× is a
-  direct multiplier on **both** single-user tok/s **and** J/token (the NVMe/PCIe storage read ≈ 80% of
+  volume. It does **not** cut J/token (the sense energy is the cost). The compute core is reusable Q4_K RTL.
+- **Aggregate batching (#1/#2/#15)** — ⚠️ **NOT the product; a secondary "what-if" for a datacenter
+  deployment of the same silicon.** Reframes batching from the naive "~1.5×" (a B=32, LRU-hit-rate artifact)
+  to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch mechanism is present in
+  `glm_decoder_block_q4k`** (PE_M>1 fetches only the selected-expert union; the FP8 `batched_moe.v` union-skip
+  logic was **folded inline** into the decoder, so there is no separate module on `main`), and a
+  multi-sequence batched top (`glm_q4k_soc_ms`, `PER_ROW_SEQ`) decodes B distinct users in one forward with
+  paged per-seq KV. **The union-skip + per-row bit-exactness were verified on the prior FP8 track (branch
+  `fp8`); on Q4_K the assembled batched path is NOT-YET checked against any golden** (the decoder TB runs the
+  bf16 twin). New knee at **B≈256** (all 256 experts active: `E[distinct]=256·(1−0.96875^B)`), new ceiling =
+  the compute roofline **~50 tok/s aggregate @100 GB/s NVMe [EST]**, reached near B≈355. **But per-user
+  latency floors at ~0.14 tok/s at that batch — so THIS regime is offline/throughput serving, NOT the local
+  personal box.** The personal box runs at B=1 (single-user row above); this bullet just documents that the
+  RTL *also supports* batched serving if a datacenter product is ever wanted.
+- **Stronger weight decomp (#3)** — the idea that uses the 75%-idle die to cut the *actual* wall. RTL present
+  (`weight_decomp2`, order-1 context-modeled Huffman). Its **~1.3–1.5× ratio is a [prior-FP8] measurement on
+  the FP8 byte stream** — and **Q4_K is already 4-bit**, so an extra lossless entropy coder is expected to gain
+  *less* on Q4_K codes; **the Q4_K re-measure is PENDING** and no Q4_K ratio is claimed. When it does help it is
+  a direct multiplier on **both** single-user tok/s **and** J/token (the NVMe/PCIe storage read ≈ 80% of
   per-token energy). **rtl-here**, faithful, stacks multiplicatively.
-- **Higher speculative K (#4 + #5 + #8)** — the faithful single-user lever. #5 batched-verify is now **BUILT**
-  (`spec_batched_top`/`spec_chain_top`: PE_M=K+1 verify in one weight-load → NVMe ÷(K+1), spec==greedy) — the
-  self-draft MTP chain reaches K_eff ~1.7–2.2; #4 a resident dense draft (needs trained weights) would raise α
-  (K_eff → 3–5); #8 exact-router-union dedups the K-token expert set.
-  **All bit-exact** (target verifies every token). Honest cap: the MoE union penalty (#22 below) keeps
-  K_eff_nvme well below the dense-model ×K.
+- **Higher speculative K (#4 + #5 + #8)** — the faithful single-user lever. #5 batched-verify is **RTL-present**
+  (`spec_batched_top`/`spec_chain_top`: PE_M=K+1 verify in one weight-load → NVMe ÷(K+1)); **spec==greedy holds
+  on Q4_K** as DUT-vs-DUT self-consistency (`spec_decode_top` 19/19; `spec_batched/chain` via `make spec-slow`).
+  The self-draft MTP chain reaches K_eff ~1.7–2.2; #4 a resident dense draft (needs trained weights) would
+  raise α (K_eff → 3–5); #8 exact-router-union dedups the K-token expert set. **All bit-exact** (target
+  verifies every token). Honest cap: the MoE union penalty (#22 below) keeps K_eff_nvme well below the
+  dense-model ×K.
 - **Activation sparsity (#6) + dynamic top-k (#7)** — shrink `footprint` directly (~1.5–3× and ~1.3–1.6×).
-  Both **NOT bit-exact** (quality knobs). #7 is the cheapest big lever (a comparator+mask in the router).
+  Both **NOT bit-exact** (quality knobs; must be validated against the accuracy contract). #7 is the cheapest
+  big lever (a comparator+mask in the router).
 - **Hot-weight DDR5 second wall (#9)** — not today's wall, but bites once the first 3–4 NVMe/storage levers land;
-  decomp+K-amortize+channels keep the post-NVMe-fix regime from re-stalling at a ~24 tok/s DDR5 floor.
+  the ~9 GB Q4_K hot-set (attention/dense/shared, DDR-resident) then becomes DDR-bound, set by DDR BW
+  (rung-② ~15–40 band). Decomp+K-amortize+channels keep the post-NVMe-fix regime from re-stalling.
 - **Long-context faithful set (#10 IndexShare, #11 parallel indexer, #12 MLA absorption)** — at 1M ctx the
   O(S) indexer and per-key up-projection, *not* NVMe/storage, become the wall (in-order indexer ≈ 0.05 tok/s). These
-  restore the NVMe-bound ~6 tok/s at extreme context. All **model-faithful / bit-exact**.
+  restore the NVMe-bound ~6 tok/s at extreme context. All **model-faithful / bit-exact** (matmul reassoc).
+  *Honest caveat (ledger): `mla_attn_q4k` currently **omits the 1/√(qk_head_dim) softmax scale** — a silent
+  divergence from the reference softmax that both the DUT and its TB golden share; unrelated to these levers but
+  it means the attention numerics are not yet contract-checked against a scaled reference.*
 
 ### 2b. INCREMENTAL / CONDITIONAL — smaller or regime-specific
 
@@ -132,8 +172,8 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   add no ceiling by themselves. Scheduler defends the peak (a half-full batch pays full union for half the
   tokens → half aggregate).
 - **Attention hot-path batch reuse + DDR5 realloc** — defensive; prevents attention/hot-weight becoming the
-  secondary bottleneck at high B; frees ~15–25 GB DDR5 for KV.
-- **Pipelined KV gather / FP8 latent-KV / widen attention engines** — long-ctx *latency/footprint*, ~1% of
+  secondary bottleneck at high B; frees DDR5 for KV.
+- **Pipelined KV gather / latent-KV / widen attention engines** — long-ctx *latency/footprint*, ~1% of
   bytes; not ceiling movers.
 - **PE-array scaling (wider PE_N), fmax tail fixes, output-stationary SRAM, pipeline MLA softmax** — **~0 on
   single-user decode** (compute already hidden 4× under the NVMe/storage read). Value is **prefill/TTFT** (linear in array
@@ -147,7 +187,8 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   N *separate* modules (N× cost). The bottleneck is the bus, not die count.
 - **Deeper prefetch / layer-pipeline** — already bandwidth-bound (81% demand-stall removed); residual is the
   irreducible DDR5 read floor (~5% utilization, not throughput).
-- **Predictor-prefetch** — measured no-op; hit-rate is entropy-capped by fine-grained routing.
+- **Predictor-prefetch** — **measured no-op** (ledger-confirmed); hit-rate is entropy-capped by fine-grained
+  routing (the routed experts change every token). Not a Q4_K-vs-FP8 artifact — it is the routing entropy.
 - **Hierarchical block-max pruned indexing** — could cut indexer 5–20× at 1M but is **off the faithful path**
   (changes outputs); escape hatch only.
 
@@ -156,46 +197,53 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
 ## 3. "What to build" — the single biggest RTL-here lever
 
 ### Build A — Expert-grouped batched MoE (#1+#2+#15) — the aggregate ceiling
-The only thing that needs to be *invented*; the math die is ready.
+The only thing that needs to be *invented*; the math die is ready. **What's RTL-present today vs what needs
+a Q4_K golden is stated per step.**
 
-1. **PE_M batch-widen the wrappers (#2, the keystone) — ✅ DONE (4/4).** glm_matmul_fp8 already supports
+1. **PE_M batch-widen the wrappers (#2, the keystone) — RTL-present (4/4).** `glm_matmul_q4k` supports
    PE_M>1 (8·PE_M a_shift port, per-row accumulator banks, PE_M·PE_N dequant walk; the scarce 24×24 dequant
-   muls stay pinned at NB **regardless of PE_M**). **All four wrappers — `swiglu_expert_fp8` / `moe_router_fp8`
-   / `mla_attn_fp8` / `mtp_head_fp8` — now carry a `PE_M` parameter** with `[0:PE_M-1][…]` per-row buffers,
-   per-row a_shift/hsh, and the **same** w_col streamed to all rows — verified bit-exact (swiglu 513 / router
-   192 / mla 6·ppos·pslen·sparse / **mtp 44**; the "B rows == 1 fetch stream" weight-share check passes on
-   every weight port). `mtp_head_fp8` (the composite: 3 RMSNorms + combine-proj + a full `glm_decoder_block_fp8`
-   + LM head) threads PE_M through per-row and enables **Batch × MTP (#14)**.
+   muls stay pinned at NB **regardless of PE_M**). **All four wrappers — `swiglu_expert_q4k` / `moe_router_q4k`
+   / `mla_attn_q4k` / `mtp_head_q4k` — carry a `PE_M` parameter** with `[0:PE_M-1][…]` per-row buffers,
+   per-row a_shift/hsh, and the **same** w_col streamed to all rows. The *"B rows == 1 fetch stream"*
+   weight-share property was verified **bit-exact on the prior FP8 track [prior-FP8]**; on Q4_K the unit TBs
+   (`swiglu_expert_q4k` 240 functional/self-labeled, `moe_router_q4k` 40 invariant, `glm_matmul_q4k` 160
+   bit-exact-vs-ggml) do **not** include a PE_M weight-share golden — that verification is **NOT-YET on Q4_K**.
+   `mtp_head_q4k` (the composite: 3 RMSNorms + combine-proj + a full `glm_decoder_block_q4k` + LM head) threads
+   PE_M through per-row and enables **Batch × MTP (#14)**.
 2. **Grouped dispatcher.** Per MoE layer: (a) route all B tokens, histogram top-8 picks into a per-expert
    token-list (reuse scatter_gather.v + topk_select); (b) for each *distinct* active expert, gather its rows
-   into a PE_M tile, fetch the ~37 MB expert from NVMe/DDR5 **once**, run the grouped GEMM, scatter back;
-   (c) advance all B tokens to L+1 in lockstep. Union ≤256 experts ≤9.5 GB → resident in the rung-② board's
-   64 GB DDR5 (DDR is rung-dependent — [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), not a fixed spec); the
-   union is the **only** NVMe/storage traffic, shared across all B rows.
-   **✅ (b) is now INTEGRATED + verified.** `glm_decoder_block_fp8` (PE_M>1) already fetches **only** the
-   union of experts any row selected — a `T_ESCAN` scan over the expert axis with a combinational `any_has`
-   membership test skips every non-union expert (reference pattern: `batched_moe.v`). Verified BYTE-IDENTICAL:
-   `glm_decoder_block_fp8_union_tb` ALL 4 (*"PE_M=2 evaluated 3 experts == distinct-selected, skipped 5 of 8,
-   bit-exact"*), `glm_model_fp8_pem` ALL 3, decoder TB ALL 9. Effect: up to **~32×** fewer NVMe/storage expert
-   fetches at small batch (real 256-expert config), realizing this lever's aggregate footprint reduction
-   **in the model**; ~no benefit at B≈256 (union≈all). The *multi-distinct-token* path is now proven at small
-   batch — `glm_fp8_soc_ms` decodes B DIFFERENT sequences in one forward (`PER_ROW_SEQ`, per-row bit-exact,
-   B=2/4) with the union fetched once (`batched_moe` full B-coverage, `make bcov` [FP8, removed — see branch `fp8`], B∈{1,2,3,5,8}), and the
-   paged KV (#15) below is built. What still needs inventing is scaling the dispatcher/scheduler (a)/(c) to
-   the datacenter B≈256 regime.
-3. **Paged KV (#15) — ✅ substrate BUILT.** `kv_cache_pager` now carries `NSEQ` independent ring windows
-   (per-seq counter/window/eviction) and `glm_fp8_soc_ms` OWNS a real per-(layer,seq) KV store (`kv_mem`) the
+   into a PE_M tile, fetch the expert from NVMe/DDR5 **once**, run the grouped GEMM, scatter back;
+   (c) advance all B tokens to L+1 in lockstep. The union is the **only** NVMe/storage traffic, shared across
+   all B rows; it caches in the rung-② board's DDR5 (DDR size is rung-dependent —
+   [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), not a fixed spec).
+   **(b) is RTL-present.** `glm_decoder_block_q4k` (PE_M>1) fetches **only** the union of experts any row
+   selected — a `T_ESCAN` scan over the expert axis with a combinational `any_has` membership test skips every
+   non-union expert (the FP8 `batched_moe.v` union-skip logic was **folded inline** here). This was verified
+   **BYTE-IDENTICAL on the prior FP8 track [prior-FP8]** (union_tb / `_pem` / decoder TB, and `make bcov`
+   B∈{1,2,3,5,8} — *all FP8-track, removed from `main`, see branch `fp8`*). **On Q4_K the assembled decoder
+   path has NO functional golden (ledger NOT-YET)** — the decoder TB runs the generic bf16 twin, so the union
+   fetch's Q4_K numeric correctness is unproven. Effect *when realized*: up to **~32×** fewer NVMe/storage
+   expert fetches at small batch (real 256-expert config); ~no benefit at B≈256 (union≈all). What still needs
+   inventing is scaling the dispatcher/scheduler (a)/(c) to the datacenter B≈256 regime.
+3. **Paged KV (#15) — substrate RTL-present.** `kv_cache_pager` carries `NSEQ` independent ring windows
+   (per-seq counter/window/eviction) and `glm_q4k_soc_ms` OWNS a real per-(layer,seq) KV store (`kv_mem`) the
    multi-seq model reads combinationally; `PER_ROW_SEQ`/`kc_seq` route each row to its own sequence's window.
    MLA latent KV ~1 KB/tok/layer → B=256 at few-K ctx fits the DDR5 freed by the shrunken (one-layer-union)
-   expert cache. Remaining: scale the window count to datacenter B and a vLLM-style shared-pool block table.
+   expert cache. Per-row bit-exactness at B=2/4 was verified **[prior-FP8]**; the Q4_K assembled golden is
+   **NOT-YET**. Remaining: scale the window count to datacenter B and a vLLM-style shared-pool block table.
 
-**Payoff [EST]:** per-token routed footprint `75·256·(1−0.96875^B)·37MB/B` → B=256 ≈ 2.8 GB/tok (7.9×) →
-~36 tok/s aggregate @100 GB/s NVMe; ~50 tok/s compute-roofline cap near B≈355; ×1.7 more with MTP (#14).
+**Payoff [EST]:** per-token routed footprint `75·256·(1−0.96875^B)·(~23 MB)/B` (75 MoE layers; ~23 MB per
+expert-per-layer at Q4_K = ~0.6× the prior-FP8 ~37 MB) → at B=256 ≈ **~1.7 GB/tok** (~8× vs the ~14 GB
+single-user routed footprint) → ~36 tok/s aggregate @100 GB/s NVMe; ~50 tok/s compute-roofline cap near
+B≈355; ×1.7 more with MTP (#14). *(All [EST]; the aggregate regime is non-target.)*
 
 ### Build B — Faithful high-K speculation (#5+#4+#8) — the single-user ceiling
-1. **Batched verify (#5) — ✅ BUILT.** `spec_batched_top` / `spec_chain_top` forward {base + D draft} positions
-   as a PE_M=K+1 batch through ONE glm_model_fp8 weight-load; per-layer expert streaming serves all rows;
-   `spec_decode_seq` commits the accepted prefix (longest-accepted = greedy = bit-exact). spec==greedy verified.
+1. **Batched verify (#5) — RTL-present.** `spec_batched_top` / `spec_chain_top` forward {base + D draft}
+   positions as a PE_M=K+1 batch through ONE `glm_model_q4k` weight-load; per-layer expert streaming serves all
+   rows; `spec_decode_seq` commits the accepted prefix (longest-accepted = greedy = bit-exact). **spec==greedy
+   is verified on Q4_K** (`spec_decode_top` 19/19 in `make unittests`; `spec_batched/chain` via `make
+   spec-slow`) — a DUT-vs-DUT self-consistency safety property (the "greedy golden" is itself a `glm_model_q4k`
+   sharing the weight ROMs), **not** a numeric golden.
 2. **Resident dense draft (#4) — still PENDING (needs trained weights).** The self-draft path exists today
    (`spec_chain_top` chains the MTP head, K_eff ~1.7–2.2); a ~1–3B DDR5-resident draft (attention + shared
    expert + heads only → **zero NVMe**) proposing K=4–8, or Medusa heads (no chain decay), would raise α to
@@ -211,35 +259,41 @@ The only thing that needs to be *invented*; the math die is ready.
 ## 4. Honest roofline — the three regimes
 
 The **product is the first row** (local, single-user box). The other two are *analyses of the same silicon*
-under deployments this product does not target — kept for honesty, not as the roadmap.
+under deployments this product does not target — kept for honesty, not as the roadmap. All figures are
+**[EST]** roofline projections (per-token Q4_K footprint ~25 GB = 40B active × ~0.6 B/param, of which the
+**~14 GB routed-expert bytes are the NVMe wall** and the **~9 GB hot-set caches in DDR**).
 
 | Regime | Deployment | Bound by | tok/s (today → with levers) **[EST]** | Levers that apply |
 |--------|---------|----------|----------------------------------------|-------------------|
-| **Single-user ← THE PRODUCT** | **local personal box, interactive** | NVMe BW (16 GB routed/tok @100 GB/s = **rung ②** [EST]) | ~3–12 → **~15–40** (rung ②; **rung ① prove-it ~5–8**, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) [EST] | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
+| **Single-user ← THE PRODUCT** | **local personal box, interactive** | storage/DDR BW (~14 GB routed/tok) | **rung ① ~5–8** (~100 GB/s striped NVMe) → **rung ② ~15–40** (~300–600 GB/s DDR5/HBM working set), [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) | decomp #3, sparsity #6, top-k #7, draft-K #4+5+8, hot-weight #9 |
 | Aggregate-serving *(not the product)* | datacenter batch, offline | NVMe/storage union then compute roofline | ~6 (B=1) → **~36–50** (×1.7 MTP → 60–85) *aggregate; per-user ~0.14* | batched MoE #1, PE_M #2, paged KV #15, B≈256 knee, scheduler |
-| Compute-bound *(hypothetical)* | full-resident HBM (**rung ③** class) | FP8 roofline (80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-storage #13 or HBM — **rung ③**); array-scale for prefill |
+| Compute-bound *(hypothetical)* | full-resident HBM (**rung ③** class) | compute roofline (~80 GFLOP/tok ÷ ~4 TFLOP/s ≈ 20 ms) | **~40–50** ceiling | only if experts free (near-storage #13 or HBM — **rung ③**); array-scale for prefill |
 
-**On the ~100 GB/s storage figure [EST].** This is an *aggregate* NVMe/PCIe target, **not a single drive**:
-one PCIe Gen4 ×4 NVMe delivers ~7 GB/s (Gen3 ×4 ~3.5, Gen5 ×4 ~14), so ~100 GB/s implies a **multi-drive /
-many-lane array** (order ~14× Gen4 or ~7× Gen5 M.2 drives striped, or an equivalent many-lane PCIe fan-out)
-on a **custom board** (the **rung-② board**, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) — aggressive, and it scales *with lanes/drives* exactly as the old NAND story scaled
-with channels. `weight_decomp` (lossless FP8) shrinks the bytes streamed, buying *effective* NVMe bandwidth
-on top. Treat 100 GB/s as an upper-bound target, not a single-M.2 spec; the tok/s rows below scale down
-roughly linearly with the storage BW actually deployed (e.g. a single Gen5 x4 ~14 GB/s ≈ ~0.9 tok/s at
-16 GB routed/tok, before decomp/sparsity/spec-K multipliers).
+**On the ~100 GB/s storage figure [EST].** This is an *aggregate* NVMe/PCIe target, **not a single drive**,
+and — per the naming-note caveat — **beyond the current single-lane fabric** (`flash_xbar`/`ddr5_xbar` as
+committed do ~32 GB/s @1 GHz; more lanes/channels + real PHYs are rung-② hardware, not RTL). One PCIe Gen4
+×4 NVMe delivers ~7 GB/s (Gen3 ×4 ~3.5, Gen5 ×4 ~14), so ~100 GB/s implies a **multi-drive / many-lane array**
+(order ~14× Gen4 or ~7× Gen5 M.2 drives striped, or an equivalent many-lane PCIe fan-out) on a **custom
+board**, and it scales *with lanes/drives* exactly as the old NAND story scaled with channels. Per the ledger
+roofline: 1–2 NVMe (~7–14 GB/s) → **~0.5–1 tok/s**; 4 NVMe (~28) → **~2**; striped ~14 drives (~100 GB/s) →
+**~5–8 (rung ①)**; DDR5/HBM feeding the working set (~400 GB/s–1 TB/s) → **~15–40 (rung ②)**; an HBM3 ceiling
+(~3 TB/s) → ~120 but **467 GB won't fit HBM (≤192 GB) so aspirational**. Treat 100 GB/s as an upper-bound
+target, not a single-M.2 spec; the tok/s scales roughly linearly with the storage BW actually deployed (a
+single Gen5 x4 ~14 GB/s ≈ ~1 tok/s at ~14 GB routed/tok, before decomp/sparsity/spec-K multipliers).
 
-**Reading it.** The product — a **single-user local box** — stacking the faithful RTL levers (flash_xbar N× +
-decomp 1.34→~1.5× + activation-sparsity ~2× + draft-K~4 + hot-weight decomp) projects **~15–40 tok/s @100 GB/s
-NVMe [EST] on the funded custom board (rung ②; the fully-stacked upper end ~25–40), and ~5–8 tok/s [EST] on the
-near-term prove-it FPGA (rung ①)** — the tok/s a box hits is set by the memory bandwidth of the rung you build
-([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), not by the RTL alone (the RTL is bit-exact and identical on every
-rung). Rung ② is comfortably interactive, approaching the ~50 tok/s compute ceiling — at which point the answer
-is a bigger/cheaper compute die (compute is **not** the BOM cost). *(The aggregate-serving row is a separate,
+**Reading it.** The product — a **single-user local box** — stacking the faithful RTL levers projects
+**~15–40 tok/s [EST] on the funded custom board (rung ②) and ~5–8 tok/s [EST] on the near-term prove-it FPGA
+(rung ①)** — the tok/s a box hits is set by the memory bandwidth of the rung you build
+([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), not by the RTL alone (the RTL is the same, ggml-bit-exact Q4_K
+core on every rung). The rung-② working-set band **needs expert-cache hit-rate — which routing entropy caps
+(predictor-prefetch is a measured no-op) — or non-bit-exact pruning (#6/#7)** to reach the upper end. Rung ②
+is comfortably interactive, approaching the ~50 tok/s compute ceiling — at which point the answer is a
+bigger/cheaper compute die (compute is **not** the BOM cost). *(The aggregate-serving row is a separate,
 non-target deployment: batching many users reaches the **same** ~50 tok/s ceiling but as pooled throughput, so
 each of the ~355 users floors at ~0.14 tok/s — that per-user figure belongs to a datacenter box, never to the
-personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-storage compute (#13) — the **rung-③ ASIC/SoC
-endgame** (HBM stacks + near-memory compute at manufacturing volume, for cost-down + performance + power). Cache
-cleverness (predictor) and extra dies are provably capped.
+personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-storage compute (#13) —
+the **rung-③ ASIC/SoC endgame** (HBM stacks + near-memory compute at manufacturing volume, for cost-down +
+performance + power). Cache cleverness (predictor) and extra dies are provably capped.
 
 ---
 
@@ -258,6 +312,9 @@ cleverness (predictor) and extra dies are provably capped.
 
 ---
 
-*Estimates [EST] are first-order model projections (master eq + roofline), not silicon measurements. Faithful
-levers preserve GLM-5.2-FP8 bit-exactness; #6/#7 (and FP8 latent-KV, hierarchical indexing) are quality knobs
-and must be validated against the accuracy contract before shipping.*
+*Estimates [EST] are first-order model projections (master eq + roofline), not silicon measurements.
+**[prior-FP8]** multipliers were measured on the prior FP8 datapath (branch `fp8`); their Q4_K re-measure is
+PENDING and no Q4_K equivalent is fabricated. Faithful levers preserve the Q4_K arithmetic contract
+(bit-exact to the ggml reference `tools/q4k_ref.py` — not the real GGUF / llama.cpp, which is OPEN); #6/#7
+(and latent-KV, hierarchical indexing) are quality knobs and must be validated against the accuracy contract
+before shipping.*

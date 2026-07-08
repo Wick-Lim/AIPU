@@ -1,64 +1,66 @@
 # AIPU — full operational flow (end-to-end)
 
-> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
-> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
-> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
-> `*_q4k` equivalents on main.
+> **Track.** This is the **Q4_K** operational flow — the current / `main` product track (GGML
+> Q4_K, targeting [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF),
+> ~467 GB). The **prior FP8 datacenter-native track** is preserved on branch **`fp8`** (tag
+> `fp8-verified-baseline`), referenced here as prior/preserved, **never current**. The Q4_K module
+> names used below are `glm_q4k_system_cdc` / `glm_q4k_system` / `glm_model_q4k` /
+> `glm_decoder_block_q4k` / `mla_attn_q4k` / `moe_router_q4k` / `swiglu_expert_q4k` /
+> `glm_matmul_q4k` / `mtp_head_q4k` / `weight_loader_q4k` / `glm_q4k_soc_ms`.
 
-> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
-> targeting `unsloth/GLM-5.2-GGUF:UD-Q4_K_XL`). **FP8 is the PRIOR / PRESERVED track** on
-> branch **`fp8`** (tag `fp8-verified-baseline`), removed from `main` in commit `cbef69d`.
-> This walkthrough still names the **FP8** blocks (`glm_fp8_system_cdc`, `glm_fp8_system`,
-> `glm_model_fp8`, `glm_decoder_block_fp8`, `moe_router_fp8`, `swiglu_expert_fp8`,
-> `glm_fp8_soc_ms`) and a **753 GB FP8** model on NVMe. The **Q4_K equivalents** that exist on
-> `main` are `glm_q4k_system_cdc`, `glm_q4k_system`, `glm_model_q4k`, `glm_decoder_block_q4k`,
-> `moe_router_q4k`, `swiglu_expert_q4k`, `glm_q4k_soc_ms`, `weight_loader_q4k.v`; the resident
-> model is the ~Q4_K GGUF, not FP8. Any "== golden / bit-exact" the body attributes to the
-> assembled model is **DUT-vs-DUT spec==greedy self-consistency**, not a numeric golden vs
-> ggml/llama.cpp (only `glm_matmul_q4k` is bit-exact, and only vs the team's own
-> `tools/q4k_ref.py`). A deeper Q4_K rewrite of this doc is deferred.
+> **⚠️ Verification honesty (read before any "verified/bit-exact" below).** The **one** bit-exact
+> datapath result is **`glm_matmul_q4k` vs the team's own ggml reference `tools/q4k_ref.py`** — **not**
+> the real downloaded GGUF bytes and **not** llama.cpp (a *different* arithmetic contract: llama.cpp
+> quantizes activations to Q8_K + integer dot; this RTL uses **bf16 activations + fp32 accumulate**).
+> There is **no end-to-end numeric golden** for the assembled `glm_model_q4k`: the model / MLA /
+> decoder / MTP-level TBs run against the generic **bf16 twin `glm_model.v` (zero Q4_K)**, and the only
+> whole-model check is **spec==greedy self-consistency** (DUT-vs-DUT — the "greedy golden" is *itself* a
+> `glm_model_q4k`). The RTL is **Q4_K-only** (no Q6_K/Q8_0/F16 mixed-type consumer), so it cannot
+> consume a real UD-Q4_K_XL checkpoint as-is. Every tok/s / J / FPGA-fit figure below is
+> **[EST]/[PENDING]**, roofline-modeled, not measured. See the [README](../README.md) for the full
+> honest ledger.
 
-How the whole accelerator runs one real GLM-5.2-FP8 token, from power-up through a decoded
-token, across every committed RTL block. Grounded in main @ current state (PE_M 4/4, grouped-MoE
-union-skip, cycle-accurate emulation) — **main develops exactly the GLM-5.2-FP8 accelerator at
+How the whole accelerator runs one real GLM-5.2 (Q4_K) token, from power-up through a decoded
+token, across every committed RTL block. Grounded in main @ current state (PE_M batching, grouped-MoE
+union-skip, cycle-accurate emulation) — **main develops exactly the GLM-5.2 Q4_K accelerator at
 rung-① (the offline FPGA prove-it demo); the full product at rungs ②③ is roadmap, not code in main
 now** (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). This is the *operational* view; per-block detail lives in
 [`ACCEL_GLM52.md`](ACCEL_GLM52.md) / [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md).
 
-The one fact that shapes everything: **the workload is NVMe/PCIe-bandwidth-bound.** The 753 GB model
-lives on the NVMe SSD; each token streams its active experts through a DDR5 cache into a mostly-idle FP8
-die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K`.
+The one fact that shapes everything: **the workload is NVMe/PCIe-bandwidth-bound.** The ~467 GB Q4_K
+model lives on the NVMe SSD; each token streams its active experts through a DDR5 cache into a mostly-idle
+Q4_K die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K`.
 
 ## 0. Physical / logical stack
 
 ```
   ┌───────────────────────────── AIPU module (one board / one die) ─────────────────────────────┐
   │                                                                                              │
-  │   HOST (USB-C)  ──req──►┌─CDC─┐──►┌──────────────── glm_fp8_system (compute clock) ─────────┐ │
+  │   HOST (USB-C)  ──req──►┌─CDC─┐──►┌──────────────── glm_q4k_system (compute clock) ─────────┐ │
   │                 ◄─tok───┤fifo │   │                                                         │ │
-  │                         └─────┘   │   glm_model_fp8  (the FP8 compute die)                  │ │
-  │   glm_fp8_system_cdc              │      embed → [decoder_block ×78 time-mux] → norm → LMhead│ │
+  │                         └─────┘   │   glm_model_q4k  (the Q4_K compute die)                 │ │
+  │   glm_q4k_system_cdc              │      embed → [decoder_block ×78 time-mux] → norm → LMhead│ │
   │   (2-clock top, reset_sync)       │            │  ▲ pull weights / KV / experts             │ │
   │                                   │            ▼  │                                         │ │
-  │                                   │   weight_loader · expert_cache_pf · kv_cache_pager       │ │
+  │                                   │   weight_loader_q4k · expert_cache_pf · kv_cache_pager   │ │
   │                                   │            │  ▲                                          │ │
   │                                   │      ddr5_xbar (N-ch)     flash_xbar (N-ch, QDEPTH)      │ │
   │                                   └──────│──────────────────────────│─────────────────────┘ │
   │                                   ┌──────▼──────┐            ┌───────▼────────┐               │
-  │                                   │ 64 GB DDR5  │            │  NVMe (1-4TB)  │               │
-  │                                   │ (working)   │◄─boot_loader│ (753 GB model) │               │
+  │                                   │ DDR5 (work) │            │  NVMe (1-4 TB)  │              │
+  │                                   │ hot-set+LRU │◄─boot_loader│ (~467 GB model)│              │
   │                                   └─────────────┘   load     └────────────────┘               │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **`glm_fp8_system_cdc`** — the 2-clock chip top: host/USB clock ↔ compute clock via
+- **`glm_q4k_system_cdc`** — the 2-clock chip top: host/USB clock ↔ compute clock via
   `cdc_async_fifo` (request in, token out), `reset_sync` per domain.
-- **`glm_fp8_system`** — the compute-domain core: the die + the memory subsystem.
+- **`glm_q4k_system`** — the compute-domain core: the die + the memory subsystem.
 - Memories are TB-modeled here; real DDR5 / NVMe (PCIe) / USB-C PHYs are vendor IP (out of scope).
-- **DDR is rung-dependent** — the diagram's `64 GB DDR5` is the *funded* rung-② point, **not THE spec**:
+- **DDR is rung-dependent** — the diagram's DDR5 working store is the *funded* rung-② point, **not THE spec**:
   the near-term prove-it FPGA runs DDR4 (~4 ch, ~100 GB/s), the funded custom board runs DDR5 multi-ch /
   HBM (~300–600 GB/s); see the hardware ladder ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). NVMe (the
-  753 GB model store) is the same on every rung — performance is set by memory bandwidth, i.e. by which
+  ~467 GB model store) is the same on every rung — performance is set by memory bandwidth, i.e. by which
   silicon the budget buys.
 
 ## 1. Boot — execution conditions & resident-set load (NVMe → DDR5)
@@ -72,26 +74,26 @@ die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K`.
 | 2 | **clocks stable** | `host_clk` (USB), `core_clk` (compute), memory clk — PLLs locked | board / vendor IP |
 | 3 | **reset sequenced** | `host_rst` / `core_rst` (per-domain, sync active-high) cleanly de-asserted (`reset_sync`) | RTL |
 | 4 | **memory PHY init** | DDR5 training + NVMe/PCIe controller init | vendor IP |
-| 5 | **model present on NVMe** | the 753 GB FP8 model **pre-written** (one-time provisioning, `ckpt_pack.py` / `flash_layout.py`) | manufacturing / setup |
-| 6 | 🔑 **`boot_loader.done`** | DMA the **~28 GB resident set** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas) **NVMe → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, 9240 tests, BMC-proven) |
+| 5 | **model present on NVMe** | the ~467 GB Q4_K model **pre-written** (one-time provisioning, `ckpt_pack_q4k.py` / `flash_layout.py`) | manufacturing / setup |
+| 6 | 🔑 **`boot_loader.done`** | DMA the **~9 GB hot-set** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas) **NVMe → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, **BMC + unbounded k-induction proven**) |
 | 7 | **USB enumerated** | host driver loaded, endpoint open | host + vendor USB IP |
 
-The **256 routed experts stay on the NVMe SSD** (753 GB ≫ the DDR working set) and are demand-streamed per token
+The **256 routed experts stay on the NVMe SSD** (~467 GB ≫ the ~9 GB DDR hot-set) and are demand-streamed per token
 (§4). Boot 6 is pure DMA — no arithmetic, byte-exact.
 
-**Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + resident load (~28 GB /
-NVMe read BW — ~4–8 s on one Gen3/4 ×4 drive at ~3.5–7 GB/s, dropping toward ~1 s only with several
+**Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + hot-set load (~9 GB /
+NVMe read BW — ~1.3–2.6 s on one Gen3/4 ×4 drive at ~3.5–7 GB/s, dropping below ~1 s only with several
 NVMe striped across more PCIe lanes) + USB enum (~ms) ≈ **~1–2 s (multi-NVMe array) to a few seconds
 (single drive) power-on → ready**. Short boot, not instant-on.
 
-**Three timescales:** ① *one-time provisioning* — write the 753 GB model to the NVMe SSD. ② *every
+**Three timescales:** ① *one-time provisioning* — write the ~467 GB Q4_K model to the NVMe SSD. ② *every
 power-on* — conditions 1–7 (~1–2 s). ③ *per token* — §2 (demand-stream experts from NVMe; KV
 lives in DDR5, per session).
 
 **Host interface (what USB-C carries — all on `host_clk`):** in = `start` (pulse), `prompt_tok`
 (token ID), `start_pos`, `s_len`; out = `next_tok` (token ID), `tok_valid`, `busy`, `done`. Just
 token IDs + position/length — the heavy weight/KV traffic never crosses USB-C (it is all inside
-`glm_fp8_system` on `core_clk`).
+`glm_q4k_system` on `core_clk`).
 
 > **Real-hardware note.** The RTL takes clocks/resets as ports and treats DDR5 / NVMe (PCIe) / USB PHYs as
 > vendor IP (conditions 2, 4, 7 are the board/vendor bring-up — device-plan Phase D1,
@@ -100,16 +102,16 @@ token IDs + position/length — the heavy weight/KV traffic never crosses USB-C 
 
 ## 2. Per-token decode — the pipeline
 
-One decode step (`glm_model_fp8`), for a batch of **`PE_M` = B** token rows:
+One decode step (`glm_model_q4k`), for a batch of **`PE_M` = B** token rows:
 
 ```
  token_id[0..B-1]
    │ ① embed lookup (bf16 table, em_* pull; SERIAL per row)          -> x0[r]  (B × MODEL_DIM)
    ▼
- ┌── for layer l = 0 .. 77  (ONE time-multiplexed glm_decoder_block_fp8, mode = dense|MoE) ──┐
+ ┌── for layer l = 0 .. 77  (ONE time-multiplexed glm_decoder_block_q4k, mode = dense|MoE) ──┐
  │  ② RMSNorm(x)                                                                             │
  │  ③ MLA attention  ──────────────► h = x + attn                                            │
- │       (7 FP8 projections, latent KV, DSA sparse index, interleaved RoPE, bf16 softmax)    │
+ │       (7 Q4_K weight projections, latent KV, DSA sparse index, interleaved RoPE, bf16 softmax) │
  │  ④ RMSNorm(h)                                                                             │
  │  ⑤ FFN:  l<3 → dense SwiGLU  |  l≥3 → MoE (router top-8/256 → union-skip experts+shared)  │
  │       ──────────────► x_{l+1} = h + ffn                                                   │
@@ -119,45 +121,54 @@ One decode step (`glm_model_fp8`), for a batch of **`PE_M` = B** token rows:
  ⑦ LM-head GEMV (bf16, glm_matmul_pipe over VOCAB=154880)  -> logits[r]
    │ ⑧ argmax / sample (per row)                            -> next_token[r]
    ▼
- ⑨ mtp_head_fp8: t+2 speculative draft (per row)           -> draft token (for §6)
+ ⑨ mtp_head_q4k: t+2 speculative draft (per row)           -> draft token (for §6)
 ```
 
 Key structural facts:
 - **One decoder block, time-multiplexed over 78 layers** (not 78 copies) — the per-layer weights
   are *pulled* fresh each layer; the block is a fixed amount of logic. The residual `x` streams
   layer→layer.
-- **PE_M batching (4/4 wrappers):** all B rows share ONE weight-fetch stream per GEMM
+- **PE_M batching:** all B rows share ONE weight-fetch stream per GEMM
   (`aw_req`/`fw_req`/… pulse identically to a single-row run) — "B rows == 1 fetch". Each row
-  carries its own residual + bf16 tail (norm/RoPE/softmax/argmax) and its own dynamic-quant
-  `a_shift`.
+  carries its own residual and its own **bf16 activation tail** (norm/RoPE/softmax/argmax). Q4_K is a
+  **weight-only** quant: activations stay **bf16**, weights dequantize to fp32 for the MAC (no per-row
+  activation-scale bookkeeping — that `a_shift` machinery was FP8-only, prior track).
 - **All weight / KV / embedding delivery is via pull ports** (`em_*`, `aw_*`, `kc_*`, `rw_*`,
   `fw_*`, `pw_*`, `lw_*`) answered by the memory subsystem — no combinational loop into the die.
 
-### 2a. Attention (step ③) — `mla_attn_fp8`
+### 2a. Attention (step ③) — `mla_attn_q4k`
 Latent MLA: down-project to a small KV latent, cache it in the **`kv_cache_pager`** ring, gather
 the sparse key set the **DSA indexer** selects (IndexShare: the index is computed by a full
 indexer layer and *reused* by shared layers), apply interleaved RoPE, bf16 softmax over the top-K
 window (SWIN, decoupled from the 1M position field), up-project through `W_o`. All 7 weight
-projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/softmax stay bf16.
+projections are **Q4_K block-dequant GEMMs** (`glm_matmul_q4k`) — per-column super-block (fp16
+`d`,`dmin` + packed 6-bit block-scales/mins + 4-bit codes) dequantized to fp32, `bf16 activation ×
+fp32 weight` MAC, fp32-accumulated in K, rounded to bf16; scores/probs/softmax stay bf16.
 
-### 2b. MoE FFN (step ⑤, layers ≥ 3) — `moe_router_fp8` + grouped experts
-1. **Router** (`moe_router_fp8`): FP8 GEMV `x·W_g` → top-8 of 256 experts + renormalized gates
-   (×2.5 shared-scale), per row.
-2. **Union-skip grouped dispatch** (in `glm_decoder_block_fp8`, PE_M>1): scan the expert axis and
-   evaluate **only the UNION** of experts any of the B rows selected (a combinational `any_has`
-   skip — non-selected experts are **never fetched**). For each union expert, fetch its SwiGLU
-   weights **once** and run `swiglu_expert_fp8` at PE_M over all B rows; each row accumulates
+> **Honest divergence.** The MLA softmax **omits the `1/sqrt(qk_head_dim)` scale**. Both the DUT
+> and its TB golden omit it, so the self-consistent tests do **not** catch it — it is a **silent
+> divergence** from the reference attention contract, not a proven match. Open item.
+
+### 2b. MoE FFN (step ⑤, layers ≥ 3) — `moe_router_q4k` + grouped experts
+1. **Router** (`moe_router_q4k`): Q4_K GEMV `x·W_g` → top-8 of 256 experts + renormalized gates
+   (×2.5 routed-scaling), per row. (`moe_router_q4k` gates on structural/renorm invariants,
+   40/40 — **not** a numeric golden.)
+2. **Union-skip grouped dispatch** (folded **inline into `glm_decoder_block_q4k`**, PE_M>1): scan the
+   expert axis and evaluate **only the UNION** of experts any of the B rows selected (a combinational
+   `any_has` skip — non-selected experts are **never fetched**). For each union expert, fetch its SwiGLU
+   weights **once** and run `swiglu_expert_q4k` at PE_M over all B rows; each row accumulates
    `gate·expert(x)` only if it selected that expert. (Inside the expert, gate/up/down share **one**
-   FP8 GEMM engine — §10a.) Byte-identical to per-row; up to ~32× fewer
+   Q4_K GEMM engine — §10a.) **Byte-identical to per-row by construction**; up to ~32× fewer
    NVMe expert-fetches at small B (the aggregate-throughput lever). Then the always-on **shared
-   expert** (weight 1). (`batched_moe.v` is the standalone reference of this dispatch.)
+   expert** (weight 1). *(The standalone `batched_moe.v` reference of this dispatch was retired in
+   the Q4_K retarget — the union-skip logic now lives inline in `glm_decoder_block_q4k`.)*
 
 ## 3. Weight paths — resident vs demand-streamed
 
 | what | where it lives | path to the die | per-token cost |
 |---|---|---|---|
-| attention / dense-FFN / router `W_g` / norms / embed / LM-head | **DDR5-resident** (boot-loaded) | `ddr5_xbar` → `weight_loader` → die pull | small, fixed |
-| **routed experts** (the 753 GB bulk) | **NVMe SSD** | `flash_xbar` → `expert_cache_pf` (DDR5 LRU) → die | **the bottleneck** |
+| attention / dense-FFN / router `W_g` / norms / embed / LM-head | **DDR5-resident** (the ~9 GB hot-set, boot-loaded) | `ddr5_xbar` → `weight_loader_q4k` → die pull | small, fixed |
+| **routed experts** (the ~467 GB bulk) | **NVMe SSD** | `flash_xbar` → `expert_cache_pf` (DDR5 LRU) → die | **the bottleneck** |
 
 - **`flash_xbar`** is the storage-read fabric (a committed RTL identifier, kept as-is); in the product it
   **fronts the NVMe/PCIe backend** — a labeled placeholder, since the crossbar's read-request /
@@ -168,11 +179,14 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
   (`flash_layout.py`) + the proposed sub-expert striping keep all channels busy
   ([`FLASH_STRIPING.md`](FLASH_STRIPING.md)).
 - **`expert_cache_pf`** — DDR5 routed-expert cache: LRU + frequency + confidence-thresholded
-  prefetch; a demand miss stalls the die for the exposed NVMe-refill (see §7). `weight_decomp`
-  (optional) losslessly decompresses on the NVMe→loader refill (fewer NVMe bytes = more effective NVMe
-  bandwidth + less read energy).
-- **`weight_loader`** — turns cache/DDR5 responses (FP8 codes + [128,128] block scales) into the
-  die's matmul pull stream, bit-exactly.
+  prefetch; a demand miss stalls the die for the exposed NVMe-refill (see §7). **Honest caveat:** the
+  predictor-driven prefetch is, so far, a **measured no-op** — top-8-of-256 routing entropy caps the
+  achievable hit-rate, so the win comes from the LRU working-set fit, not prediction (see the perf
+  docs). `weight_decomp` (optional) losslessly decompresses on the NVMe→loader refill (fewer NVMe bytes
+  = more effective NVMe bandwidth + less read energy).
+- **`weight_loader_q4k`** — turns cache/DDR5 responses (Q4_K super-blocks: fp16 `d`,`dmin` + packed
+  6-bit block-scales/mins + 4-bit codes) into the die's matmul pull stream, **bit-exactly vs
+  `tools/q4k_ref.py`**.
 
 ## 4. Batching & speculative decode (throughput layers)
 
@@ -188,34 +202,46 @@ projections are FP8 E4M3 block-scaled GEMMs (`glm_matmul_fp8`); scores/probs/sof
   can be a **different sequence**, attending its OWN sequence's KV window (`kc_seq` routes each KV
   fetch to that sequence's `kv_cache_pager` window / `kv_mem` slot) while the query-side weight
   fetch stays SHARED across rows (the batching-bandwidth win, ~41–52 % fewer attn-weight beats than
-  B separate runs). Per-row argmax/logits proven bit-exact vs per-seq PE_M=1, dense + sparse;
-  byte-identical at `PER_ROW_SEQ=0`. `glm_fp8_soc_ms` is the batched multi-seq SoC top
-  (`glm_model_fp8` at PE_M=B + `NSEQ`-window pager + a REAL per-layer KV store `kv_mem` owned by
-  the top + host FSM: prefill B seqs → 1 forward → commit B tokens).
-- **Continuous-batching decode loop (`glm_fp8_soc_ms`, `N_STEPS>1`):** one host `start` decodes
+  B separate runs [EST]). `glm_q4k_soc_ms` is the batched multi-seq SoC top
+  (`glm_model_q4k` at PE_M=B + `NSEQ`-window pager + a REAL per-layer KV store `kv_mem` owned by
+  the top + host FSM: prefill B seqs → 1 forward → commit B tokens). *Byte-identical at
+  `PER_ROW_SEQ=0` by construction; the per-row-argmax == per-seq-PE_M=1 bit-exactness was a
+  **prior-FP8 result** (branch `fp8`) — a Q4_K re-run is **PENDING**.*
+- **Continuous-batching decode loop (`glm_q4k_soc_ms`, `N_STEPS>1`):** one host `start` decodes
   **N tokens per sequence** — a `RUN→DECAP→RUN` loop that runs one PE_M=B forward, streams the B
   argmax out (`tok_valid`), writes each decode token's latent into `kv_mem` at the growing position
   (`s_len + dec_step`) for every layer, feeds the argmax back as the next step's input, and advances
-  position/extent. Each row's step-k token is bit-exact vs a standalone PE_M=1 model decoding that
-  sequence alone N steps; `N_STEPS=1` is byte-identical to the single-step top.
+  position/extent. *`N_STEPS=1` is byte-identical to the single-step top by construction; the step-k
+  == standalone-PE_M=1 equivalence was a **prior-FP8** result, Q4_K re-run **PENDING**.*
 - **Speculative decode (`spec_batched_top`):** the MTP head drafts K tokens; the main model
   **verifies all K+1 positions in ONE PE_M=K+1 weight-load** (NVMe traffic ÷ up to K+1), and the
-  committed stream is proven **== greedy** (spec==greedy safety). `spec_chain_top` chains the
-  MTP steps.
+  committed stream is proven **== greedy** (spec==greedy safety — a real lossless-speculation
+  property, but **DUT-vs-DUT self-consistency**: the greedy reference is itself a `glm_model_q4k`,
+  **not** a numeric golden vs ggml/llama.cpp). `spec_chain_top` chains the MTP steps.
+  `spec_decode_top` runs in `make unittests` (**19/19**); the larger K>1 loops
+  (`spec_batched_top` / `spec_chain_top`) run via `make spec-slow` (minutes-long).
 
 ## 5. Clocking / CDC
 Host/USB requests cross into the compute domain through `cdc_async_fifo` (+ `reset_sync` per
-domain); the decoded token crosses back out. The committed token is byte-identical across the
-async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
+domain); the decoded token crosses back out. CDC soundness is **structurally signed off** — `make
+cdc` (`tools/cdc_check.py`) asserts every `host_clk`↔`core_clk` crossing flows through a recognized
+synchronizer (async FIFO / 2-FF / `reset_sync`, no raw multi-bit capture), and the whole 2-clock top
+(`glm_q4k_system_cdc`) elaborates clean under `make synth-glm` (`hierarchy -check` + `check -assert`,
+exit 0). *(A running byte-identical-across-async-clocks token-binding TB existed on the FP8 track;
+the Q4_K analogue is a structural sign-off, not a sim — see §8.)*
 
 ## 6. Timing & bandwidth — how fast, and why
 
 - **The die is ~75 % idle**, gated behind NVMe/PCIe bandwidth; `clk_en_ctrl`/ICG clock-gates the idle
   cycles. So die-side fmax is **not** the throughput knob — NVMe/PCIe BW is.
-- **Measured (cycle-accurate emulation, `EXPERT_STALL`):** a demand-miss delays the token by the
-  exposed NVMe-refill; `cyc_per_tok` grows with `FLASH_LAT` (`stall = 3·FLASH_LAT+9` at the
-  slice; `cyc_per_tok` 7947→8607 @FLASH_LAT=256), the roofline *mechanism* measured on real RTL
-  cycles ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)).
+- **Stall mechanism (cycle-accurate emulation, `EXPERT_STALL`) — validated on real RTL cycles:** a
+  demand-miss delays the token by the exposed NVMe-refill; the exposed stall rises **exactly
+  `stall = 3·FLASH_LAT + 9`** (slope 3 = DDR beats per expert-refill slice), so `cyc_per_tok` grows
+  with storage-read latency — the roofline *mechanism* measured on real RTL cycles
+  ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)). **Prior-FP8 caveat:** the *specific* counts in that
+  doc (`cyc_per_tok` 7947→8607 @ `FLASH_LAT=256`) were measured on the **FP8** system perf TB
+  (`glm_fp8_system_perf_tb`, still on the FP8 top — no Q4_K perf TB exists yet); the **formula /
+  mechanism is format-agnostic, the absolute Q4_K cycle counts are PENDING**.
 - **Projected (roofline, `[EST]`) — staged to the hardware ladder ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)):**
   single-user tok/s is set by memory bandwidth, which is set by the silicon the budget buys, so it is
   **rung-dependent** — **~5–8 tok/s on the near-term prove-it FPGA** (DDR4 ~4 ch, the buildable demo
@@ -223,15 +249,15 @@ async clock boundary (`glm_fp8_system_cdc`, 31-test binding).
   ASIC volume** (rung ③, custom silicon w/ HBM stacks + near-memory compute — lower $/seat + power once
   the NRE amortizes over volume). All `[EST]`, ~3 J/token; the old flat "~25–40" is the **funded rung-②**
   number, not the cheap near-term box. **This is the product: a fully offline / air-gapped local box** that
-  runs the whole 753B frontier model with the ethernet unplugged. The capability it unlocks is frontier AI where the cloud can't
+  runs the whole 753B-param frontier model with the ethernet unplugged. The capability it unlocks is frontier AI where the cloud can't
   reach — SCIFs, isolated OT / critical-infra, field/edge, or anywhere a vendor connection is itself the
   liability; the proof is binary — **nothing leaves because there's no path out** (the host link carries
   only token IDs + position, §1), so it passes the unplugged-ethernet test that every cloud option fails,
   "secured cloud" included (in-VPC / zero-retention / TEE all need connectivity). Offline alone is
   table-stakes (a 70B laptop is offline too); the moat is the **combination** — offline + full-frontier
-  (753B) + appliance price. Honest caveat: the 753 GB model is written to the NVMe SSD once (one-time
-  provisioning, §1) and model updates are physical re-provisioning. The *batched aggregate* ~40–85 tok/s
-  figure is a **non-target datacenter regime** (per-user floors at ~0.14 tok/s there), kept only as
+  (753B) + appliance price. Honest caveat: the ~467 GB model is written to the NVMe SSD once (one-time
+  provisioning, §1) and model updates are physical re-provisioning. The *batched aggregate* tok/s
+  figure is a **non-target datacenter regime** (per-user floors at ~0.14 tok/s at B≈256), kept only as
   analysis. All `[EST]` — see [`ULTRA_PERF.md`](ULTRA_PERF.md); real silicon lands below the roofline
   (achievable-vs-peak BW, second-order walls).
 
@@ -248,86 +274,97 @@ batching, striping) exists to shrink that second term.
 
 ## 8. Module → function map
 
-| stage | module(s) | verified |
+| stage | module(s) | status (Q4_K, per the honest ledger) |
 |---|---|---|
-| chip top / CDC | `glm_fp8_system_cdc`, `cdc_async_fifo`, `reset_sync` | token == standalone across async clks (31) |
-| system core | `glm_fp8_system` | token == standalone (3) |
-| batched multi-seq SoC | `glm_fp8_soc_ms` (PE_M=B model + `NSEQ` pager + `kv_mem` + host FSM; `N_STEPS` decode loop) | per-row token == per-seq PE_M=1 (dense/sparse); decode-loop step-k bit-exact |
-| compute die | `glm_model_fp8` → `glm_decoder_block_fp8` | full FP8 fwd, next-token argmax == golden |
-| attention | `mla_attn_fp8`, `dsa_indexer`, `kv_cache_pager` | ops bit-exact; real-dim rel 5.48e-4 |
-| MoE | `moe_router_fp8`, `swiglu_expert_fp8`, grouped union-skip, `batched_moe` | union==per-row bit-exact (union_tb 4) |
-| FP8 GEMM | `glm_matmul_fp8` (+ Ph1 fold pipeline) | exhaustive E4M3; 224; byte-identical |
-| head | `mtp_head_fp8`, `sampler`, LM-head `glm_matmul_pipe` | mtp PE_M 44; spec==greedy |
-| memory | `flash_xbar`, `ddr5_xbar`, `expert_cache_pf`, `weight_loader`, `boot_loader`, `weight_decomp` | BMC + k-induction; loader bit-exact |
-| spec decode | `spec_batched_top`, `spec_chain_top`, `spec_decode_seq` | spec==greedy (run via `make spec-slow`) |
+| chip top / CDC | `glm_q4k_system_cdc`, `cdc_async_fifo`, `reset_sync` | CDC structurally signed off (`make cdc`); 2-clock top elaborates clean (`make synth-glm`) |
+| system core | `glm_q4k_system` | ELABORATED — `hierarchy -check` + `check -assert` clean (`make synth-glm`); no Q4_K system-level numeric TB |
+| batched multi-seq SoC | `glm_q4k_soc_ms` (PE_M=B model + `NSEQ` pager + `kv_mem` + host FSM; `N_STEPS` decode loop) | mechanism present; per-row / decode-loop bit-exactness = prior-FP8 result, Q4_K re-run **PENDING** |
+| compute die | `glm_model_q4k` → `glm_decoder_block_q4k` | assembled Q4_K forward exercised **only** as spec==greedy (DUT-vs-DUT); **no end-to-end numeric golden** |
+| attention | `mla_attn_q4k`, `dsa_indexer`, `kv_cache_pager` | no independent Q4_K numeric golden (the MLA-level TB runs the bf16 twin `mla_attn`); omits `1/sqrt(d)` softmax scale; `kv_cache_pager` BMC + k-induction (+ ECC ring) |
+| MoE | `moe_router_q4k`, `swiglu_expert_q4k`, inline union-skip | router 40/40 (renorm invariants, **not** numeric); swiglu 240/240 (functional, self-labeled, **not** bit-exact); union byte-identical **by construction** |
+| Q4_K GEMM | `glm_matmul_q4k` + `q4k.vh` primitives | **PROVEN — bit-exact vs ggml `tools/q4k_ref.py`**: `glm_matmul_q4k` 160/160, `q4k_prim` 18/18 (`make q4k`) — *the one true bit-exact datapath result* |
+| head | `mtp_head_q4k`, `sampler`, LM-head `glm_matmul_pipe` | exercised via spec==greedy (DUT-vs-DUT); no standalone Q4_K numeric golden |
+| memory | `flash_xbar`, `ddr5_xbar`, `expert_cache_pf`, `weight_loader_q4k`, `boot_loader`, `weight_decomp` | FORMAL — BMC + unbounded k-induction (7 controllers + ECC ring); `weight_loader_q4k` bit-exact vs `q4k_ref.py` |
+| spec decode | `spec_decode_top`, `spec_batched_top`, `spec_chain_top`, `spec_decode_seq` | spec==greedy (DUT-vs-DUT): `spec_decode_top` 19/19 (`make unittests`); K>1 loops via `make spec-slow`; `spec_decode_seq` BMC + k-induction |
 
 ## 9. Honest scope
 This is the flow of the **committed slice** (every operator + ratio faithful) plus the
-memory/streaming system that runs the real 753B. What is *modeled* (not silicon): the PHYs, and
-all `[EST]` tok/s/J. Fidelity is operator-bit-exact vs the real checkpoint + a **truncated full-model
-token chain on real weights (dense→MoE seam, real 256-expert route) argmax-identical, DSA threaded
-(A-ish)** — the DSA-IndexShare + fused-expert blockers retired; deeper depth / a real FPGA run remain
-(see [`REAL_CKPT_VALIDATION.md`](REAL_CKPT_VALIDATION.md), [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)).
+memory/streaming system that runs the real 753B-param model. What is *modeled* (not silicon): the PHYs,
+and all `[EST]` tok/s/J. **Fidelity, stated honestly:** the **one** bit-exact datapath result is
+`glm_matmul_q4k` (+ the `q4k.vh` primitives) vs the team's **own** ggml reference `tools/q4k_ref.py`
+— **not** the real GGUF bytes and **not** llama.cpp. The assembled `glm_model_q4k` has **no
+end-to-end numeric golden** (exercised only as spec==greedy self-consistency, DUT-vs-DUT); the model /
+MLA / decoder-level TBs run the **generic bf16 twin `glm_model.v` (zero Q4_K)**; the RTL is
+**Q4_K-only** (no Q6_K/Q8_0/F16 consumer, so it cannot ingest a real UD-Q4_K_XL mix as-is); and the
+MLA omits the `1/sqrt(qk_head_dim)` softmax scale. Still **OPEN**: bit-exactness vs the real downloaded
+GGUF / llama.cpp, a mixed-type path, a full-model numeric golden, and a real FPGA P&R + board run (see
+[`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md), [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md)). *(The prior-FP8
+real-checkpoint validation — operator-bit-exact vs the published `GLM-5.2-FP8` safetensors + a truncated
+real-weight token chain — lives on branch `fp8`; it is **not** a Q4_K result.)*
 
 ## 10. Compact config (FPGA miniaturization)
 
 Target: fit the chip on a **smaller FPGA** (Tang Mega 138K / GW5AT-138). Five parameters of
-`glm_fp8_system` (and its 2-clock top `glm_fp8_system_cdc`) set **capacity / parallelism /
+`glm_q4k_system` (and its 2-clock top `glm_q4k_system_cdc`) set **capacity / parallelism /
 bandwidth — never the math**. Shrinking them makes the elaborated logic smaller (fewer LUT/FF in
 the matmul PE array, the DDR5 crossbar, the KV ring, the expert-request FIFO, and the expert
-cache) and slower / lower-BW, but the **decoded token is byte-identical**. They are *result-invariant*.
+cache) and slower / lower-BW, but the **decoded token is byte-identical by construction**. They are
+*result-invariant*.
 
-**Compact synth config** (overrides on the `glm_fp8_system_cdc` full-model defaults):
+**Compact synth config** (overrides on the `glm_q4k_system_cdc` full-model defaults):
 
-| param | default | compact | true safe-min¹ | constraint | what it sizes | shrink / cost when reduced |
+| param | default | compact | true safe-min | constraint | what it sizes | shrink / cost when reduced |
 |---|---|---|---|---|---|---|
 | `PE_N`        | 4  | **2** | 1              | —                     | matmul PE-array columns          | halves the PE array (**biggest die saving**); tiles more → same output, more cycles |
 | `DDR_NCH`     | 4  | **2** | 2              | power-of-two          | DDR5 fabric channels (`ddr5_xbar`)| smaller crossbar; ~½ aggregate read BW (NVMe/PCIe-bound anyway) |
-| `KV_RESIDENT` | 16 | **8** | `S_MAX` (=8)²  | POW2, `>= S_MAX`      | latent-KV ring capacity          | smaller ring RAM; more cold-row NVMe gathers |
-| `EFIFO_DEPTH` | 16 | **8** | 2 (1 passed³)  | power-of-two          | routed-expert request FIFO depth | smaller FIFO; risk of drop only under bursty routing |
-| `CACHE_SLOTS` | 4  | **2** | 1              | —                     | GDDR6 expert-cache slots         | smaller tag/data array; more misses → more NVMe stalls |
+| `KV_RESIDENT` | 16 | **8** | `S_MAX` (=8)   | POW2, `>= S_MAX`      | latent-KV ring capacity          | smaller ring RAM; more cold-row NVMe gathers |
+| `EFIFO_DEPTH` | 16 | **8** | 2              | power-of-two          | routed-expert request FIFO depth | smaller FIFO; risk of drop only under bursty routing |
+| `CACHE_SLOTS` | 4  | **2** | 1              | —                     | expert-cache slots               | smaller tag/data array; more misses → more NVMe stalls |
 
-¹ Verified in the system TB slice (`test/glm_fp8_system_tb.v`, `S_MAX=4`): every value listed
-still prints `ALL 3 TESTS PASSED` with the **same token stream** as the committed config. The
-compact column is the recommended FPGA set (keeps head-room over the true minimum).
-² `KV_RESIDENT >= S_MAX` and POW2. Slice `S_MAX=4` → min 4; the **full model `S_MAX=8`** → min 8,
-so the compact synth uses 8. ³ `EFIFO_DEPTH=1` also passed the slice (no FIFO overflow observed)
-but leaves zero slack against a burst; 2 is the recommended floor.
+The compact column is the recommended FPGA set (keeps head-room over the true minimum).
+`KV_RESIDENT >= S_MAX` and POW2; the full model runs `S_MAX=8`, so the compact synth uses 8.
+`EFIFO_DEPTH=2` is the recommended floor (leaves a little slack against a routing burst).
 
 **Why the token cannot change.** `kv_cache_pager`, `ddr5_xbar`, `expert_cache_pf` and the expert
 FIFO are *transparent* to the compute die: the die pulls its weight/KV bytes same-cycle from the
 weight/KV source (§2–§4); the pager/cache/xbar are the bandwidth/observability plumbing around it.
 Reducing their capacity changes only counters (hit/miss, cold-row NVMe fetches, xbar req/resp) —
-never the FP8 arithmetic. `PE_N` tiles the *same* matmul into more/fewer columns and reduces to
-the identical accumulated sum. Proven: committed and compact runs emit the byte-identical token
-stream `tok = {0, 11, 11}`; the all-minimums run (`PE_N=1 DDR_NCH=2 KV_RESIDENT=4 EFIFO_DEPTH=2
-CACHE_SLOTS=1`) also matches.
+never the Q4_K arithmetic. `PE_N` tiles the *same* matmul into more/fewer columns and reduces to
+the identical accumulated sum. The byte-identical token is therefore a **structural invariant** (by
+construction), not a measured one on this track.
 
 **Build / verify.**
 ```
-make sim-glm-compact    # runs the system TB at BOTH the committed and compact configs and
-                        # asserts the compact token stream == committed (byte-identical)
-make synth-glm-compact  # structural elaboration + check -assert + stat of the compact hierarchy
+make synth-glm          # structural elaboration of glm_q4k_system_cdc (the full compute + memory + CDC
+                        # hierarchy): hierarchy -check + proc + opt + check -assert + stat, exit 0.
 ```
-The TB knobs are overridable header parameters, e.g.
-`iverilog -Pglm_fp8_system_tb.PE_N=2 ...`; the default (no `-P`) is the committed slice.
+The TB knobs are overridable header parameters (e.g. `iverilog -Pglm_q4k_system_cdc.PE_N=2 ...`).
 
-**Measurement caveat (honest).** yosys 0.66 cannot map the FP8 datapaths through ABC, so no LUT
-count is emitted here — `synth-glm-compact` elaborates + `check -assert`s + `stat`s the compact
-hierarchy. The **area reduction is by construction** (fewer PE columns / channels / ring+FIFO+cache
-entries); the **byte-identical token is the verified invariant** (`make sim-glm-compact`). A real
-LUT/FF delta needs the vendor flow (Gowin / nextpnr) on the elaborated compact netlist.
+> **Prior-FP8 note.** On the FP8 track a running **system TB** (`glm_fp8_system_tb.v`) plus `make
+> sim-glm-compact` / `make synth-glm-compact` targets asserted the compact token stream was
+> **byte-identical** to the committed config across the parameter sweep (all-minimums included). The
+> **Q4_K equivalents do not exist on `main`** — a Q4_K system / compact-sweep TB is **PENDING**; the
+> current Q4_K guarantee is the *by-construction* structural argument above plus `make synth-glm`.
 
-### 10a. Structural engine sharing (L1 — landed, byte-identical)
-Beyond the *parametric* compact config (L0 above), the die also shrinks *structurally*: because
-gate / up / down run at **different times** inside one expert, `swiglu_expert_fp8` now runs all
-three on **one shared `glm_matmul_fp8`** (a 1-bit `up_pass` register + 2:1 weight/scale mux selects
-the up-projection port; the old parallel `u_mm_u` engine is gone). Effect: swiglu 2→1 GEMM engines,
-so each decoder block drops from **6→4** FP8 GEMM engines (dense + MoE swiglu each shed one) — the
-freed matmul core is **6186 LUT4** each (measured, `PPA_FP8.md` §1.3), so **≈12K LUT4/block**;
-the per-expert generic-cell delta is a measured **−1519**. After L1 **every chip module holds exactly one `glm_matmul_fp8`**
-(mla already time-shares its 7 projections on one engine; router one; mtp one), so the bounded
-byte-identical merges are exhausted; the last area lever is the invasive cross-module 3-way hoist,
-deferred to after vendor measurement. This is free in time (the NVMe-bound die has the slack) and
-keeps the decoded token byte-identical (`{4,31,20}`, gworst_rel 0.00689655). Full lever catalog and
-status in [`MINIATURIZATION.md`](MINIATURIZATION.md).
+**Measurement caveat (honest).** yosys cannot map the fp32/Q4_K dequant datapaths through ABC, so no
+LUT count is emitted here — `make synth-glm` elaborates + `check -assert`s + `stat`s the hierarchy.
+The **area reduction is by construction** (fewer PE columns / channels / ring+FIFO+cache entries); a
+real LUT/FF delta needs the vendor flow (Gowin / nextpnr) on the elaborated netlist.
+
+### 10a. Structural engine sharing (landed, byte-identical by construction)
+Beyond the *parametric* compact config above, the die also shrinks *structurally*: because
+gate / up / down run at **different times** inside one expert, `swiglu_expert_q4k` runs all
+three on **one shared `glm_matmul_q4k`** (a 1-bit `up_pass` register + a 2:1 weight/scale mux selects
+the up-projection port — there is no second parallel engine). Effect: swiglu 2→1 GEMM engines, so
+each decoder block sheds GEMM engines (dense + MoE swiglu each drop one). After this landed, **every
+chip module holds exactly one `glm_matmul_q4k`** (`mla_attn_q4k` already time-shares its 7 projections
+on one engine; `moe_router_q4k` one; `mtp_head_q4k` one), so the bounded byte-identical merges are
+exhausted; the last area lever is the invasive cross-module 3-way hoist, deferred to after vendor
+measurement. This is free in time (the NVMe-bound die has the slack) and keeps the decoded token
+**byte-identical by construction**.
+
+> **Prior-FP8 measurement (branch `fp8`, not re-run for Q4_K).** The area of the merge was quantified
+> on the FP8 track: the freed matmul core was **~6186 LUT4** each (≈12K LUT4/block), per-expert
+> generic-cell delta **−1519**, decoded token byte-identical (FP8 slice). Those numbers are **FP8**;
+> a Q4_K re-measure is **PENDING** (needs the vendor flow — yosys can't map the datapath). Full lever
+> catalog and status in [`MINIATURIZATION.md`](MINIATURIZATION.md).

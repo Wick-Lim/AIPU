@@ -27,7 +27,7 @@ The workload is memory-bandwidth-bound, so the box is **memory- and storage-domi
   minority of the BOM.
 - **Fast DDR (bandwidth)** — the real cost driver, because *bandwidth* (channels/PHY) is what performance
   needs, and more channels = a bigger chip + more DRAM + a harder board.
-- **NVMe (capacity)** — cheap per TB; the 753 GB model fits ~1 TB.
+- **NVMe (capacity)** — cheap per TB; the 467 GB Q4_K model fits ~1 TB with room for KV / overflow.
 - **Board + power + enclosure** — rises steeply with signal speed (DDR5/PCIe Gen4/HBM = 8–12-layer
   controlled-impedance PCB, outsourced design + assembly).
 
@@ -38,8 +38,9 @@ So "make the box cheaper" ≈ "need less memory bandwidth" ≈ "accept lower tok
 ## Rung ① — prove-it box (now, ~$1–2 k)
 
 Low-end **Kintex UltraScale+ (KU3P-class)** dev board + DDR4 + one NVMe. **Reduced-config demo** (a dev
-board's DDR/storage can't hold 753 GB); goal is *"real 753B-family RTL runs on real FPGA silicon,
-offline, bit-exact"*, at ~5–8 tok/s [EST].
+board's DDR/storage can't hold the 467 GB Q4_K model); goal is *"real 753B-family RTL runs on real FPGA
+silicon, offline, bit-exact to the ggml-Q4_K reference (`tools/q4k_ref.py`)"*, at ~5–8 tok/s [EST]
+(the FPGA fit / Fmax that would make this measured is **[PENDING]**).
 
 | Line | Part (example) | ~Cost | Note |
 |---|---|---|---|
@@ -63,7 +64,7 @@ DDR + multi-NVMe. This is the actual **shippable single-user box** at ~15–40 t
 |---|---|---|---|
 | **FPGA** | Versal / Agilex / HBM-class US+ (DDR5 or HBM, multi-PCIe) | **~$1,500–5,000** | the bandwidth-capable chip; a minority of BOM |
 | **Fast DDR** | 64 GB DDR5 (multi-channel) *or* HBM (on-package, 16–32 GB) | ~$300–700 (DDR5) / (HBM in chip) | the hot-set cache; bandwidth is the cost, not GB |
-| **NVMe** | 1–4 TB (1–2 drives over PCIe) | ~$100–400 | full 753 GB model + KV overflow |
+| **NVMe** | 1–4 TB (1–2 drives over PCIe) | ~$100–400 | full 467 GB Q4_K model + KV overflow |
 | **PCB** | 8–12-layer controlled-impedance, outsourced design | ~$300–800 (proto/unit; NRE separate) | DDR5/PCIe Gen4 signal integrity = many layers |
 | **Assembly** | BGA reflow + PnP (turnkey) | ~$200–600/unit | vendor does it; BGA can't be hand-soldered |
 | **Power / clock / connectors / enclosure / USB-C** | PMIC, oscillators, M.2/PCIe conn, case | ~$150–400 | |
@@ -77,8 +78,8 @@ board revisions. Amortized over units, negligible per-seat at any real volume.
 
 ## Rung ③ — SoC/ASIC (at volume, endgame)
 
-Custom silicon (HBM + many-channel PHY + near-memory FP8). **~40+ tok/s, lower power, lower $/seat** — but
-only after volume justifies the NRE.
+Custom silicon (HBM + many-channel PHY + near-memory Q4_K dequant). **~40+ tok/s, lower power, lower
+$/seat** — but only after volume justifies the NRE.
 
 | Line | ~Cost | Note |
 |---|---|---|
@@ -102,15 +103,27 @@ can't go, offline, at a seat price"* ([`ICP.md`](ICP.md)). So the comparison tha
 |---|---|---|---|
 | Cloud frontier API | ✅ | ❌ (disqualifies the ICP) | ~$20–200/mo — *but banned* |
 | Mac/GPU + 70 B local | ❌ (quality gap) | ✅ | ~$3–6 k one-time |
+| **Big-RAM workstation — the *same* `UD-Q4_K_XL` GGUF on llama.cpp** | ✅ (identical file) | ✅ | **~$5–15 k [EST]** one-time (~512–768 GB DDR5 to hold 467 GB) |
 | 8×H100 self-host 753 B | ✅ | ✅ | **~$250–400 k** (shared, + power + MLOps) |
 | **This box — rung ②** | **✅** | **✅** | **~$3–6 k/box (one seat) + support** |
 | **This box — rung ③ (volume)** | ✅ | ✅ | **~$1–2 k/box** |
 
-**The number that sells:** a rung-② box at **~$3–6 k** vs **8×H100 at ~$250–400 k** = **~50–100× cheaper**
-for the offline-753B use case. Not a "$500 desk accessory," but for a buyer whose alternative is a
-$400 k datacenter build (or *nothing*, because the cloud is barred), a **$5 k provably-offline frontier
-box** is a trivial line item — legal already pays $100–500/seat/mo for Westlaw-class tools; a per-seat
-appliance fits.
+**Honest comparison — the workstation, not the H100.** The real nearest alternative is **not** 8×H100; it is
+a **big-RAM workstation running the identical `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` on llama.cpp** (~512–768 GB
+DDR5 to hold the 467 GB model, **~$5–15 k [EST]**). That box is *also* full-frontier and *also* fully
+offline — on raw capability it is a **tie** (it runs the same file this project targets). What the appliance
+sells against it is **turnkey seat-price + support** (no MLOps, no llama.cpp tuning), a **purpose-built
+memory/streaming datapath** (NVMe-streamed experts instead of paying to keep all 467 GB in expensive DRAM,
+which is the whole cost lever) and — on the funded rungs — **lower power / form factor**. Note also both are
+running our-own-scoped Q4_K arithmetic vs the ggml reference, **not** a validated bit-match to llama.cpp's
+runtime.
+
+**The number that sells** (against the *datacenter* alternative): a rung-② box at **~$3–6 k** vs **8×H100 at
+~$250–400 k** = **~50–100× cheaper** for the offline-753B use case. That gap is real but it flatters us — the
+$5–15 k workstation above is the tighter comparison. Still, for a buyer whose alternative is a $400 k
+datacenter build (or *nothing*, because the cloud is barred), a **$5 k provably-offline frontier box** is a
+trivial line item — legal already pays $100–500/seat/mo for Westlaw-class tools; a per-seat appliance fits.
+All figures **[EST]**.
 
 ## Honest limits
 
@@ -120,3 +133,6 @@ appliance fits.
 - BOM is **memory/storage/board-dominated**; the FPGA is a minority. "Cheaper box" means "less bandwidth"
   means "lower tok/s" — the ladder, in money.
 - Software / host / support / margin are **on top** of these hardware BOMs (a product sells above BOM).
+- The honest floor competitor is a **~$5–15 k big-RAM workstation running the same `UD-Q4_K_XL` GGUF** — same
+  model, same offline property. The appliance's edge is turnkey/seat-price/power/form-factor, **not** a
+  capability the workstation lacks; price and pitch must be argued on that basis, not on exclusivity.

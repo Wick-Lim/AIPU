@@ -1,9 +1,10 @@
 # USB-C Personal AI Appliance — Productization Plan
 
 **What this is.** The concrete plan to turn the verified accelerator into a **shippable USB-C
-external device**: a small, self-powered, active-cooled box that runs the real
-`zai-org/GLM-5.2-FP8` (753 GB) locally — **fully offline / air-gapped, no internet ever** — and
-streams tokens to a host computer over a single USB-C cable.
+external device**: a small, self-powered, active-cooled box that runs the full GLM-5.2 (753B-param
+MoE, ~40B active/token) from its published **Q4_K GGUF** (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`,
+~467 GB) locally — **fully offline / air-gapped, no internet ever** — and streams tokens to a host
+computer over a single USB-C cable.
 
 **Relationship to the other roadmaps (read together):**
 - [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — the **performance ladder** (the anchor for every tok/s
@@ -17,7 +18,7 @@ streams tokens to a host computer over a single USB-C cable.
   host software, enclosure, manufacturing, go-to-market.
 - [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md) — the single-package memory/tiering + cost
   model (DDR5 fast tier + 1–4 TB NVMe bulk store; USB-C carries only token IDs).
-- [`LOW_POWER.md`](LOW_POWER.md) — the energy budget + the bit-exact low-power levers (the ~80 %
+- [`LOW_POWER.md`](LOW_POWER.md) — the energy budget + the byte-identical low-power levers (the ~80 %
   storage-read-byte reality — NVMe/PCIe reads dominate per-token energy; spec ÷K, compression, DVFS).
 - [`OPERATION_FLOW.md`](OPERATION_FLOW.md) — how one token flows end-to-end.
 
@@ -38,7 +39,7 @@ subscription-free come as the *result*.
 | | |
 |---|---|
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
-| **What it runs** | the real `zai-org/GLM-5.2-FP8` (753 GB), **bit-exact** to the published model (not a quantized approximation) |
+| **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp, and the RTL is **Q4_K-only** today (no Q6_K/Q8_0/F16 consumer — see §2 gaps) |
 | **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) |
 | **Power** | ~80–110 W at interactive throughput (self-powered; ~30 W throttled) [EST] |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
@@ -46,14 +47,16 @@ subscription-free come as the *result*.
 | **Target user** | air-gap / offline-mandated users (SCIF, defense-forward, isolated OT/critical-infra, field/edge), privacy-critical individuals, local-AI enthusiasts, cost-heavy power users |
 | **What it is NOT** | not a bus-powered dongle, not a multi-user server, not a general computer, not multi-modal |
 
-**Why the form factor fits the architecture.** The heavy traffic (NVMe↔DDR5↔die, ~22 GB/token)
-is **entirely internal**; USB-C carries only the text token stream (a few bytes/token) + control.
-So USB-C bandwidth is a **non-issue** and the box is genuinely self-contained. The production top
-`glm_fp8_system_cdc` **already carries the 2-clock host/USB CDC** (31 tests, token identical across
-async clocks) — the device interface was designed in from the start.
+**Why the form factor fits the architecture.** The heavy traffic (NVMe↔DDR5↔die, ~25 GB/token —
+40B active × ~0.6 B/param at Q4_K) is **entirely internal**; USB-C carries only the text token
+stream (a few bytes/token) + control. So USB-C bandwidth is a **non-issue** and the box is genuinely
+self-contained. The production top `glm_q4k_system_cdc` **already carries the 2-clock host/USB CDC**
+(structural sign-off via `make synth-glm`, exit 0 — **elaboration, not a sim**; the CDC/reset
+architecture — `cdc_async_fifo` gray-pointer + `reset_sync` — is formally sound) — the device
+interface was designed in from the start.
 
 **Positioning.** Unlike a Mac Studio (replace your computer) or a consumer GPU (can't hold/stream
-753 GB at all), this is an **accessory that adds frontier-model capability to the machine you
+467 GB at all), this is an **accessory that adds frontier-model capability to the machine you
 already have** — closer in spirit to an eGPU, but sipping desktop-PC power and running a far bigger
 model. It creates a new category: an **external frontier-LLM accelerator** (vs. edge-AI USB sticks
 like Coral/Hailo, which only run tiny models). And unlike **any** cloud option — including
@@ -72,10 +75,10 @@ fails price/form-factor, and secured cloud fails the unplugged test.
 The user experience is close to *"plug in, use it,"* with **a short boot** — not instant-on, and
 with **one one-time setup**:
 
-- **One-time provisioning (factory/first setup):** the 753 GB model is written to the internal
-  **NVMe SSD** (`ckpt_pack.py` / `flash_layout.py` — committed tool names). Done once; survives power cycles.
+- **One-time provisioning (factory/first setup):** the ~467 GB Q4_K model is written to the internal
+  **NVMe SSD** (`flash_layout.py` — committed tool name; the offline expert→channel placement pass). Done once; survives power cycles.
 - **Every power-on (~1–2 s [EST]):** power → clocks/PLL lock → resets → DDR5 PHY training + NVMe
-  init → **`boot_loader` streams the ~28 GB resident set NVMe→DDR5** → its `done` **releases
+  init → **`boot_loader` streams the ~9 GB resident hot-set (attention/dense/shared) NVMe→DDR5** → its `done` **releases
   inference** → USB device enumerates on the host. **Inference is gated by `boot_loader.done`, not
   by power-on.** (Full condition list + RTL detail: [`OPERATION_FLOW.md`](OPERATION_FLOW.md) §1.)
 - **Per request:** the host sends token IDs + position over USB-C; the box streams the demand
@@ -99,29 +102,55 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 ## 2. Current state (honest baseline)
 
 **Done (the core IP — see [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) "Keep"):**
-- Full FP8 datapath (MLA + DSA + 256-expert MoE + MTP), **bit-exact** to the FP8 contract at a
-  small-but-faithful slice; next-token argmax matches the golden.
-- The memory system (ddr5_xbar, flash_xbar, kv_cache_pager, expert_cache_pf, weight_loader,
-  boot_loader), BMC-proven; the batching stack (PE_M on all 4 wrappers, union-skip MoE);
-  the **spec ÷K weight-load hardware** (spec_batched_top / spec_chain_top).
+- Q4_K datapath (MLA + DSA + 256-expert MoE + MTP), assembled from Q4_K units whose **GEMM core
+  (`glm_matmul_q4k`) is bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** at a
+  small-but-faithful slice (`glm_matmul_q4k` **160/160**; `q4k_prim` **18/18**;
+  `swiglu_expert_q4k` **240/240** functional; `moe_router_q4k` **40/40** invariants — `make q4k`).
+  **Honest scope:** bit-exact is vs our **own** ggml reimpl, **not** the real GGUF bytes / llama.cpp;
+  and the **assembled** `glm_model_q4k` has **no end-to-end numeric golden** yet — it is exercised
+  only as **spec==greedy** self-consistency (`spec_decode_top` **19/19**, DUT-vs-DUT).
+- The memory system (ddr5_xbar, flash_xbar, kv_cache_pager, expert_cache_pf, weight_loader_q4k,
+  boot_loader), BMC-proven (these blocks are **byte-agnostic** — they move addresses/slots/IDs, not
+  weight bytes — so they carried over from the prior FP8 track unchanged in logic); the batching
+  stack (PE_M decode-batching on the Q4_K wrappers, union-skip MoE now folded **inline** into
+  `glm_decoder_block_q4k`); the **spec ÷K weight-load hardware** (`spec_batched_top` /
+  `spec_chain_top`, spec==greedy at K>1 via `make spec-slow`).
   (`flash_xbar` is the **medium-agnostic storage-read fabric** — address→weight-bytes with
   latency hiding — that in the product **fronts an NVMe/PCIe host controller**; the RTL name is
   a committed identifier, and only the NAND-specific backend is swapped — the abstraction, the
-  compute die, `weight_loader`, `expert_cache_pf` and `kv_cache_pager` are unchanged.)
-- Production top `glm_fp8_system_cdc` with **host/USB + memory + compute CDC** (async-clock token
-  identity verified).
-- Power/area levers: BFP accumulator (−87.6 % cells), clock-gating (73.75 % idle), die-shrink
-  L0/L1, DVFS budget (4–5×, measured), compression 1.34×.
+  compute die, `weight_loader_q4k`, `expert_cache_pf` and `kv_cache_pager` are unchanged.)
+- Production top `glm_q4k_system_cdc` with **host/USB + memory + compute CDC** — structural sign-off
+  (`make synth-glm`, yosys `hierarchy -check` + `check -assert` exit 0, no unresolved
+  hierarchy/comb-loop/multi-driver/inferred-latch; **elaboration, not a sim**), with the CDC/reset
+  architecture (`cdc_async_fifo` gray-pointer, `reset_sync`) formally sound.
+- **Format-agnostic power levers (measured on the RTL/trace harnesses, current):** clock-gating
+  (`clk_en_ctrl` — 73.75 % of idle dynamic power gated, formally safe), DVFS/eco frequency prescaler
+  (`clk_throttle` — run the die f/div in the ~4–5× slack, byte-identical, BMC-proven), spec ÷K
+  (K=2 ≈ +23 %), flash striping (`flash_layout.py` — expert→channel placement, ~+40 %). Predictor
+  prefetch is a **measured NO-OP** (popular experts already resident — kept honest).
+- **Compute-side PPA levers are prior-FP8-track only (branch `fp8`; Q4_K re-run PENDING):** the
+  BFP fixed-point accumulator (−87.6 % cells), die-shrink, and `weight_decomp` compression (1.34×)
+  were measured on the FP8 datapath and are **not** re-measured for Q4_K — presented here as prior-FP8
+  numbers, not Q4_K claims (on an NVMe-bound die they cut area/power/timing but do not move tok/s).
 - Energy + BOM **models** ([`LOW_POWER.md`](LOW_POWER.md), [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md)).
 - **Host software scaffold** ([`host/`](../host/README.md)) — a local **OpenAI-compatible server**
   (`/v1/chat/completions`, streaming SSE), the exact RTL host protocol (`aipu_device.py`, mirrors
-  `glm_fp8_system_cdc` + the boot-loader-done readiness gate), the **real GLM-5.2 BPE tokenizer** +
+  `glm_q4k_system_cdc` + the boot-loader-done readiness gate), the **real GLM-5.2 BPE tokenizer** +
   a port of GLM's chat template, and host-side sampling — buildable/testable with **zero hardware**
-  against a mock backend (the Phase D2 first deliverable).
+  against a mock backend (the Phase D2 first deliverable). *(The simulator backend still points at the
+  prior `glm_model_fp8` build path and is being retargeted to `glm_model_q4k`.)*
 
 **Not done (the gaps to a product):**
-- **Real-model full-scale fidelity** (PRODUCT_ROADMAP P1 — *the* gate: the real 753 GB weights must
-  produce the real model's tokens end-to-end). **Blocking for everything.**
+- **Real-model full-scale fidelity** (PRODUCT_ROADMAP P1 — *the* gate: the real ~467 GB Q4_K weights
+  must produce the real model's tokens end-to-end, checked against a numeric golden). No assembled
+  `glm_model_q4k` end-to-end golden exists today; and bit-exactness vs the **real downloaded GGUF /
+  llama.cpp** (a different arithmetic contract — Q8-quantized activations + integer dot vs our
+  bf16-activation / fp32-accumulate path) is **OPEN**. **Blocking for everything.**
+- **Mixed-type (Q6_K / Q8_0 / F16) path** — the RTL is **Q4_K-only** (`grep -ril 'q6_k|q8_0' src/`
+  = 0; `weight_loader_q4k` has no `w_type` field). The real UD-Q4_K_XL dynamic mix keeps sensitive
+  tensors at higher precision, so the chip **cannot consume the published checkpoint as-is** — those
+  tensors would have to be re-quantized to Q4_K (voids the fidelity moat) or fed pre-dequantized as
+  bf16 — so closing this is a real prerequisite before *"runs the published GGUF"* is literally true.
 - **FPGA fit / bitstream** — unmeasured (yosys wall); no placed-and-routed design, no real board.
 - **Host software — the real backend + driver** — the API/protocol/tokenizer layer is scaffolded
   (above); what remains is a signed cross-OS **USB-C driver** and a **real backend** (simulator- then
@@ -135,7 +164,7 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 
 | Spec | Target | Notes |
 |---|---|---|
-| Model | GLM-5.2-FP8, bit-exact | the differentiator vs quantized boxes |
+| Model | GLM-5.2 `UD-Q4_K_XL` (Q4_K GGUF, ~467 GB) | the differentiator is **full 753B frontier locally**, not a smaller local model; Q4_K GEMM core bit-exact to `tools/q4k_ref.py` (our ggml reimpl), **not** the real GGUF / llama.cpp |
 | Throughput | **rung-②** funded board ≥ 25 tok/s (goal 30–40) single-user; **rung-①** prove-it FPGA ~5–8 [EST] | comfortable interactive on the product rung; staged per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) |
 | Power (peak) | ≤ 110 W self-powered; stretch ≤ 100 W USB-PD | see §7 power decision |
 | Idle power | ≤ 10 W | clock-gating + DVFS |
@@ -169,8 +198,9 @@ adds these workstreams, which that roadmap only touches lightly:
 Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 
 ### Phase D0 — De-risk & measure *(do FIRST; cheap, decisive)*
-- **D0.1 Real-model fidelity** — execute PRODUCT_ROADMAP P1.1 (real 753 GB checkpoint → real
-  tokens). **Hard prerequisite** — no product until this passes.
+- **D0.1 Real-model fidelity** — execute PRODUCT_ROADMAP P1.1 (real ~467 GB Q4_K checkpoint → real
+  tokens, against a numeric golden; and close the Q4_K-only / mixed-type gap so the published
+  UD-Q4_K_XL mix can be consumed as-is). **Hard prerequisite** — no product until this passes.
 - **D0.2 FPGA fit** — take the design through the **vendor flow (Gowin / nextpnr / Vivado)** to get
   real LUT/DSP/BRAM/DDR-PHY utilization → pick the **FPGA class** (this unblocks size, thermal, BOM,
   power). This is the project's #1 unknown; closes the yosys wall.
@@ -189,8 +219,8 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 ### Phase D1 — FPGA prototype bring-up
 - D1.1 Port the full-scale RTL to the chosen FPGA; DDR5 + NVMe (M.2/PCIe) + USB-C PHY integration
   (vendor IP, PRODUCT_ROADMAP P3.1).
-- D1.2 Boot-load the real model to the NVMe model store (productionize `ckpt_pack.py` /
-  `flash_layout.py`); first end-to-end token over USB-C on real hardware.
+- D1.2 Boot-load the real Q4_K model to the NVMe model store (productionize `flash_layout.py`, the
+  offline GGUF→NVMe expert/channel packing); first end-to-end token over USB-C on real hardware.
 - D1.3 Measure the **real** tok/s, watts, thermals — replace every [EST] with a number.
 - **GATE D1:** the dev-kit emits the real model's tokens over USB-C at ≥ target tok/s within the
   power point. *This is the "it actually works as a device" proof.*
@@ -274,7 +304,7 @@ smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (
 rungs — **rung ①** the ~$1–2 k prove-it demo box (budget FPGA + DDR4, the near-term build) and **rung ②**
 the funded product (custom board, DDR5/HBM) — the ladder's ~$3–6 k box, up to ~$4–9 k for the
 HBM / data-center-card variant. **Rung ③ — a SoC/ASIC at manufacturing volume** — is the cost endgame:
-HBM stacks + many-channel PHY + near-memory FP8 compute at ~TB/s, with **lower $/seat and lower power**
+HBM stacks + many-channel PHY + near-memory Q4_K (low-precision) compute at ~TB/s, with **lower $/seat and lower power**
 once the multi-million NRE amortizes over volume. Not now (no volume, no capital); sequenced *after* the
 FPGA rungs prove product-market fit — the same verified RTL on every rung.
 
@@ -294,7 +324,7 @@ zero-retention / TEE) needs connectivity and fails the unplugged test.
 | # | Risk | Impact | Mitigation |
 |---|---|---|---|
 | 1 | **FPGA fit unknown** — may need an expensive data-center card, breaking the cost story | high | **D0.2 measure first**; die-shrink levers ([`MINIATURIZATION.md`](MINIATURIZATION.md)) + compact config; throttle/scope if needed |
-| 2 | **Real-model fidelity not yet closed** — no product until real weights → real tokens | high | D0.1 (PRODUCT_ROADMAP P1.1) is the very first gate |
+| 2 | **Real-model fidelity not yet closed** — no assembled-model numeric golden; not bit-verified vs the real GGUF / llama.cpp; RTL is **Q4_K-only** (can't consume the UD-Q4_K_XL mixed-type checkpoint as-is) | high | D0.1 (PRODUCT_ROADMAP P1.1) is the very first gate — covers both the numeric golden and the mixed-type consumer |
 | 3 | **Power > USB-PD** | med | self-powered design (§7); accept it's not a bus stick |
 | 4 | **Host software effort** — driver + server + cross-OS is real work | med | OpenAI-compatible API to reuse the existing client ecosystem |
 | 5 | **Thermal/acoustics** in a small box | med | power-point choice; eco mode; proven eGPU-class cooling |

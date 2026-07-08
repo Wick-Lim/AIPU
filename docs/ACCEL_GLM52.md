@@ -1,19 +1,34 @@
-# ACCEL_GLM52 — A Correctness-First Accelerator to RUN GLM-5.2 (`GlmMoeDsaForCausalLM`)
+# ACCEL_GLM52 — the Q4_K compute-die architecture spec for GLM-5.2 (`GlmMoeDsaForCausalLM`)
 
-> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
-> targeting `unsloth/GLM-5.2-GGUF:UD-Q4_K_XL`). **FP8 is the PRIOR / PRESERVED track** on
-> branch **`fp8`** (tag `fp8-verified-baseline`), removed from `main` in commit `cbef69d`.
-> Where this doc names `*_fp8` modules (e.g. `glm_model_fp8`, `glm_decoder_block_fp8`,
-> `mla_attn_fp8`, `glm_fp8_soc_ms`) or FP8-specific TBs (`glm_model_fp8_multiseq*_tb`), read
-> the **Q4_K equivalents**: `glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`,
-> `glm_q4k_soc_ms`. **Honesty correction to the claims below:** the multi-sequence "per-row
-> argmax/logits **bit-exact**" results are **DUT-vs-DUT self-consistency** (a batched run
-> equals independent per-seq runs of the *same* model), **not** a numeric golden vs
-> ggml/llama.cpp; and those specific multiseq TBs are **FP8, on branch `fp8`**. The only
-> bit-exact-vs-ggml result on `main` is the Q4_K GEMM core (`make q4k` →
-> `glm_matmul_q4k`), bit-exact to the team's own ggml-Q4_K reference (`tools/q4k_ref.py`),
-> **not** the real GGUF/llama.cpp, and **Q4_K-only** (no Q6_K/Q8_0/F16). A deeper Q4_K rewrite
-> of this doc is deferred.
+> **Track & scope (2026-07-08).** This is **THE architecture spec** for the compute die: the
+> MLA + DeepSeek-DSA sparse attention, the 256-expert MoE, the MTP speculative head, the
+> operator hierarchy, and the exact GLM-5.2 config. The **current / `main` track is Q4_K-native**
+> — the datapath streams **GGML Q4_K** weights (per-ggml dequant → fp32 MAC → bf16), targeting
+> the published [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF).
+> Unlike the prior FP8 track there is **no activation quant**: activations are **bf16**
+> throughout; only *weights* are quantized. Modules are named `glm_*_q4k` (`glm_model_q4k`,
+> `glm_decoder_block_q4k`, `mla_attn_q4k`, `moe_router_q4k`, `swiglu_expert_q4k`,
+> `mtp_head_q4k`, `glm_matmul_q4k`, `glm_q4k_soc`/`glm_q4k_soc_ms`, `weight_loader_q4k`), plus
+> the shared bf16 leaves `glm_softmax`, `rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer`,
+> `topk_select`, `sampler`. The **prior FP8 datacenter-native track** — a *different arithmetic
+> contract* (FP8 activations + FP8 weights) — is preserved on branch **`fp8`** + tag
+> **`fp8-verified-baseline`**, referenced here as prior/preserved, never current.
+
+> **What is actually proven (read this before any "bit-exact" below).**
+> - The **one** bit-exact-vs-ggml result is the **Q4_K GEMM core** (`make q4k` →
+>   `glm_matmul_q4k`, `q4k_prim`), bit-exact to the team's **own** ggml-Q4_K reimplementation
+>   `tools/q4k_ref.py` — **NOT** the real downloaded GGUF bytes and **NOT** llama.cpp's runtime
+>   (llama.cpp quantizes activations to Q8_K and dots in integer; this RTL uses bf16 activations
+>   + fp32 accumulate — a **different** arithmetic contract). It is also **Q4_K-only** (no
+>   Q6_K/Q8_0/F16 RTL consumer).
+> - The **assembled `glm_model_q4k` has NO end-to-end numeric golden.** It is exercised only as
+>   **spec-decode == greedy self-consistency** (a DUT-vs-DUT safety property where the "greedy
+>   golden" is *itself* a `glm_model_q4k`), never against ggml/llama.cpp numerically.
+> - The generic **bf16/fp32 twins** (`glm_model`, `mla_attn`, `mtp_head`, …) that carry the
+>   per-unit fp32/fp64-golden TBs are the *structural siblings* of the Q4_K units — they contain
+>   **zero Q4_K**, so they do **not** verify the assembled Q4_K numeric path.
+>
+> See the honest status table in [`README.md`](../README.md) for the exact per-claim evidence.
 
 > Chief-architect synthesis. ONE coherent architecture combining **compute-completeness**
 > (every real GLM-5.2 operator → a concrete hardware unit) with **memory-for-scale**
@@ -21,24 +36,26 @@
 >
 > **Honesty contract.** Two things are kept rigorously separate throughout:
 > - **DERIVED / BUILDABLE** — the small-but-faithful RTL decoder block we actually
->   build and verify bit-tolerant against an independent fp32 golden on
->   iverilog/verilator/yosys + nextpnr-ecp5.
-> - **SYSTEM-LEVEL ESTIMATE** — the full 753B-param multi-chip machine, designed on
+>   build and verify on iverilog/verilator/yosys: the Q4_K GEMM core bit-exact to the
+>   independent ggml-Q4_K reference (`tools/q4k_ref.py`), the surrounding operators against
+>   fp32/fp64 goldens, and the assembled model as spec==greedy self-consistency.
+> - **SYSTEM-LEVEL ESTIMATE** — the full 753B-param multi-chip / streaming machine, designed on
 >   paper, sized from the config, never claimed as "built".
 >
 > Where a number is a system estimate it is tagged **[SYS-EST]**; where it is proven by
-> the buildable slice it is tagged **[BUILT]** (after the build) or **[DERIVED]** (mapped
-> but pending build).
+> the buildable slice it is tagged **[BUILT]**; **[DERIVED]** = mapped but pending build.
 >
-> **Local-device retarget (Q4_K).** For the local appliance, `main` develops a **Q4_K
-> local-inference track**: the target weight store is the published
-> `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` (**467 GB**, ~38% smaller than the 753 GB FP8
-> checkpoint; the on-box footprint / hot-set / routed-expert bytes below scale down
-> ~proportionally), and the moat becomes **bit-exact to the published UD-Q4_K_XL GGUF (no
-> re-quantization; generally lossless per Unsloth)**. The FP8 datacenter-native baseline —
-> the datapath detailed in this doc — is preserved on branch **`fp8`** + tag
-> **`fp8-verified-baseline`**; the Q4_K numerics are bit-exact to ggml
-> ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
+> **Local-device target (Q4_K).** For the local appliance, the target weight store is the
+> published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` (**~467 GB**, ~38% smaller than the 753 GB the
+> same model would take in one byte/param; the on-box footprint / hot-set / routed-expert bytes
+> below scale ~proportionally). UD-Q4_K_XL is a **dynamic mix** — most tensors Q4_K, sensitive
+> ones kept at Q6_K/Q8_0/F16 (~0.6 B/param average). The **moat, stated scoped:** the Q4_K GEMM
+> core is **bit-exact to `tools/q4k_ref.py`, the team's own faithful reimplementation of ggml's
+> `dequantize_row_q4_K`** — **NOT** bit-exact to the real downloaded GGUF file, to llama.cpp, or
+> to the *full* UD-Q4_K_XL mix (the RTL has **no consumer** for the Q6_K/Q8_0/F16 tensors — a
+> real checkpoint would have to be re-quantized to Q4_K, which voids the moat, or fed
+> pre-dequantized as bf16). See [`Q4K_RETARGET.md`](Q4K_RETARGET.md) and
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md).
 
 ---
 
@@ -65,31 +82,38 @@
 
 **Underspecified fields (the ONLY two assumptions).** config.json does not expose
 `q_lora_rank` / `kv_lora_rank`. GLM-5.2 is DeepSeek-MLA-derived → we size with the
-standard **kv_lora_rank = 512**, **q_lora_rank = 2048 (confirmed vs real safetensors)**. Both are RTL parameters,
-overridable from the real weights. Everything else above is exact.
+DeepSeek-standard **kv_lora_rank = 512** (**[PENDING safetensors]** — the standard value, not
+yet directly confirmed against `kv_a_proj`) and **q_lora_rank = 2048** (**confirmed vs the real
+GLM-5.2 safetensors** `q_a_proj.weight [2048,6144]` during the prior FP8 track — an earlier
+DeepSeek-standard guess of 1536 was corrected). These are model-architecture facts, independent
+of the quant format; both are RTL parameters, overridable from the real weights. Everything else
+above is exact.
 
 ### 1.2 Honest scale reality — what one chip can and cannot do
 
 **Product scope (who this is for).** The target is a **local, single-user personal box** that
-runs the full GLM-5.2-FP8 model **fully offline / air-gapped — nothing leaves because there is
+runs the full GLM-5.2 model **fully offline / air-gapped — nothing leaves because there is
 no path out** (the audit is literally "does it work with the ethernet unplugged?" — yes). The
-on-box residency described in this doc is exactly what makes that possible: the entire ~753 GB
-FP8 model (on the Q4_K local track, the **~467 GB** UD-Q4_K_XL GGUF) lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a fast DDR hot-weight cache (rung-dependent — DDR4 on the prove-it FPGA, DDR5/HBM on the funded custom board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))
-(see `docs/USBC_PRODUCT_PLAN.md`), so after a **one-time provisioning** load (itself doable in a
-secure facility; new-model/weight updates are a physical re-provision) the card serves one user
-(**B=1**) with no internet and no cloud, ever. That unlocks frontier-model use in the
-disconnected / locked-out environments cloud can't reach (SCIFs, isolated OT/critical-infra,
-field/edge, air-gapped compliance) and removes vendor dependency (can't be rate-limited,
-deprecated, or cut off) — and it categorically excludes every cloud option, **including "secured
-cloud"** (in-VPC / zero-retention / TEE enclaves), which all need connectivity and fail the
-unplugged test. The moat is the **combination** — offline **and** full-frontier (753B) **and**
-appliance/seat price — not offline alone (a 70B laptop model is offline too). The bf16 residency
-math and any multi-chip / aggregate-batch framing in this doc are a **secondary, non-target
+on-box residency described in this doc is exactly what makes that possible: the entire **~467 GB**
+UD-Q4_K_XL GGUF lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a fast DDR
+hot-weight cache (rung-dependent — DDR4 on the prove-it FPGA, DDR5/HBM on the funded custom board;
+see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) (see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)),
+so after a **one-time provisioning** load (itself doable in a secure facility; new-model/weight
+updates are a physical re-provision) the card serves one user (**B=1**) with no internet and no
+cloud, ever. That unlocks frontier-model use in the disconnected / locked-out environments cloud
+can't reach (SCIFs, isolated OT/critical-infra, field/edge, air-gapped compliance) and removes
+vendor dependency (can't be rate-limited, deprecated, or cut off) — and it categorically excludes
+every cloud option, **including "secured cloud"** (in-VPC / zero-retention / TEE enclaves), which
+all need connectivity and fail the unplugged test. The moat is the **combination** — offline
+**and** full-frontier (753B) **and** appliance/seat price — not offline alone (a 70B laptop model
+is offline too). Any multi-chip / aggregate-batch framing in this doc is a **secondary, non-target
 datacenter analysis of the same silicon**, kept for sizing — not the product's deployment.
 
 - **Weights:** ~753B params = **725B cold routed experts** (75 MoE layers × 256 experts ×
   37.75M) + **~28B hot** (MLA projections, dense-front FFN, norms, router, embed/LM head).
-  bf16 ≈ **1.5 TB**, INT4 ≈ **376 GB**. **[SYS-EST]**
+  bf16 ≈ **1.5 TB**; the shipped **UD-Q4_K_XL** dynamic mix (~0.6 B/param avg) ≈ **~467 GB**
+  (a pure 4-bit Q4_K image would be ~376 GB; the sensitive Q6_K/Q8_0/F16 tensors add the rest).
+  **[SYS-EST]**
 - **Latent-KV cache:** 576 elts/token/layer (c_kv 512 + shared k_rope 64) =
   **1.125 KB/token/layer bf16**, 87.8 KB/token across 78 layers. 128K ctx → **11.8 GB**;
   1M ctx → **94.2 GB**. (A 64-head MHA cache would be 670 GB / 5.36 TB — MLA is ~57×
@@ -112,19 +136,20 @@ datacenter analysis of the same silicon**, kept for sizing — not the product's
 
 ```
                        ┌──────────────────────────────────────────────────────────┐
-                       │            CONTROL SEQUENCER (layer_sequencer.v)           │
+                       │       LAYER CONTROL (glm_model_q4k / glm_decoder_block_q4k)│
                        │  walks 78 layers · per-layer mode:                         │
                        │   • FFN mode: DENSE(L0-2, inter 12288) | MoE(L3-77)        │
                        │   • indexer mode: FRESH (L mod 4 == 3) | REUSE (next 3)    │
-                       │   • drives MLA→DSA→ATTN→FFN→residual; fp32 residual accum   │
+                       │   • MLA→DSA→ATTN→FFN→residual; bf16 residual stream,        │
+                       │     Q4_K weight dequant→fp32 MAC→bf16 out (glm_matmul_q4k)  │
                        └───────────────┬──────────────────────────────┬───────────┘
-                                       │ control / TM descriptors      │ DMA descriptors
+                                       │ control / activation tiles    │ weight-pull / DMA
    ┌───────────────────────────────────┴──────────────────────────────┴───────────────────┐
    │                          DECODER-BLOCK DATAPATH (one layer)                            │
    │                                                                                        │
-   │  x (fp32 residual stream)                                                              │
+   │  x (bf16 residual stream)                                                              │
    │     │                                                                                  │
-   │  [rmsnorm_unit] pre-attn ──────────────► MLA ATTENTION (mla_attn.v orchestrator)       │
+   │  [rmsnorm_unit] pre-attn ──────────────► MLA ATTENTION (mla_attn_q4k orchestrator)     │
    │     │                                     │                                            │
    │     │   Q path:  W_dq→q_lora→[rmsnorm]→W_uq→ split nope192 | rope64                    │
    │     │   KV path: W_dkv→c_kv(512)*  W_kr→k_rope(64)*  [rmsnorm(c_kv)]→W_uk,W_uv          │
@@ -136,94 +161,113 @@ datacenter analysis of the same silicon**, kept for sizing — not the product's
    │     │        topk_select.v → top-2048 index list  (IndexShare cache / reuse)           │
    │     │             │ index list                                                         │
    │     │             ▼                                                                    │
-   │     │      [scatter_gather] gather 2048 K/V rows → attention_unit (extended)           │
-   │     │        QK^T(qk=256) · causal mask · [softmax_unit fp32] · A·V(v=256) · W_o        │
-   │     │             │                                                                    │
-   │  x += ◄───────────┘  (fp32 residual add)                                               │
+   │     │      [gather 2048 K/V rows] → inner attention (in mla_attn_q4k)                  │
+   │     │        QK^T(qk=256) · causal mask · [glm_softmax bf16] · A·V(v=256) · W_o         │
+   │     │             │   (NOTE: 1/√qk_head_dim scale currently OMITTED — see §4.1)         │
+   │  x += ◄───────────┘  (bf16 residual add)                                               │
    │     │                                                                                  │
    │  [rmsnorm_unit] pre-FFN ──────────────►  FFN                                           │
-   │     │      DENSE mode (L0-2):  swiglu_expert (inter 12288)                             │
-   │     │      MoE mode (L3-77):   moe_router (W_g→sigmoid→top-8→renorm→×2.5)              │
-   │     │                          → 8 routed swiglu_expert + 1 shared → combine (fp32)    │
-   │  x += ◄───────────┘  (fp32 residual add)                                               │
+   │     │      DENSE mode (L0-2):  swiglu_expert_q4k (inter 12288)                         │
+   │     │      MoE mode (L3-77):   moe_router_q4k (W_g→sigmoid→top-8→renorm→×2.5)          │
+   │     │                     → 8 routed swiglu_expert_q4k + 1 shared → combine (fp32 acc) │
+   │  x += ◄───────────┘  (bf16 residual add)                                               │
    └───────────────────────────────────────────────────────────────────────────────────────┘
         │ (after 78 layers)                              ▲ weights / cache
         ▼                                                │
-   [rmsnorm_unit final] → LM head (W_lm 6144×154880, gemm_ml GEMV) → [sampler.v fp32]
-   MTP head (mtp_head.v): own norm + small attn/FFN, hidden+pred-embed → t+2, shares LM head
+   [rmsnorm_unit final] → LM head (W_lm 6144×154880, bf16 glm_matmul_pipe GEMV) → [sampler.v]
+   MTP head (mtp_head_q4k): own norm + small attn/FFN, hidden+pred-embed → t+2, shares LM head
 
-   ┌──────────────────────── MEMORY / STREAMING SYSTEM ────────────────────────┐
-   │ T0 on-chip SRAM/tile_memory: activations, GEMM tiles, index-set scratch,   │
-   │    softmax scratch, HOT weights, active 8/256 experts, 2048-row gather win  │
-   │ T1 HBM: hot-weight overflow + recent expert working set + active cache win  │
-   │ T2 DRAM/host: full 725B cold experts + long-tail latent cache + INT4 image  │
-   │                                                                            │
-   │ tpu_soc.v / tpu_axi.v / axi_master_dma.v / cdc_async_fifo.v:               │
-   │   • EXPERT STREAM: router top-8 ids → DMA gather experts (dominant traffic) │
-   │   • CACHE APPEND : write [c_kv|k_rope] per token/layer (ring buffer)        │
-   │   • CACHE GATHER : scatter_gather reads the 2048 DSA-selected rows          │
-   │   • two-clock CDC: bus domain (DMA) ↔ core domain (compute)                │
-   └────────────────────────────────────────────────────────────────────────────┘
+   ┌──────────────────────── MEMORY / STREAMING SYSTEM (glm_q4k_soc / glm_q4k_system_cdc) ──┐
+   │ T0 on-chip SRAM: activations, GEMM tiles, index-set scratch, softmax scratch,          │
+   │    HOT weights, active 8/256 experts, 2048-row gather window                            │
+   │ T1 DDR/HBM: hot-weight overflow + recent expert working set + active cache window       │
+   │ T2 NVMe/host: full 725B cold experts + long-tail latent cache + ~467 GB Q4_K image      │
+   │                                                                                        │
+   │ weight_loader_q4k / flash_xbar / ddr5_xbar / expert_cache_pf / kv_cache_pager /         │
+   │ cdc_async_fifo:                                                                         │
+   │   • EXPERT STREAM: router top-8 ids → DMA gather experts (dominant traffic)             │
+   │   • CACHE APPEND : write [c_kv|k_rope] per token/layer (ring buffer)                    │
+   │   • CACHE GATHER : kv_cache_pager reads the 2048 DSA-selected rows                       │
+   │   • two-clock CDC: host/bus domain ↔ core (compute) domain                              │
+   └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 3. Operator coverage table — EVERY GLM-5.2 op → a hardware unit
 
-Precision policy (matches the operator profile): **compute in bf16, ALL reductions in
-fp32.** Existing units carry a 48-bit **Q15.16** accumulator and **Q7.8** elements
-(`tpu_defs.vh`); the slice maps bf16-compute/fp32-reduce onto that fixed-point reduce
-infrastructure and the golden uses matching fp32 reduce so they agree within tolerance.
+Precision policy (as built, Q4_K track): **weights Q4_K, activations bf16, reductions fp32,
+outputs bf16 — no activation quant.** Every *weight* matmul dequantizes its Q4_K super-block per
+ggml (`w = d·sc·q − dmin·m`, `get_scale_min_k4`) to fp32; the activation arrives **bf16**; the
+fp32 products are **sequentially fp32-accumulated in K order** and rounded to **bf16 (RNE)** on
+output (`glm_matmul_q4k`, the same accumulate structure as the proven bf16 `glm_matmul_pipe` —
+only the weight source changed). The MoE combine uses an **fp32 accumulator**; the **residual
+stream stays bf16 across all 78 layers** (a real GLM-5.2 `modules_to_not_convert` boundary — not
+an fp32 residual). Norms, softmax, RoPE, router, embed and the LM head stay **bf16** (the
+`modules_to_not_convert` set). All fp32 ops are `glm_fp.vh`'s IEEE `fp32_mul` / `fp32_add` — the
+datapath's canonical numerics (no fixed-point Q-format; the legacy scalar-TPU `tpu_defs.vh`
+Q15.16/Q7.8 path was removed, see the correction below).
 
-| # | GLM-5.2 operator | Hardware unit | Precision | Reuse / New |
-|---|---|---|---|---|
-| 1 | Embedding (id → row 6144) | `scatter_gather` + AXI DMA | gather, bf16 store | **Reuse** |
-| 2 | RMSNorm (pre-attn, pre-FFN, q_lora, c_kv, final) | `rmsnorm_unit` | **fp32** Σx² reduce + rsqrt, bf16 γ | **New** |
-| 3 | MLA Q down/up (W_dq, W_uq) | `gemm_ml` (orch by `mla_attn`) | bf16 ×, **Q15.16** acc | Reuse + New orch |
-| 4 | MLA KV down (W_dkv, W_kr) → c_kv, k_rope | `gemm_ml` + cache-append DMA | bf16, Q15.16 acc | Reuse + New orch |
-| 5 | MLA KV up (W_uk, W_uv) → k_nope, v | `gemm_ml` | bf16, Q15.16 acc | **Reuse** |
-| 6 | Decoupled RoPE (interleave, θ=8e6, 64-dim only) | `rope_interleave_unit` | **fp32** angle table, bf16 apply | **New** |
-| 7 | DSA indexer scoring (small-dim dot over all keys) | `dsa_indexer` | **fp32** score accum | **New** |
-| 8 | DSA top-2048 select (+causal recent window) | `topk_select` (in dsa_indexer) | index compare (argmax-style) | **New** (shared w/ router) |
-| 9 | IndexShare reuse (freq 4, offset 3) | `layer_sequencer` + index-list cache | control | **New** |
-| 10 | QK^T over selected keys (qk 256) | `attention_unit` (+gather front-end) | bf16 ×, **Q15.16** acc | Reuse (extended) |
-| 11 | Causal mask + softmax over N≤2048 | `softmax_unit` | **fp32** max+exp-sum, Q0.16 probs | **Reuse** |
-| 12 | A·V (v_head 256) + output proj W_o | `attention_unit` AV + `gemm_ml` | bf16, Q15.16 acc | Reuse (extended) |
-| 13 | MoE router (W_g → sigmoid → top-8) | `moe_router` (W_g via `gemm_ml`) | bf16 GEMV, **fp32** score | **New** |
-| 14 | Gate renorm-to-1 **then** ×2.5 | `moe_router` (two explicit stages) | **fp32** | **New** (silent-bug guard) |
-| 15 | SwiGLU expert (W_gate, W_up, silu⊙, W_down) | `swiglu_expert` | bf16 ×, fp32 silu LUT | **New** (wraps `gemm_ml`+`fused_ops`) |
-| 16 | Dense-front FFN (L0-2, inter 12288) | `swiglu_expert` dense mode | bf16 | **New** (mode flag) |
-| 17 | MoE combine (Σ gₑ·yₑ + y_shared, residual) | combine stage in `swiglu_expert`/seq | **fp32** accum | **New** |
-| 18 | MTP head (t+2 speculative) | `mtp_head` | bf16 + fp32 reduce | **New** |
-| 19 | Final RMSNorm | `rmsnorm_unit` | fp32 reduce | **Reuse (#2)** |
-| 20 | LM head (W_lm 6144×154880 GEMV) | `gemm_ml` (streamed) | bf16, Q15.16 acc | **Reuse** |
-| 21 | Sampling (temp/top-k/top-p/multinomial) | `sampler` (+`softmax_unit`) | **fp32** logits | **New** |
-| — | Expert streaming + cache append/gather | `tpu_soc`/`axi_master_dma`/`cdc_async_fifo` | AXI burst | **Reuse** |
+Weight-type key: **Q4_K** = weight matmul, ggml Q4_K dequant → fp32 MAC → bf16 (`glm_matmul_q4k`).
+**bf16** = a `modules_to_not_convert` op or an activation×activation matmul (`glm_matmul_pipe` /
+`glm_softmax` / the elementwise leaves). No activation quant anywhere.
 
-> **⚠️ Correction (as-built vs early plan).** The "Reuse" column below was the *early mapping* idea
-> — reuse the scalar-TPU tensor units. The **built** GLM FP8 datapath does **not** instantiate them:
-> it uses its own `glm_matmul_fp8` / `glm_softmax` / `mla_attn_fp8` / `swiglu_expert_fp8` /
-> `moe_router_fp8` / `glm_act` etc. The listed scalar-TPU modules (`gemm_ml`, `gemm_systolic`,
+| # | GLM-5.2 operator | Hardware unit (as-built Q4_K) | Precision |
+|---|---|---|---|
+| 1 | Embedding (id → row 6144) | gather DMA (`weight_loader_q4k` / row fetch) | bf16 gather/store |
+| 2 | RMSNorm (pre-attn, pre-FFN, q_lora, c_kv, final) | `rmsnorm_unit` | **fp32** Σx² reduce + rsqrt, bf16 γ / I·O |
+| 3 | MLA Q down/up (W_dq, W_uq) | `glm_matmul_q4k` (orch by `mla_attn_q4k`) | **Q4_K** wt, bf16 act, fp32 acc → bf16 |
+| 4 | MLA KV down (W_dkv, W_kr) → c_kv, k_rope | `glm_matmul_q4k` + cache-append DMA | **Q4_K** wt, bf16 act, fp32 acc → bf16 |
+| 5 | MLA KV up (W_uk, W_uv) → k_nope, v | `glm_matmul_q4k` | **Q4_K** wt, bf16 act, fp32 acc → bf16 |
+| 6 | Decoupled RoPE (interleave, θ=8e6, 64-dim only) | `rope_interleave_unit` | **fp32** angle table, bf16 apply |
+| 7 | DSA indexer scoring (small-dim dot over all keys) | `dsa_indexer` | **fp32** score accum, bf16 in |
+| 8 | DSA top-2048 select (+causal recent window) | `topk_select` (in `dsa_indexer`) | index compare (argmax-style) |
+| 9 | IndexShare reuse (freq 4, offset 3) | `mla_attn_q4k` / block control + index cache | control |
+| 10 | QK^T over selected keys (qk 256) | inner attention in `mla_attn_q4k` (act×act) | **bf16** ×, fp32 acc → bf16 *(1/√d omitted, §4.1)* |
+| 11 | Causal mask + softmax over N≤2048 | `glm_softmax` | **bf16** max + exp-sum + probs |
+| 12 | A·V (v_head 256) + output proj W_o | AV in `mla_attn_q4k` (bf16) + `glm_matmul_q4k` (W_o) | bf16 AV / **Q4_K** W_o |
+| 13 | MoE router (W_g → sigmoid → top-8) | `moe_router_q4k` (W_g via `glm_matmul_q4k`) | **Q4_K** W_g GEMV, bf16 tail, fp32 score |
+| 14 | Gate renorm-to-1 **then** ×2.5 | `moe_router_q4k` (two explicit stages) | **fp32** → bf16 (silent-bug guard) |
+| 15 | SwiGLU expert (W_gate, W_up, silu⊙, W_down) | `swiglu_expert_q4k` | **Q4_K** wt, bf16 act, silu, fp32 acc → bf16 |
+| 16 | Dense-front FFN (L0-2, inter 12288) | `swiglu_expert_q4k` dense mode | **Q4_K** wt, bf16 (mode flag) |
+| 17 | MoE combine (Σ gₑ·yₑ + y_shared, residual) | combine stage in `glm_decoder_block_q4k` | **fp32** accum → bf16 residual add |
+| 18 | MTP head (t+2 speculative) | `mtp_head_q4k` | **Q4_K** wt, bf16 act, fp32 reduce |
+| 19 | Final RMSNorm | `rmsnorm_unit` | fp32 reduce (bf16 I·O) |
+| 20 | LM head (W_lm 6144×154880 GEMV) | `glm_matmul_pipe` (streamed) | **bf16** GEMV (`modules_to_not_convert`) |
+| 21 | Sampling (temp/top-k/top-p/multinomial) | `sampler` (+`glm_softmax`) | fp32/bf16 logits |
+| — | Expert streaming + cache append/gather | `glm_q4k_soc` / `flash_xbar` / `ddr5_xbar` / `expert_cache_pf` / `kv_cache_pager` / `cdc_async_fifo` | DMA burst |
+
+> **⚠️ History note (as-built vs early plan).** An earlier version of this doc mapped these
+> operators onto the classic **scalar-TPU** tensor units (`gemm_ml`, `gemm_systolic`,
 > `softmax_unit`, `attention_unit`, `scatter_gather`, `fused_ops_unit`, `tpu_soc`, `tpu_axi`,
-> `tile_memory`, `tpu_defs.vh`) were **LEGACY** and have been **removed** from the repo — they were
-> never on the GLM product path (see git history). Read the "Reuse" rows as historical planning.
+> `tile_memory`, `tpu_defs.vh` with its Q15.16/Q7.8 fixed-point). That was **early planning
+> only** — those modules were **LEGACY**, **never on the GLM product path**, and have been
+> **removed** from the repo (see git history). The as-built GLM datapath instantiates its own
+> purpose-built units: the Q4_K weight engine `glm_matmul_q4k` (and its bf16 sibling
+> `glm_matmul_pipe` for the `modules_to_not_convert` tail), `glm_softmax`, `mla_attn_q4k`,
+> `swiglu_expert_q4k`, `moe_router_q4k`, `mtp_head_q4k`, `glm_act`, plus the shared leaves
+> `rmsnorm_unit` / `rope_interleave_unit` / `dsa_indexer` / `topk_select` / `sampler`. The table
+> above already lists the **as-built** units.
 
-**Early-plan "reuse" (now removed — the GLM build uses its own `glm_*`/fp8 units):**
-`gemm_ml`, `gemm_systolic`, `softmax_unit`,
-`attention_unit`, `scatter_gather`, `fused_ops_unit`, `tpu_soc`, `tpu_axi`,
-`axi_master_dma`, `cdc_async_fifo`, `tile_memory`, `tpu_defs.vh`.
-**New:** `rmsnorm_unit`, `rope_interleave_unit`, `mla_attn`, `dsa_indexer` (+`topk_select`),
-`moe_router`, `swiglu_expert`, `mtp_head`, `sampler`, `layer_sequencer`.
+**As-built Q4_K compute units:** `glm_matmul_q4k` (+ bf16 `glm_matmul_pipe`), `glm_softmax`,
+`rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer` (+`topk_select`), `mla_attn_q4k`,
+`moe_router_q4k`, `swiglu_expert_q4k`, `mtp_head_q4k`, `glm_act`, `sampler`, orchestrated by
+`glm_decoder_block_q4k` / `glm_model_q4k`.
+**Memory / streaming:** `weight_loader_q4k`, `flash_xbar`, `ddr5_xbar`, `expert_cache_pf`,
+`kv_cache_pager`, `boot_loader`, `cdc_async_fifo`, `reset_sync` — wrapped by `glm_q4k_soc` /
+`glm_q4k_soc_ms` / `glm_q4k_system_cdc`.
 
 ---
 
 ## 4. MLA + DSA detail
 
-### 4.1 MLA latent attention (`mla_attn.v` orchestrator)
+### 4.1 MLA latent attention (`mla_attn_q4k.v` orchestrator)
 
-`mla_attn` is an **FSM orchestrator** (not a monolithic datapath): it sequences `gemm_ml`,
-`rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer`, and the extended `attention_unit`
-over tile memory, and owns the latent cache.
+`mla_attn_q4k` is an **FSM orchestrator** (not a monolithic datapath): it sequences the Q4_K
+weight engine `glm_matmul_q4k`, `rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer`,
+`glm_softmax`, and its own inner QK^T/AV datapath over on-chip scratch, and owns the latent cache.
+All projection weights (W_dq, W_uq, W_dkv, W_kr, W_uk, W_uv, W_o) are **Q4_K** (ggml dequant →
+fp32 MAC → bf16); the activation×activation QK^T and A·V are **bf16** (`glm_softmax` in between).
 
 - **Q path:** `x(6144) → W_dq(6144×2048) → q_lora(2048) → rmsnorm → W_uq(2048×16384) →
   q(64 heads × 256)`. Each head's 256 split **nope[192] | rope[64]** by lane slicing.
@@ -231,8 +275,9 @@ over tile memory, and owns the latent cache.
 - **KV path (the compression):** `x → W_dkv(6144×512) → c_kv(512)` and
   `x → W_kr(6144×64) → k_rope(64, shared across all 64 heads)`. **Only c_kv + k_rope are
   cached** (576 elts/token/layer). At attention time `c_kv → rmsnorm → W_uk → k_nope(64×192)`
-  and `→ W_uv → v(64×256)` reconstruct K/V on the fly. Per head K=[k_nope192|k_rope64]=256,
-  V=256.
+  and `→ W_uv → v(64×256)` reconstruct K/V on the fly (the K/V up-projections depend only on the
+  key, so across a batch of query rows they are the **shared** fetch — see §5). Per head
+  K=[k_nope192|k_rope64]=256, V=256.
 - **QK-norm:** RMSNorm applied on **q_lora** and on **c_kv** (the MLA-internal norms,
   eps 1e-5, fp32 reduce) — not just pre-attention.
 - **Decoupled RoPE:** `rope_interleave_unit` rotates **only** q_rope[64] (per head) and the
@@ -240,10 +285,17 @@ over tile memory, and owns the latent cache.
   (rotate (x[2i], x[2i+1]) — NOT rotate_half), **θ=8e6**, cos/sin from an **fp32 angle
   table** (position up to 2²⁰ makes θ^(−2i/64) span a range bf16 angles cannot resolve),
   applied in bf16.
-- **Absorb mode (parameterizable):** in decode, fold W_uk into W_uq and W_uv into W_o so K/V
-  are never materialized — attention runs directly on c_kv. Exposed as a mode bit; both
-  absorbed and materialized paths verified identical vs the golden.
-- **Cache footprint:** 1.125 KB/token/layer bf16; append + gather via the AXI-master DMA.
+- **⚠️ KNOWN NUMERIC GAP — softmax scale.** The current `mla_attn_q4k` computes QK^T scores
+  **without** the `1/√qk_head_dim` softmax scale. Because there is no independent numeric golden
+  for the assembled model (§6) and the bf16-twin TB golden **omits the same scale**, this
+  divergence from the reference GLM-5.2 math is **silent** in the current tests. It is a real
+  **NOT-YET** correctness gap, not a proven-equivalent design choice.
+- **Absorb mode (designed, [SYS-EST] — not in the as-built unit).** In decode one can fold W_uk
+  into W_uq and W_uv into W_o so K/V are never materialized and attention runs directly on c_kv.
+  The as-built `mla_attn_q4k` **materializes** K/V per key (sharing that fetch across the batch's
+  query rows); absorb-mode is a **paper** decode-time optimization, **not** currently implemented
+  or verified.
+- **Cache footprint:** 1.125 KB/token/layer bf16; append + gather via `kv_cache_pager`.
 
 ### 4.2 DSA indexer + top-2048 + IndexShare (`dsa_indexer.v` + `topk_select.v`)
 
@@ -256,130 +308,165 @@ over tile memory, and owns the latent cache.
   the causal recent window**; future keys structurally excluded; explicit causal mask still
   applied on the recent window. Emits a 2048-entry index list.
 - **Dense fallback:** when S ≤ index_topk the selector is a **no-op** (all keys kept) ⇒ exact
-  dense attention. Verified as a separate test (S=4, topk=8 in the slice).
+  dense attention. Exercised as a slice mode (S=4, topk=8) against the bf16 twin.
 - **IndexShare FSM:** index_topk_freq=4 + index_skip_topk_offset=3 ⇒ a **fresh** index set is
   computed on layers {3, 7, 11, …} and **reused** by the next 3 layers. ~20 indexer passes
-  cover all 78 layers, not 78. `layer_sequencer` holds the per-window valid index buffer +
-  a layer-mod-4 counter.
+  cover all 78 layers, not 78. The block control (`glm_decoder_block_q4k` + `mla_attn_q4k`) holds
+  the per-window valid index buffer + a layer-mod-4 counter.
 - **FLOP cap (the whole point):** QK^T + A·V is constant `64·2048·512·2 = 134.2 MFLOP/query`
   once S>2048. vs dense: 2.0× cheaper at 4K, 64× at 128K, **512× at 1M**. **[SYS-EST]**
 
 ---
 
-## 5. MoE detail (`moe_router.v` + `swiglu_expert.v` + combine)
+## 5. MoE detail (`moe_router_q4k.v` + `swiglu_expert_q4k.v` + combine)
 
-- **Router:** `logits = x · W_g(6144×256)` via `gemm_ml` (256 logits). GLM/DeepSeek-v3 style:
+- **Router:** `logits = x · W_g(6144×256)` via `glm_matmul_q4k` (W_g is a **Q4_K** weight,
+  ggml dequant → fp32 MAC → bf16; the routing "tail" is bf16). GLM/DeepSeek-v3 style:
   **sigmoid** (or softmax — parameterized) scores, group/**top-8 of 256** via `topk_select`.
 - **Gate math — ORDER IS CORRECTNESS-CRITICAL** (two explicit pipeline stages, never folded):
   (1) **renormalize** the 8 selected gate weights to sum 1; **then** (2) multiply by
-  **routed_scaling_factor = 2.5**. A golden assertion checks the post-scale gate vector
-  (wrong order is a silent bf16-tolerance-passing-but-wrong bug).
+  **routed_scaling_factor = 2.5**. `moe_router_q4k`'s TB checks the renorm/scale invariants
+  (`make q4k` → `moe_router_q4k` **40/40** — structural/functional invariants, *not* a numeric
+  golden); wrong order is a silent bf16-tolerance-passing-but-wrong bug.
 - **SwiGLU expert** (8 routed + 1 always-on shared, moe_inter=2048): `g = x·W_gate(6144×2048)`,
-  `u = x·W_up(6144×2048)` on `gemm_ml`; `h = silu(g) ⊙ u` (silu via sigmoid LUT reusing
-  `softmax_unit`'s exp-LUT infra + `fused_ops_unit` elementwise multiply, fp32 then bf16);
-  `y_e = h · W_down(2048×6144)`. Shared expert: identical shape, always runs, gate=1.
-- **Combine:** `out = Σ_{e∈top8} gate_e·y_e + y_shared`, **fp32 accumulate**, residual-add.
-- **Dense-front (L0,1,2):** `swiglu_expert` in **dense mode**, intermediate_size=12288, no
+  `u = x·W_up(6144×2048)` on `glm_matmul_q4k` (**Q4_K** weights, bf16 activations); `h = silu(g)
+  ⊙ u` (silu + elementwise multiply via `glm_act`, fp32 then bf16); `y_e = h · W_down(2048×6144)`
+  (**Q4_K**). Shared expert: identical shape, always runs, gate=1. `make q4k` → `swiglu_expert_q4k`
+  **240/240** (functional, self-labeled — *not* bit-exact).
+- **Combine:** `out = Σ_{e∈top8} gate_e·y_e + y_shared`, **fp32 accumulate**, then **bf16
+  residual-add** (the residual stream is bf16 — §3). Combine lives in `glm_decoder_block_q4k`.
+- **Dense-front (L0,1,2):** `swiglu_expert_q4k` in **dense mode**, intermediate_size=12288, no
   router, always-active. One unit covers both FFN modes (mode flag selects inter size).
 - **Streaming (dominant DMA traffic) [SYS-EST]:** per token only 8/256 experts active
-  (8·37.75M = 302M params ≈ 151 MB bf16 / 38 MB INT4 per layer). Router top-8 ids key an
-  AXI-master DMA gather of exactly those experts from T1/T2 into the resident expert buffer;
-  shared expert + MLA proj + norms are HOT/resident, routed experts COLD/streamed. **Batching
-  tokens amortizes loads** (route a whole batch, load each needed expert once).
-  - **Batching realized in the RTL slice [BUILT].** All four FP8 wrappers
-    (`swiglu_expert_fp8`, `moe_router_fp8`, `mla_attn_fp8`, `mtp_head_fp8`) now carry a `PE_M`
-    parameter with `[0:PE_M-1]` per-row buffers, so **B token rows share ONE weight-fetch
-    stream** — verified bit-exact and weight-share ("PE_M=B issues the same weight beats as
-    PE_M=1 → B rows, 1 fetch stream"; regression: swiglu 513 / router 192 / mla 6 / mtp 44).
-    In `glm_decoder_block_fp8` the `PE_M>1` grouped MoE fetches **only the UNION of the
-    selected experts** across the batch (an expert-axis scan + combinational membership test,
-    not all `N_EXPERT`) — **byte-identical** to per-row routing. On the real 256-expert config
-    this is up to **~32× fewer NVMe expert fetches** at small batch (union of ≤8 vs 256), with
-    the benefit tending to 1× as `B→256` where the union approaches the full expert set.
-  - **Multi-sequence batching (`PER_ROW_SEQ`) [BUILT].** *(This is an aggregate / multi-user
-    serving capability of the same silicon — a **secondary, non-target datacenter regime**, NOT
-    the single-user product, which runs one sequence at `B=1`. The same `PE_M` weight-sharing
-    serves the product by batching a sequence's speculative-decode draft tokens; it is verified
-    here because it exercises the identical fetch-sharing datapath.)* The batch rows need not
-    belong to one sequence. With `PER_ROW_SEQ=1` each `PE_M` row is a **DIFFERENT sequence**: `mla_attn_fp8`
-    builds a per-row-slot union (tagged by `union_seq`) and emits `kc_seq` to route every KV
-    fetch to that sequence's own cache window, so **each row attends its OWN sequence's KV**
-    while the **query-side weight/projection fetch stays SHARED** across sequences (the batching
-    bandwidth win). `PER_ROW_SEQ`/`seq_vec`/`kc_seq`/`SWIN` thread model→decoder→mla; proven
-    end-to-end (`glm_model_fp8_multiseq_tb`: 2 sequences, per-row argmax/logits **bit-exact** vs
-    per-seq `PE_M=1`, ~41% fewer attn-weight beats than two runs) and scaled to B=4
-    (`glm_model_fp8_multiseq4_tb`, ~52% fewer), **dense + sparse**; **byte-identical** at
-    `PER_ROW_SEQ=0`. A batched multi-seq SoC top (`glm_fp8_soc_ms`) drives it with a real
-    `NSEQ`-window `kv_cache_pager` + `expert_cache_pf` + host FSM (prefill B seqs → 1 forward →
-    commit B tokens) over a top-owned per-layer KV store (`kv_mem`); at `N_STEPS>1` it becomes a
-    continuous-batching decode loop that writes each decode token's latent into `kv_mem` at its
-    growing position and feeds the argmax back, each row's step-k token bit-exact vs a standalone
-    `PE_M=1` decode. `DSA_REAL_IDX=1` (query-dependent IndexShare) also works under multi-seq via
-    a per-sequence `kidx_buf` pre-fetch.
+  (8·37.75M = 302M params ≈ **~604 MB bf16 / ~170 MB Q4_K per MoE layer**; consistent with the
+  roofline's ~14 GB of routed experts across all 75 MoE layers per token). Router top-8 ids key
+  an `expert_cache_pf` / `weight_loader_q4k` DMA gather of exactly those experts from the NVMe/DDR
+  tiers into the resident expert buffer; shared expert + MLA proj + norms are HOT/resident, routed
+  experts COLD/streamed. **Batching tokens amortizes loads** (route a whole batch, load each
+  needed expert once).
+  - **Batching present in the as-built Q4_K RTL.** The Q4_K units
+    (`swiglu_expert_q4k`, `moe_router_q4k`, `mla_attn_q4k`, `mtp_head_q4k`, `glm_decoder_block_q4k`,
+    `glm_model_q4k`, `glm_q4k_soc_ms`) all carry the `PE_M` parameter with `[0:PE_M-1]` per-row
+    buffers, so **B token rows share ONE weight-fetch stream** (at `PE_M=1` every PE_M-indexed
+    construct constant-folds to the committed single-token forward — byte-identical). In
+    `glm_decoder_block_q4k` the `PE_M>1` grouped MoE fetches **only the UNION of the selected
+    experts** across the batch (an expert-axis scan + combinational membership test, not all
+    `N_EXPERT`). On the real 256-expert config this is up to **~32× fewer NVMe expert fetches** at
+    small batch (union of ≤8 vs 256), tending to 1× as `B→256` where the union approaches the full
+    expert set. **[SYS-EST]**
+  - **Multi-sequence batching (`PER_ROW_SEQ`).** *(An aggregate / multi-user serving capability of
+    the same silicon — a **secondary, non-target datacenter regime**, NOT the single-user product,
+    which runs one sequence at `B=1`. The same `PE_M` weight-sharing also serves the product by
+    batching a sequence's speculative-decode draft tokens.)* With `PER_ROW_SEQ=1` each `PE_M` row
+    is a **DIFFERENT sequence**: `mla_attn_q4k` builds a per-row-slot union and emits `kc_seq` to
+    route every KV fetch to that sequence's own cache window, so **each row attends its OWN
+    sequence's KV** while the **query-side weight/projection fetch stays SHARED** (the batching
+    bandwidth win). `PER_ROW_SEQ`/`seq_vec`/`kc_seq`/`SWIN` thread model→decoder→mla; a batched
+    multi-seq SoC top (`glm_q4k_soc_ms`) drives it with a real `NSEQ`-window `kv_cache_pager` +
+    `expert_cache_pf` + host FSM (prefill B seqs → 1 forward → commit B tokens), and at `N_STEPS>1`
+    becomes a continuous-batching decode loop.
+  - **⚠️ Verification status (honest).** The *bit-exact weight-share*, *union-byte-identical*, and
+    *multi-seq per-row-bit-exact* results — with the specific regression counts (swiglu 513 /
+    router 192 / mla 6 / mtp 44; `glm_*_multiseq_tb`: 2 seqs ~41% / B=4 ~52% fewer attn-weight
+    beats) — were established on the **PRIOR FP8 track** (branch `fp8`; the multiseq TBs are FP8).
+    Those checks are also **DUT-vs-DUT self-consistency** (a batched run vs independent `PE_M=1`
+    runs of the *same* model), **not** a numeric golden vs ggml/llama.cpp. On `main` the Q4_K
+    units carry the identical `PE_M`/`PER_ROW_SEQ` parameters, but a **Q4_K re-run of these
+    batching regressions is [PENDING]**; the FP8 counts above are kept **as prior-FP8
+    measurements**, not relabeled as Q4_K.
 
 ---
 
-## 6. Correctness & quantization + float-golden methodology
+## 6. Correctness & quantization + golden methodology
 
-**Independent fp32 golden** (numpy/torch) implements the SAME equations as the RTL, written
-from the config independently of the hardware so it is a true oracle, not a transcription:
-MLA down/up + latent RMSNorm + separate k_rope + 16/16 (real 64/192) split + decoupled
-interleaved RoPE θ=8e6; DSA indexer scoring + top-k + causal mask + IndexShare reuse + dense
-fallback; router sigmoid + top-k + **renorm-then-×2.5**; SwiGLU; fp32 residual; MTP t+2;
-final RMSNorm; LM head; fp32 sampling.
+This is the honest verification picture. Read "golden" carefully — the goldens are **the team's
+own** references, never the real GGUF bytes or llama.cpp.
 
-**Numerics policy enforced in BOTH RTL and golden (so they can match):**
-1. RMSNorm Σx² in **fp32** (6144 bf16 terms overflow bf16 precision).
+**(a) The one bit-exact-vs-ggml result — the Q4_K weight math.** `tools/q4k_ref.py` is an
+independent reimplementation of ggml's `dequantize_row_q4_K` + the Q4_K matmul contract. The RTL
+Q4_K primitives (`q4k.vh`: fp16→fp32 decode, `get_scale_min_k4`) and the Q4_K GEMM core
+(`glm_matmul_q4k`) are **bit-exact** to it: `make q4k` → `q4k_prim` **18/18**, `glm_matmul_q4k`
+**160/160**. This proves the *weight dequant → fp32 MAC → bf16* contract, **not** the assembled
+model and **not** the real GGUF/llama.cpp runtime (which uses Q8_K-quantized activations + integer
+dot — a different arithmetic contract).
+
+**(b) Per-unit goldens are on the generic bf16/fp32 TWINS, not the `_q4k` product.** The
+`rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer`/`topk_select`, `mla_attn`, `mtp_head`,
+`glm_softmax`, `sampler` TBs check each unit against an fp32/fp64 golden of the same equation —
+but `mla_attn` / `glm_model` / `mtp_head` here are the **generic bf16 twins** (`src/glm_model.v`
+etc., **zero** Q4_K). They verify the *structure/math*, not the assembled Q4_K numeric path.
+The Q4_K operator wrappers are checked only **functionally / by invariant**: `swiglu_expert_q4k`
+**240/240** (functional, self-labeled — not bit-exact), `moe_router_q4k` **40/40**
+(renorm/top-K invariants — not a numeric golden).
+
+**(c) The assembled `glm_model_q4k` has NO end-to-end numeric golden — [NOT-YET].** Nothing
+asserts the assembled Q4_K forward pass matches ggml/llama.cpp (or even the bf16 twin) on logits.
+It is exercised **only** as **spec-decode == greedy self-consistency**: `spec_decode_top` **19/19**
+(`make unittests`) proves the speculative loop emits exactly what greedy would — but the "greedy
+golden" is *itself* a `glm_model_q4k` sharing the same weight ROMs (a real lossless-speculation
+safety property, a DUT-vs-DUT check, **not** a numeric golden). Larger loops (`spec_batched_top` /
+`spec_chain_top`) via `make spec-slow`.
+
+**Numerics policy (as built — matches §3):**
+1. RMSNorm Σx² in **fp32** (6144 bf16 terms overflow bf16 precision), bf16 I/O.
 2. RoPE angle table in **fp32** (position 2²⁰ spans the frequency range beyond bf16).
-3. softmax max + exp-sum reduce in **fp32** (attention AND router).
-4. residual stream accumulated in **fp32** across all layers (avoid drift).
-5. router **renorm-then-scale** order.
-   (Existing units already use a 48-bit Q15.16 accumulator + fp-style reduce in
-   `softmax_unit`/`gemm_ml`, so the slice inherits the fp32-reduce behavior.)
+3. GEMM: Q4_K weight dequant → fp32 products → **fp32 sequential accumulate** → bf16 RNE out.
+4. **residual stream is bf16 across all layers** (a `modules_to_not_convert` boundary — *not* an
+   fp32 residual; the MoE combine uses an fp32 accumulator, but the running residual is bf16).
+5. router **renorm-then-scale** order (checked by `moe_router_q4k`'s invariant TB).
+   All fp32 ops are `glm_fp.vh`'s IEEE `fp32_mul`/`fp32_add` (no fixed-point Q-format).
 
-**Pass criteria:**
-- Per-unit TBs (rmsnorm, rope_interleave, mla_attn, dsa_indexer/topk_select, moe_router,
-  swiglu_expert, mtp_head, sampler) each vs the golden's matching function; deterministic
-  ops (RMSNorm, RoPE) checked near-ULP.
-- End-to-end: **rel-err < ~2e-2 on logits AND exact argmax next-token match** vs golden.
-- **Structural edge cases explicitly tested:** S≤topk dense vs S>topk sparse; IndexShare
-  3-layer reuse uses the EXACT same index set as golden; absorb vs materialized MLA identical;
-  renorm-then-scale order; dense-front vs MoE layers; MTP t+2 verified separately.
+**⚠️ Known numeric gap:** MLA omits the `1/√qk_head_dim` softmax scale (§4.1) — silent because the
+bf16-twin TB golden omits it too, and there is no assembled-model golden to catch it.
 
-**Quantization:** INT4 weights / INT8 cache with per-group scales **[SYS-EST]**; correctness
-is **defined within quantization tolerance** against the fp32 golden. The buildable slice runs
-the fixed-point (Q7.8/Q15.16) datapath and is judged by the same rel-err/argmax gates.
+**Quantization:** **weights Q4_K** (256-weight super-block: fp16 `d`/`dmin` + 6-bit scales +
+4-bit codes, dequant per ggml); **activations and the latent KV cache are bf16** — there is no
+activation quant and no INT8 cache (unlike the prior FP8 track). The RTL is **Q4_K-only**: the
+dynamic UD-Q4_K_XL mix keeps sensitive tensors at Q6_K/Q8_0/F16, for which the RTL has **no
+consumer** (`grep -ril 'q6_k|q8_0' src/` = 0) — a real checkpoint would be re-quantized to Q4_K
+(voids the moat) or fed pre-dequantized as bf16. **[NOT-YET]**
 
-**Verification gates (inherited 3-gate flow, extended to new units):** (1) iverilog/verilator
-functional vs golden; (2) yosys synth; (3) nextpnr-ecp5 routed PPA.
+**Structural / elaboration sign-off (not a sim):** the whole 2-clock Q4_K top
+(`glm_q4k_system_cdc`) passes yosys `hierarchy -check` + `check -assert` (`make synth-glm`, 0
+unresolved); the full 753B UD-Q4_K_XL shape (`glm_model_q4k` at DIM 6144 / L=78 / 256-expert /
+VOCAB 154880) elaborates clean (`test/full_config_elab_wrap.v`, `iverilog -tnull`, type/width only —
+*no stimulus, no golden, no run*).
+
+**Verification gates:** (1) iverilog functional vs golden (`make q4k` / `make unittests`);
+(2) yosys structural synth (`make synth-glm`); (3) **routed PnR / Fmax / LUT-DSP fit — [PENDING]**
+(Vivado/Gowin/nextpnr-blocked; no routed-netlist result in-repo).
 
 ---
 
 ## 7. Memory & scale system (tiered + streaming + 1M paging)
 
-**Tier 0 — on-chip SRAM / `tile_memory`:** active token activations, current-layer GEMM
-tiles (128-bit/4-lane lines, Q7.8), DSA index-set scratch, softmax scratch, HOT weights
-(MLA proj, shared expert, router W_g, RMSNorm γ, the fp32 RoPE angle table), the active
-8/256 routed experts, and the **2048-row DSA gather window** (bounded regardless of S).
+**Tier 0 — on-chip SRAM:** active token activations, current-layer GEMM tiles, DSA index-set
+scratch, softmax scratch, HOT weights (MLA proj, shared expert, router W_g, RMSNorm γ, the fp32
+RoPE angle table), the active 8/256 routed experts, and the **2048-row DSA gather window**
+(bounded regardless of S).
 
-**Tier 1 — on-package HBM [SYS-EST]:** hot-weight overflow + recently-used routed-expert
-working set + the active latent-cache window.
+**Tier 1 — DDR/HBM fast tier [SYS-EST]:** hot-weight overflow + recently-used routed-expert
+working set + the active latent-cache window (rung-dependent — DDR4 on the prove-it FPGA,
+DDR5/HBM on the funded custom board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
 
-**Tier 2 — DRAM / host [SYS-EST]:** full 725B cold routed-expert pool (1.45 TB bf16 /
-363 GB INT4) + long-tail latent cache + the staged INT4 model image.
+**Tier 2 — NVMe / host [SYS-EST]:** full 725B cold routed-expert pool (1.45 TB bf16 /
+**~435 GB Q4_K**) + long-tail latent cache (bf16) + the staged **~467 GB UD-Q4_K_XL** model image.
 
-**Datapath (`tpu_soc` AXI-master DMA + async-CDC, two-clock):**
-- **Expert stream** (dominant traffic): router top-8 ids → DMA gather of those experts from
-  T1/T2 → resident expert buffer → run SwiGLU → evict.
+**Datapath (`glm_q4k_soc` / `glm_q4k_system_cdc` — DMA + async-CDC, two-clock):**
+- **Expert stream** (dominant traffic): router top-8 ids → `expert_cache_pf` / `weight_loader_q4k`
+  DMA gather of those experts from T1/T2 → resident expert buffer → run SwiGLU → evict.
 - **Cache append:** write [c_kv(512) | k_rope(64)] per token/layer to the per-layer ring
-  buffer (append-only).
-- **Cache gather:** `scatter_gather` reads the 2048 DSA-selected rows
+  buffer (append-only), via `kv_cache_pager`.
+- **Cache gather:** `kv_cache_pager` reads the 2048 DSA-selected rows
   (`eff_addr = cache_base + index·stride`).
+- **Storage fabric:** `flash_xbar` (N-channel banked NVMe/PCIe read) → `ddr5_xbar`
+  (N-channel banked DDR read) → die; `cdc_async_fifo` crosses the host/bus ↔ core clocks.
 
 **Latent-KV 1M paging [SYS-EST]:** the indexer streams the whole ring cheaply (small dim) to
 produce the index list; **attention gathers only the 2048 selected pages** (+ recent window).
 So at 1M context only a 2048-row working set is resident even though the full cache is 94.2 GB.
-Absorb mode further cuts cache reads by attending directly on c_kv.
+(A designed absorb-mode could further cut cache reads by attending directly on c_kv — not
+currently implemented; §4.1.)
 
 **RTL slice memory [DERIVED]:** 8 tiny experts, S=32 latent ring, 256-entry vocab — fits one
 chip, but uses the **same DMA append/gather datapath** so streaming control is exercised at
@@ -406,41 +493,50 @@ small scale.
 | dense inter | 256 | 12288 | **dense/MoE mode switch** |
 | MTP nextn | 1 | 1 | **t+2 head** |
 | vocab V | 256 | 154880 | — |
-| eps / dtype | 1e-5 / bf16-compute fp32-reduce | same | **numerics policy** |
+| eps / dtype | 1e-5 / Q4_K wt · bf16 act · fp32 acc · bf16 residual | same | **numerics policy** |
 
 ### 8.2 Build ORDER (dependency-driven — leaf math units first, orchestrators last)
+
+The GEMM engine is the **Q4_K weight core `glm_matmul_q4k`** (with its bf16 sibling
+`glm_matmul_pipe` for the `modules_to_not_convert` tail); `glm_softmax` replaces the legacy
+`softmax_unit`. The order below is how the datapath was built up.
 
 1. **`rmsnorm_unit.v`** ← FIRST UNIT (see §8.4). Leaf, no deps, used everywhere (5 sites).
 2. **`rope_interleave_unit.v`** — fp32 angle table, adjacent-pair rotation; needed by MLA +
    DSA indexer.
 3. **`topk_select.v`** — shared top-k selector (used by both DSA and router); build before
    either consumer.
-4. **`swiglu_expert.v`** — wraps `gemm_ml` + silu LUT + `fused_ops_unit` mul; dense/MoE modes.
-   (Independent of attention; can proceed in parallel after #1.)
-5. **`moe_router.v`** — W_g GEMV + sigmoid + `topk_select` + renorm-then-×2.5.
+4. **`swiglu_expert_q4k.v`** — wraps `glm_matmul_q4k` (Q4_K gate/up/down) + silu/mul via
+   `glm_act`; dense/MoE modes. (Independent of attention; can proceed in parallel after #1.)
+5. **`moe_router_q4k.v`** — Q4_K W_g GEMV (`glm_matmul_q4k`) + sigmoid + `topk_select` +
+   renorm-then-×2.5.
 6. **`dsa_indexer.v`** — small-dim scoring over ring + `topk_select` + dense fallback +
    IndexShare index-list cache.
-7. **`mla_attn.v`** — orchestrator: Q/KV low-rank paths, latent RMSNorm, RoPE, cache append,
-   absorb mode; drives `gemm_ml` + `rmsnorm_unit` + `rope_interleave_unit` + `dsa_indexer` +
-   extended `attention_unit`.
-8. **`attention_unit` gather extension** — top-k gather front-end on the existing score/mask/AV.
-9. **`mtp_head.v`** — own norm + small attn/FFN, shares LM head.
-10. **`sampler.v`** — fp32 temp/top-k/top-p/softmax/multinomial (LFSR).
-11. **`layer_sequencer.v`** — walks 6 layers: dense/MoE pattern, full/shared-indexer pattern,
-    fp32 residual accumulation.
-12. **Decoder-block top wiring** — embed (`scatter_gather`) → 6 blocks → final `rmsnorm_unit`
-    → LM head (`gemm_ml`) → `sampler`; MTP head wired separately. Reused: `gemm_ml`,
-    `softmax_unit`, `attention_unit`(extended), `scatter_gather`, `tpu_soc`/`axi_master_dma`/
-    `cdc_async_fifo`, `tile_memory`, `tpu_defs.vh`.
+7. **`mla_attn_q4k.v`** — orchestrator: Q/KV low-rank paths (Q4_K), latent RMSNorm, RoPE, cache
+   append, batched shared-key K/V pass; drives `glm_matmul_q4k` + `rmsnorm_unit` +
+   `rope_interleave_unit` + `dsa_indexer` + its inner QK^T/AV + `glm_softmax`.
+8. **`mtp_head_q4k.v`** — own norm + small attn/FFN (Q4_K), shares LM head.
+9. **`sampler.v`** — temp/top-k/top-p/softmax/multinomial (LFSR).
+10. **`glm_decoder_block_q4k.v` / `glm_model_q4k.v`** — walk the layers: dense/MoE pattern,
+    fresh/reuse-indexer pattern, **bf16 residual stream** (not fp32), MoE combine (fp32
+    accumulator), PE_M batching + union-of-experts fetch.
+11. **Model top wiring** — embed (gather) → L blocks → final `rmsnorm_unit` → LM head
+    (**bf16** `glm_matmul_pipe`) → `sampler`; MTP head wired separately. Memory/streaming:
+    `weight_loader_q4k`, `flash_xbar`, `ddr5_xbar`, `expert_cache_pf`, `kv_cache_pager`,
+    `boot_loader`, `cdc_async_fifo`, `reset_sync` — wrapped by `glm_q4k_soc` /
+    `glm_q4k_soc_ms` / `glm_q4k_system_cdc`.
 
 ### 8.3 Verification — per-unit then per-block
 
-- Every new unit gets its **own iverilog/verilator TB vs the golden's matching function**,
-  in the existing assertion-count style, then yosys synth + nextpnr-ecp5 PPA.
-- Block bring-up order mirrors the build: (a) attention sub-block (rmsnorm+mla_attn+dsa+attn)
-  vs golden attention; (b) FFN sub-block (router+experts+combine, both dense and MoE) vs
-  golden FFN; (c) full 6-layer loop vs golden logits (rel-err<2e-2 + argmax); (d) MTP head
-  separately.
+- The Q4_K weight core (`q4k.vh`, `glm_matmul_q4k`) is **bit-exact vs the ggml-Q4_K reference**
+  `tools/q4k_ref.py` (`make q4k`); the surrounding leaves get their own iverilog TB vs an
+  fp32/fp64 golden of the same equation — but the `mla_attn`/`glm_model`/`mtp_head` goldens run
+  against the **generic bf16 twins** (`src/glm_model.v` …), *not* the `_q4k` product (§6b).
+- yosys structural synth (`make synth-glm`); routed **PnR/Fmax — [PENDING]** (§6).
+- Block bring-up: (a) attention sub-block vs the twin's golden attention; (b) FFN sub-block
+  (router+experts+combine) — Q4_K units checked functionally / by invariant; (c) the **assembled
+  Q4_K model has no end-to-end numeric golden** — it is exercised only as **spec-decode == greedy
+  self-consistency** (`spec_decode_top` 19/19; §6c), **not** rel-err/argmax vs a numeric oracle.
 
 ### 8.4 The CONCRETE FIRST unit to build
 
@@ -457,30 +553,43 @@ small scale.
 
 ### 8.5 Proven-by-build vs designed-on-paper
 
-| Proven by the buildable slice **[BUILT after build]** | Designed on paper **[SYS-EST]** |
+| Proven by the buildable slice **[BUILT]** | Designed on paper **[SYS-EST]** |
 |---|---|
-| All operators (#1–#21) at small-faithful dims | 725B cold-expert residency (1.45 TB / 363 GB) |
-| MLA latent + decoupled RoPE + absorb mode | 94.2 GB 1M-context latent cache |
-| DSA top-k + IndexShare reuse + dense fallback | INT4/INT8 quantized residency + per-group scales |
-| MoE top-2+shared + renorm-then-×2.5 + dense-front | Multi-chip HBM farm + cross-chip expert sharding |
-| fp32-reduce numerics vs golden (rel-err<2e-2) | 512× FLOP-cap payoff at 1M context |
-| DMA append/gather streaming control (small ring) | Full-rate expert-stream bandwidth at 753B |
+| Q4_K weight core **bit-exact vs ggml ref** (`glm_matmul_q4k`, `q4k_prim`) | 725B cold-expert residency (1.45 TB bf16 / ~435 GB Q4_K) |
+| Per-unit twins vs fp32/fp64 golden (rmsnorm, rope, dsa, mla, mtp) | 94.2 GB 1M-context latent cache (bf16) |
+| Q4_K operators functional/invariant (swiglu 240, router 40) | Q4_K residency of the ~467 GB UD-Q4_K_XL image |
+| Assembled model = **spec==greedy self-consistency** (19/19) — *no numeric golden* | Multi-chip HBM farm + cross-chip expert sharding |
+| Structural sign-off: 753B-shape elaboration + whole-top synth | 512× FLOP-cap payoff at 1M context |
+| PE_M batching + union-fetch (params present; bit-exact only on prior FP8 track) | Full-rate expert-stream bandwidth at 753B |
 
 ---
 
 ## 9. Perf / power note (SECONDARY)
 
-Throughput and power are explicitly secondary to correctness. Qualitatively **[SYS-EST]**:
-the design is **memory-bandwidth-bound**, not compute-bound — per token only ~40B params are
-active but ~151 MB bf16 (38 MB INT4) of expert weights stream **per MoE layer**, so expert-DMA
-bandwidth and batching (amortizing each expert load across a token batch) dominate throughput;
-the DSA 2048-key FLOP cap keeps attention compute constant at long context, shifting the 1M
-bottleneck to latent-cache bandwidth (the indexer's O(S) pass) rather than attention FLOPs.
-Power follows the same story — DRAM/HBM traffic for expert + cache movement dwarfs the PE-array
-energy. The buildable slice reports routed PPA (yosys + nextpnr-ecp5) for the **new datapath
-units** only; full-system throughput/power are paper estimates, not measured.
+Throughput and power are explicitly secondary to correctness, and every number here is
+**[EST]/[SYS-EST]**, never measured on silicon. Qualitatively: the design is
+**NVMe/PCIe-bandwidth-bound**, not compute-bound — per token only ~40B params are active, but
+they weigh **~25 GB in Q4_K** (~0.6 B/param), of which the **~14 GB of routed experts** (top-8,
+changing every token) must stream from NVMe/Flash each token (~170 MB Q4_K per MoE layer; the ~9
+GB hot-set of attention/dense/shared can cache in DDR). So expert streaming bandwidth and batching
+(amortizing each expert load across a token batch / the union-of-experts fetch) dominate
+throughput; the DSA 2048-key FLOP cap keeps attention compute constant at long context, shifting
+the 1M bottleneck to latent-cache bandwidth (the indexer's O(S) pass) rather than attention FLOPs.
+Power follows the same story — NVMe/DDR traffic for expert + cache movement dwarfs the PE-array
+energy. The tok/s is **rung-dependent** (bandwidth set by IO pins/PHYs → budget): roughly
+**~5–8 tok/s on the prove-it FPGA (rung ①) → ~15–40 on the funded custom board (rung ②) → ~40+ at
+volume (rung ③)** with **~9 → ~3 J/token**, all **[EST]** until a Vivado fit + a running board —
+see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md). No routed PPA
+(LUT/DSP/Fmax) result is in-repo: routed PnR is **[PENDING]**; only structural yosys synth
+(`make synth-glm`) is done.
+
+> **Prior-FP8 note.** Earlier revisions of this doc/track carried specific **FP8** measurements
+> (sky130 PPA slack, LUT/DSP counts, cycle counts, byte/BOM figures). Those are **prior-FP8**
+> results (branch `fp8`) for a **deleted** datapath; **no Q4_K re-run exists**. They are *not*
+> reproduced here rather than relabeled as Q4_K numbers.
 
 ---
 
-*Buildable RTL under `src/`. Golden + per-unit/block TBs
-to be added alongside. Build starts at `rmsnorm_unit.v`.*
+*Buildable RTL under `src/` (`glm_*_q4k` compute + memory-system modules). Q4_K GEMM golden
+`tools/q4k_ref.py`; per-unit/block TBs under `test/`. The Q4_K weight core is the one
+bit-exact-vs-ggml result; the assembled model is exercised as spec==greedy self-consistency.*

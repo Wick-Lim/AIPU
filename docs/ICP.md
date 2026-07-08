@@ -2,10 +2,11 @@
 
 *The ideal customer profile for the product defined in [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) /
 [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md): a **local, single-user appliance** running a full
-frontier open-weight model (GLM-5.2-FP8, 753B) that **works fully offline / air-gapped — nothing leaves
-because there is no path out** — no per-token fees, **one box / one seat** (B=1), at a speed staged to
-the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rungs: ~5–8 tok/s [EST] on the prove-it FPGA today,
-~15–40 tok/s [EST] interactive on the funded custom board.*
+frontier open-weight model (GLM-5.2, a 753B-param MoE in ~4-bit **Q4_K** — the published
+[`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF), ~467 GB) that
+**works fully offline / air-gapped — nothing leaves because there is no path out** — no per-token fees,
+**one box / one seat** (B=1), at a speed staged to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rungs:
+~5–8 tok/s [EST] on the prove-it FPGA today, ~15–40 tok/s [EST] interactive on the funded custom board.*
 
 ---
 
@@ -50,12 +51,16 @@ audit — *does it work with the ethernet cable unplugged? Yes.* That one proper
 3. **Resilience / independence** — no vendor dependency: can't be rate-limited, deprecated, price-hiked,
    or cut off; the model can't be taken from you. This axis lands with *connected* buyers too.
 
-**Honest caveats (don't oversell "magically offline"):** the 753 GB model is loaded **once** (a one-time
-provisioning, itself doable offline / in a secure facility); thereafter it is fully offline. Updates
-(new weights) are **physical** re-provisioning — fine for air-gap buyers, who expect it, but state it.
-And *offline alone is table-stakes* — a 70 B laptop model is offline too. The moat is the
-**combination**: **offline + full frontier (753B) + appliance / per-seat price** (70 B fails frontier
-quality; 8×H100 fails price/form-factor; secured cloud fails the unplugged test).
+**Honest caveats (don't oversell "magically offline"):** the ~467 GB Q4_K model is loaded **once** (a
+one-time provisioning, itself doable offline / in a secure facility); thereafter it is fully offline.
+Updates (new weights) are **physical** re-provisioning — fine for air-gap buyers, who expect it, but
+state it. And *offline alone is table-stakes* — a 70 B laptop model is offline too, and so is a big-RAM
+workstation running the **same** UD-Q4_K_XL GGUF under llama.cpp (the sharpest honest competitor — see
+below). The moat is the **combination**: **offline + full frontier (753B) + turnkey per-seat appliance
+on purpose-built silicon** (70 B fails frontier quality; 8×H100 fails price/form-factor; a DIY big-RAM
+llama.cpp box fails turnkey / per-seat form-factor; secured cloud fails the unplugged test). The moat is
+**not** "bit-exact to the downloaded GGUF" — the RTL runs a *different* arithmetic contract (bf16
+activations + fp32 accumulate) and is **not** bit-validated against the GGUF file or llama.cpp.
 
 **Don't confuse the market with the wedge.** The need is horizontal — legal, quant/finance, IP-heavy
 R&D, government/defense, healthcare, and **offline/disconnected environments** (SCIFs, isolated OT /
@@ -107,6 +112,15 @@ building").
   client engagement letters forbid cloud AI outright.
 - **A smaller on-prem model (Llama/Qwen 70 B on a workstation GPU):** *quality gap* on hard legal
   reasoning, **and** it's still a GPU box someone has to stand up, quantize, patch, and babysit.
+- **A big-RAM workstation running the same Q4_K GGUF under llama.cpp:** the *honest* frontier-offline
+  alternative — a server with 512 GB–1 TB of RAM can load UD-Q4_K_XL and run it CPU-side, offline,
+  **today**, and (unlike our Q4_K-only RTL) it consumes the *full* mixed-type Q4_K/Q6_K/Q8_0/F16
+  checkpoint. What it *isn't* is a **turnkey per-seat appliance**: it's a DIY box someone still specs,
+  builds, patches, and babysits; CPU token rates are low; and it carries a workstation's
+  power/thermal/form-factor, not a desk appliance's. Our edge over it is **appliance economics + form
+  factor + power/thermal per seat on purpose-built silicon** — and that edge is **[EST]/[PENDING]** until
+  the FPGA fit lands a real BOM and a running board shows real tok/s. We claim **no** numeric-fidelity or
+  bit-exactness advantage over llama.cpp.
 - **Self-host the real 753 B on GPUs:** **8×H100 ≈ $250–400 k capex** + kW-scale power + an MLOps team —
   absurd overkill for a handful of confidentiality-bound seats; it's a *datacenter build*, not a product.
 - **Do nothing:** they leave frontier AI on the table for exactly their **highest-value, most sensitive**
@@ -121,12 +135,17 @@ building").
 |---|---|---|---|
 | Cloud frontier API *(incl. secured cloud: VPC / zero-retention / TEE)* | ✅ | ❌ (disqualifies — still connected) | ~$20–200/mo — *but not allowed* |
 | Mac/GPU + 70 B local | ❌ (quality gap) | ✅ | ~$3–6 k one-time |
+| Big-RAM box + llama.cpp (**same** Q4_K GGUF) | ✅ (full 753 B Q4_K) | ✅ | ~$5–15 k one-time [EST] — but **DIY workstation, CPU-slow, not a per-seat appliance** |
 | 8×H100 private 753 B | ✅ | ✅ | ~$250–400 k + power + MLOps (shared, not per-seat) |
-| **This box (target)** | **✅ (753 B)** | **✅** | **target BOM in the low-$k's + a per-seat SW/support subscription** |
+| **This box (target)** | **✅ (753 B Q4_K)** | **✅** | **target BOM in the low-$k's + a per-seat SW/support subscription [EST/PENDING]** |
 
-The pitch is **not** "cheaper tokens" (the cloud API is cheaper if you're *allowed* to use it). It's
-**"the only way to give this specific professional frontier-model leverage on data they cannot put in
-the cloud, at a desk price."** The buyer is paying for **access under a constraint**, not for throughput.
+The pitch is **not** "cheaper tokens" (the cloud API is cheaper if you're *allowed* to use it), and it is
+**not** "more numerically faithful than llama.cpp" (we don't claim that). It's **"the only *turnkey
+per-seat appliance* that gives this specific professional frontier-model leverage on data they cannot put
+in the cloud, at a desk price / power / form-factor."** The buyer is paying for **access under a
+constraint, packaged as a box** — not for throughput, and not for bit-exactness. The sharpest competitor
+is the big-RAM llama.cpp box above: we beat it only on **form factor + per-seat turnkey + power/thermal**,
+an advantage that stays **[EST]** until the FPGA fit and a running board make it real.
 
 > Honest gate: the box's BOM (FPGA + 1 TB NVMe SSD (M.2/PCIe) + DDR + board) must land at a
 > *per-seat-defensible* price — the FPGA class and DDR generation are **rung-dependent** (DDR4 on the
@@ -171,6 +190,10 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
   fail the unplugged test, so they only matter to buyers who don't actually need air-gap). Don't chase.
 - **Anyone happy with a 70 B local model** — a Mac/GPU serves them cheaper; we only win when frontier
   quality is required.
+- **Anyone content to build and babysit a big-RAM llama.cpp workstation** — if a DIY server with enough
+  RAM to hold the Q4_K GGUF, run CPU-side and self-maintained, clears their bar, they don't need a
+  turnkey per-seat appliance. We win only where **form factor + per-seat turnkey + power/thermal** matter
+  — and that advantage is **[EST]** until an FPGA fit and a running board measure it.
 - **Multi-user / high-QPS serving** — that's the **non-target datacenter regime** (per-user ~0.14 tok/s
   batched; see [`ULTRA_PERF.md`](ULTRA_PERF.md) §4). The box is **one seat**. Selling it as a shared
   server breaks the whole value prop.

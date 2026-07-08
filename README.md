@@ -149,7 +149,7 @@ shared (`moe_intermediate 2048`), dense `intermediate 12288`, **DSA** sparse att
 > during the prior FP8 track — an earlier DeepSeek-standard guess of `q_lora 1536` was corrected.
 > `kv_lora 512` is **[PENDING safetensors]** (the DeepSeek-standard value, not yet directly confirmed
 > against `kv_a_proj`). These are model-architecture facts, unchanged by the quant format. See
-> [`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md) (prior-track evidence).
+> [`ACCEL_GLM52.md`](docs/ACCEL_GLM52.md) (records `q_lora_rank = 2048`, confirmed vs real safetensors).
 
 ---
 
@@ -277,7 +277,7 @@ track** (branch `fp8`) — see the appendix. On an NVMe-bound die they improve a
 - **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (Q4_K die + DDR working cache + 1 TB NVMe SSD): tiering, expert caching, the bottleneck/perf/cost model.
 - **Perf / power / physical:** [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) · [`LOW_POWER.md`](docs/LOW_POWER.md) (energy is ~80% NVMe-read bytes → amortize the fetch; DVFS **frequency** is RTL-realized via `clk_throttle`, the J/token half is voltage/vendor; projected ~9 → ~1.5–3 J/token [EST]) · [`ULTRA_PERF.md`](docs/ULTRA_PERF.md) · [`FLASH_STRIPING.md`](docs/FLASH_STRIPING.md) · [`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md) (cycle-accurate: the memory-stall mechanism measured on real RTL cycles) · [`MINIATURIZATION.md`](docs/MINIATURIZATION.md) · [`FORMAL.md`](docs/FORMAL.md).
 - **Verification / scale:** [`FULL_CONFIG_ELAB.md`](docs/FULL_CONFIG_ELAB.md) (the RTL elaborates clean at the **true 753B config** — verilator, 0 errors; **elaboration study, not a sim**) · [`COVERAGE.md`](docs/COVERAGE.md) (verilator line/toggle/branch structural coverage over the verilatable unit TBs, `make coverage` — structural, **not** a substitute for the fidelity suite) · [`P12_SCALEUP.md`](docs/P12_SCALEUP.md) · [`P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md).
-- **Prior-track (FP8) evidence** — see the appendix below and branch `fp8`: [`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md), [`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md), [`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md), [`BIT_ACCURACY.md`](docs/BIT_ACCURACY.md), [`PPA_FP8.md`](docs/PPA_FP8.md), [`MODAL_VALIDATE.md`](docs/MODAL_VALIDATE.md).
+- **Prior-track (FP8) evidence** — see the appendix below. Still on `main`: [`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md), [`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md). The pure-FP8 validation write-ups (`REAL_CKPT_VALIDATION.md`, `BIT_ACCURACY.md`, `PPA_FP8.md`, `MODAL_VALIDATE.md`) live on branch `fp8` (`git checkout fp8`) alongside the FP8 tooling they document.
 
 ---
 
@@ -342,13 +342,13 @@ branch** — they are **not** claims about the current Q4_K `main`:
 
 | Evidence (FP8 track — branch `fp8`) | Against | Result |
 |---|---|---|
-| Operator bit-accuracy vs the real checkpoint | published `GLM-5.2-FP8` safetensors (`kv_a_proj` F8_E4M3) | **9216/9216 = 100%** bf16-exact, **argmax 16/16** ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)) |
+| Operator bit-accuracy vs the real checkpoint | published `GLM-5.2-FP8` safetensors (`kv_a_proj` F8_E4M3) | **9216/9216 = 100%** bf16-exact, **argmax 16/16** (`REAL_CKPT_VALIDATION.md`, branch `fp8`) |
 | FP8 E4M3 arithmetic | fp64, **exhaustive** | **ALL 66069** (256 decodes + all 256×256 multiplies) |
 | Operators at REAL GLM-5.2 dims | fp64 goldens | GEMM K=6144, router 256/top-8, SwiGLU 2048, MLA real geo — bit-exact ([`SCALE_FUNCTIONAL.md`](docs/SCALE_FUNCTIONAL.md)) |
 | Real sky130 place-and-route (`glm_matmul_fp8`) | SkyWater sky130 PDK, OpenROAD | synth→floorplan→legalized placement, **357,320 µm²**, post-placement timing MET ([`PHYSICAL_SKY130.md`](docs/PHYSICAL_SKY130.md)) |
-| Modal partial-F1 (assembled real-weight FFN, first 6 layers) | HF reference | argmax 6/6, worst `max_abs` 0.0015 ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)) |
-| Truncated full-model token chain (real weights, DSA threaded) | fp32-accumulate ref | argmax match (20259 == 20259), top-8 preserved ([`REAL_CKPT_VALIDATION.md`](docs/REAL_CKPT_VALIDATION.md)) |
-| Compute-side PPA wins | — | BFP fixed-point accumulator −87.6% cells vs fp32-accumulate; fold-pipeline +25% fmax; `weight_decomp` 1.34× lossless — all **FP8-specific**, bit-identical ([`PPA_FP8.md`](docs/PPA_FP8.md)) |
+| Modal partial-F1 (assembled real-weight FFN, first 6 layers) | HF reference | argmax 6/6, worst `max_abs` 0.0015 (`REAL_CKPT_VALIDATION.md`, branch `fp8`) |
+| Truncated full-model token chain (real weights, DSA threaded) | fp32-accumulate ref | argmax match (20259 == 20259), top-8 preserved (`REAL_CKPT_VALIDATION.md`, branch `fp8`) |
+| Compute-side PPA wins | — | BFP fixed-point accumulator −87.6% cells vs fp32-accumulate; fold-pipeline +25% fmax; `weight_decomp` 1.34× lossless — all **FP8-specific**, bit-identical (`PPA_FP8.md`, branch `fp8`) |
 
 To inspect or run the FP8 track: `git checkout fp8` (or `git checkout fp8-verified-baseline`). The
 memory-system controllers, CDC, ECC/MBIST, and clock-gating blocks are shared byte-agnostic logic and

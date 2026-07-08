@@ -79,7 +79,7 @@ token_id
 
 **Make targets.** `unittests` (~35 unit TBs + `q4k` + `spec_decode_top`, self-bootstrapping via `route_trace.py --dump`), `q4k` (the four Q4_K TBs: 18/160/240/40), `synth-glm` (whole-chip elaboration + `check -assert`), `formal`/`formal-ind`, `spec-slow` (`spec_batched_top`/`spec_chain_top`), `cdc`, `coverage` (verilator line/toggle), `lint`, `host-test`.
 
-**Real-checkpoint validation (OPEN — the #1 fidelity gate).** There is **no** in-repo tool that runs the real 753B GLM against our datapath (the prior FP8 `modal_validate.py` was on the deleted track). Validating assembled-Q4_K token fidelity against llama.cpp / the real GGUF is an **OPEN next step** (`docs/REAL_CKPT_VALIDATION.md`), gated additionally by the mixed-type path (GAP #2) and a GPU/large-memory host.
+**Real-checkpoint validation (OPEN — the #1 fidelity gate).** There is **no** in-repo tool that runs the real 753B GLM against our datapath (the prior FP8 `modal_validate.py` was on the deleted track). Validating assembled-Q4_K token fidelity against llama.cpp / the real GGUF is an **OPEN next step**, gated additionally by the mixed-type path (GAP #2) and a GPU/large-memory host.
 
 ## 5. Performance thesis
 
@@ -111,7 +111,7 @@ The old flat ~25–40 was the funded-rung (②) number, not a near-term-cheap on
 **OPEN — the real next steps (NOT done; these are the honest gates):**
 1. **Assembled-Q4_K numeric golden** (GAP #1) — assert the assembled `glm_model_q4k` forward pass (incl. the MLA `1/sqrt(d_head)` softmax scale) matches a ggml/reference numeric golden, not just spec==greedy self-consistency.
 2. **Mixed-type Q6_K/Q8_0/F16 datapath** (GAP #2) — the RTL is Q4_K-only; consuming the *dynamic* UD-Q4_K_XL mix needs an RTL consumer for the Q6_K/Q8_0/F16 tensors (`q4k_ref.py` already has Python goldens).
-3. **Real-checkpoint validation** — run the real 753B GLM (llama.cpp / real GGUF) and compare next-token argmax through our datapath (`docs/REAL_CKPT_VALIDATION.md`); no in-repo tool exists yet, and it depends on (1) and (2).
+3. **Real-checkpoint validation** — run the real 753B GLM (llama.cpp / real GGUF) and compare next-token argmax through our datapath; no in-repo tool exists yet, and it depends on (1) and (2).
 4. **FPGA fit / Vivado sign-off** — no PnR/Fmax/LUT result in-repo; `docs/FPGA_DEMO_PLAN.md` is a plan (Vivado-blocked).
 5. **P2 closure** — instantiate `mbist_ctrl`/`icg_cell` in `glm_q4k_system*`, MBIST wrapper + scan stitch, DDR5/NVMe payload ECC + BMC re-parameterization, PHY-closure loopback (bytes fed back into the die).
 6. **Higher-K speculation** — a resident dense draft model for K_eff 3–5 needs a trained small draft's weights (self-draft K_eff is only ~1.7–2.2).
@@ -126,7 +126,7 @@ The old flat ~25–40 was the funded-rung (②) number, not a near-term-cheap on
 2. `docs/Q4K_RETARGET.md` + `docs/Q4K_SYSTEM_PLAN.md` — the FP8→Q4_K migration, the GGUF-native contract, and what is / isn't proven.
 3. `docs/ACCEL_GLM52.md` — exact GLM-5.2 config, MLA+DSA+MoE detail, the fp64-golden methodology, the dependency-driven RTL build order.
 4. `docs/PRODUCT_ROADMAP.md` + `docs/HARDWARE_LADDER.md` — the prototype-vs-product split, the open gates, P1–P4 phases, and the 3-rung hardware ladder.
-5. `docs/BIT_ACCURACY.md` + `docs/FORMAL.md` + `docs/REAL_CKPT_VALIDATION.md` — how correctness is proven and its documented limits.
+5. `docs/FORMAL.md` + `docs/COVERAGE.md` + the README *What's proven* table — how correctness is proven and its documented limits.
 
 **Then read the numeric contract:** `src/q4k.vh` and `src/glm_fp.vh` (the golden functions), and `tools/q4k_ref.py` (the ggml-Q4_K reference the GEMM is bit-exact to) — everything downstream trusts these.
 

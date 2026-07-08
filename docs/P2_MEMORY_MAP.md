@@ -105,7 +105,7 @@ applies to `glm_q4k_soc_ms.kv_mem` (identical row width).
 **Product-scope note (single-user box).** The product is the LOCAL, SINGLE-USER
 personal box — one box, one user, running the full GLM-5.2 (UD-Q4_K_XL) model **fully
 offline / air-gapped** (nothing leaves because there is no path out — it runs with
-the ethernet unplugged; the 753 GB model is provisioned once, then never needs a
+the ethernet unplugged; the ~467 GB Q4_K model is provisioned once, then never needs a
 connection; see `docs/USBC_PRODUCT_PLAN.md`). It decodes **one sequence (NSEQ=1 / B=1)**, so its
 resident KV here is just the single user's hot set + that one user's KV. The
 **batched multi-seq path** (`glm_q4k_soc_ms`, the `kv_cache_pager` `NSEQ>1` mode,
@@ -277,9 +277,9 @@ few cycles. A flip is transient and overwritten. Not ECC/MBIST targets.
 **Excluded — not `reg` arrays (single wide regs / bus regs caught by the identifier grep):**
 - `conv2d_unit.v:227` `obuf` — a single `LINE_W`-wide line-buffer register (not a
   memory array); legacy core.
-- `weight_loader.v` — **no** `reg`-array memory: it streams weights through the
-  registered `mem_*` interface; `w_scale_q`/`base_q`/counters are scalar/bus
-  regs, not arrays. (Confirmed by grep.)
+- `weight_loader_q4k.v` — **no** `reg`-array memory: it streams weights through the
+  registered `mem_*` interface; the per-super-block scale/`base_q`/counter latches are
+  scalar/bus regs, not arrays. (Confirmed by grep.)
 - `tpu_top.v`/`tpu_soc.v`/`tpu_axi.v` `*_mem` names — pipeline-stage / MMIO
   register **suffixes** (`opcode_mem`, `dst_mem`, `result_head`, `REG_*`), not
   memory arrays.

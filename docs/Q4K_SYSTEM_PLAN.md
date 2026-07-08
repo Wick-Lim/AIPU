@@ -203,9 +203,14 @@ at the system level is **routing the type per tensor**:
 - **RTL selection:** `glm_matmul_q4k` today assumes Q4_K. For the mixed model either
   (a) keep a single Q4_K core and pre-dequant Q6_K/Q8_0/F16 tensors to the Q4_K bus in the
   loader, or (b) add a small per-tile `w_type` input that switches the dequant function
-  (all four dequants are combinational `function automatic` in `q4k.vh`). Option (b) keeps
-  the image bit-exact to the GGUF (the moat); it is a **loader + one mux** change, no new
-  math. The type comes from the §2.2 manifest, latched per tile at `start`.
+  (all four dequants are combinational `function automatic` in `q4k.vh`). Option (b)
+  preserves each sensitive tensor at its native GGUF type (no lossy re-quant to Q4_K),
+  keeping the loaded weight image byte-faithful to the checkpoint — note this is
+  **weight-image fidelity, not inference bit-exactness vs llama.cpp** (which remains OPEN:
+  the RTL uses bf16 acts + fp32 accumulate, a different arithmetic contract), and the
+  mixed-type consumer itself is **NOT-YET** (the RTL datapath is Q4_K-only today). It is a
+  **loader + one mux** change, no new math. The type comes from the §2.2 manifest, latched
+  per tile at `start`.
 
 ---
 

@@ -5,8 +5,8 @@ with legal ([`ICP.md`](ICP.md), [`ICP_OUTREACH_KIT.md`](ICP_OUTREACH_KIT.md)). S
 one signed design-partner LOI. Quant is the **fastest** wedge to that first LOI — but it has its own
 honest limits as a first customer. Both are below.*
 
-> **Honest stance (same as the legal kit).** No shippable box yet (P1.1 fidelity + FPGA fit/demo are
-> open). This is a **design-partner / validation** motion, not a sale: we're building it, and we want a
+> **Honest stance (same as the legal kit).** No shippable box yet (assembled-model fidelity + FPGA
+> fit/demo are open). This is a **design-partner / validation** motion, not a sale: we're building it, and we want a
 > few funds that actually have the constraint to shape it and sign a **non-binding LOI to pilot when the
 > demo lands.** Never imply a finished product — quant buyers are the most skeptical of hype in the
 > market; overclaiming loses them instantly.
@@ -22,8 +22,9 @@ honest limits as a first customer. Both are below.*
   warm-intro edge** into this community (they speak the same language — see §2).
 - **Extreme data secrecy is existential** — a leaked signal / position / strategy = lost alpha. They
   will *not* put proprietary research or data in any cloud. That's the exact constraint.
-- **They value the engineering** — verified RTL, bit-exact, FPGA fit will land with their infra/security
-  people in a way it won't in most segments.
+- **They value the engineering** — a formally-verified control plane, a Q4_K compute core bit-exact to
+  the ggml reference, and an FPGA-native datapath land with their infra/security people in a way they
+  won't in most segments.
 
 **Honest limits (say these to yourself before you pitch):**
 - **Big funds already run on-prem GPU clusters.** For a top-tier fund with an ML-infra team, "run a
@@ -62,7 +63,7 @@ to sign first.
 |---|---|---|---|
 | **Champion** | Head of Research Engineering / Quant Dev / ML Infra / CTO; a research-engineer running an internal LLM POC | Shipping a private frontier-LLM capability without an MLOps project or a leak | **Entry point** |
 | **Sponsor** | Portfolio Manager / desk head / Head of Research | Research throughput on data they can't currently touch with AI | **Edge owner** |
-| **Approver** | CISO / Head of Infosec (already colo/air-gap/FPGA-savvy) | "Nothing leaves the network," auditable non-egress | **Unblocker — loves the air-gap + verified RTL** |
+| **Approver** | CISO / Head of Infosec (already colo/air-gap/FPGA-savvy) | "Nothing leaves the network," auditable non-egress | **Unblocker — loves the air-gap + formally-verified control plane** |
 
 **Where to find them:** quant/HFT **infra people are active + technical on LinkedIn/Twitter/X**; firms
 hiring "LLM / ML-infra engineer" or "research engineer, NLP" (a tell they're building this); the
@@ -77,12 +78,13 @@ overlaps directly with the founder's world, the **single best warm-intro channel
 > strategies, code — but that data can't touch a cloud, and standing up a private 753B stack is an
 > MLOps project. We're building an appliance that runs a full frontier model **entirely inside your
 > network** — nothing leaves, runs air-gapped, turnkey, per-desk. And it's built like your infra:
-> **FPGA-based, verified RTL, bit-exact to the real model** — so your infosec team can audit that it
-> can't exfiltrate and that the output is the real model's."**
+> **FPGA-based, a formally-verified control plane, and a Q4_K compute core bit-exact to the ggml
+> reference** — so your infosec team can audit that it can't exfiltrate and verify the numeric core
+> against a reference themselves."**
 
 The infra/security persona is the one to win, and this wedge is the one that *rewards* leading with the
-engineering: **FPGA datapath + verified RTL + bit-exact + the unplugged-ethernet test** all speak their
-language. (In every other segment the tech is back-pocket; here it's a front-door credibility hook.)
+engineering: **FPGA datapath + formally-verified control plane + a bit-exact Q4_K compute core + the
+unplugged-ethernet test** all speak their language. (In every other segment the tech is back-pocket; here it's a front-door credibility hook.)
 
 ---
 
@@ -94,7 +96,8 @@ language. (In every other segment the tech is back-pocket; here it's a front-doo
 > [Name] — I'm building an appliance that runs a full frontier LLM (753B) **entirely inside your
 > network** — nothing leaves, runs with the ethernet unplugged. It's for using frontier models on data
 > that can't go to a cloud (research, filings, positions, code) **without** standing up your own 753B
-> GPU stack + MLOps to do it. FPGA-based, verified RTL, bit-exact to the real model.
+> GPU stack + MLOps to do it. FPGA-based, formally-verified control plane, Q4_K compute core bit-exact
+> to the ggml reference.
 >
 > Picking a few quant design partners to shape it. 15 min? I mostly want to learn how you run models on
 > confidential data today.
@@ -109,8 +112,8 @@ language. (In every other segment the tech is back-pocket; here it's a front-doo
 
 ### LinkedIn / X DM (very short)
 > Building an appliance that runs a full frontier LLM (753B) **inside** a fund's network — air-gapped,
-> nothing leaves — for models on data that can't touch a cloud. FPGA-based, verified RTL. Picking a few
-> quant design partners. Open to 15 min?
+> nothing leaves — for models on data that can't touch a cloud. FPGA-based, formally-verified control
+> plane. Picking a few quant design partners. Open to 15 min?
 
 ### Warm intro (via the FPGA / quant-infra network — the strongest channel)
 > Would you intro me to [Name] at [Fund]? I'm building on-prem frontier AI on an FPGA — runs a full 753B
@@ -120,8 +123,9 @@ language. (In every other segment the tech is back-pocket; here it's a front-doo
 ### Follow-ups (terse; two, then stop)
 - **Nudge 1:** *"One line is enough: is 'frontier LLMs on data that can't leave your network' a real
   need, or already solved on your own cluster? Either answer helps me."*
-- **Nudge 2:** *"Last note — [concrete proof: we got the FP8 compute die mapping to an FPGA, de-risking
-  the box]. If it's not relevant I'll stop; if it is, 15 min: [link]."*
+- **Nudge 2:** *"Last note — [concrete proof: the Q4_K compute core is bit-exact to the ggml reference,
+  and the whole-chip design passes structural elaboration — compute risk retired, FPGA fit is the next
+  milestone]. If it's not relevant I'll stop; if it is, 15 min: [link]."*
 
 ---
 
@@ -147,8 +151,8 @@ a **signal generator** ("does it give alpha?").
 
 **The honest positioning in the call (say it plainly):** *"This is a confidentiality-enabled research
 tool — a frontier model on data you can't cloud. It is not the trading hot path (~5–8 tok/s on the
-prove-it FPGA today, ~15–40 on the funded custom board [EST]; not microseconds), and it does not
-generate signals. I won't oversell it."* Precision **is** the sell here.
+prove-it FPGA rung, ~15–40 on the funded custom board — [EST] roofline, unmeasured until a board runs;
+not microseconds), and it does not generate signals. I won't oversell it."* Precision **is** the sell here.
 
 **The ask:** *"Would [Fund] be a design partner? A couple of technical sessions on your infra + security
 requirements, and a short non-binding letter that you'd pilot it when the air-gapped demo is ready. No
@@ -159,11 +163,11 @@ cost — you get first access and shape it around how you actually run infra."*
 | They say | You say (honest) |
 |---|---|
 | "We already run models on our own GPU cluster." | "Then you've solved the capability — so the box is only interesting for (a) **per-desk air-gapped** deployment, (b) skipping the 753B quantize/serve/MLOps for a **turnkey** full-frontier box, (c) footprint/power/cost per seat. If your cluster already serves 753B privately to every desk, you may not need us — I'd rather know that now." |
-| "Is it fast enough?" | "For research/analysis, yes — **~5–8 tok/s on the near-term prove-it FPGA today, ~15–40 on the funded custom board** ([EST]; staged hardware — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), interactive. It is **not** the trading hot path, not microseconds. Different tool entirely." |
+| "Is it fast enough?" | "For research/analysis, yes — **~5–8 tok/s on the near-term prove-it FPGA rung, ~15–40 on the funded custom board** ([EST] roofline, unmeasured until a board runs; staged hardware — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), interactive. It is **not** the trading hot path, not microseconds. Different tool entirely." |
 | "Does it give us edge / alpha?" | "It doesn't generate signals. It lets your researchers use a frontier model on data they currently can't — a productivity + secrecy edge, not a signal. I won't pretend otherwise." |
 | "Why not a zero-retention API or an on-prem vendor model?" | "Both still need a connection. The box runs **disconnected** — the audit is 'does it work with the cable unplugged?'. Zero-retention/VPC/TEE all fail that; if that bar doesn't matter to you, you don't need us." |
-| "How do we trust it doesn't exfiltrate?" | "There's no path out — it's air-gapped — and the datapath is **verified RTL, bit-exact to the real model**, so your infosec team can audit both the non-egress and the correctness. This is exactly the part your infra people can verify themselves." |
-| "You're pre-product." | "Yes — that's why I want you now. Design partners shape it and get first access; the tech risk is unusually retired (verified RTL, FPGA fit de-risked to a bounded task). I'm asking for your requirements + an LOI, not a purchase." |
+| "How do we trust it doesn't exfiltrate?" | "There's no path out — it's air-gapped — and that non-egress is exactly the part your infosec team can audit directly. The datapath is a **formally-verified control plane** (BMC + k-induction) with a **Q4_K compute core bit-exact to the ggml reference**, so they can verify the numeric core too; matching the published GGUF end-to-end is validation we're still finishing, and I'll say so." |
+| "You're pre-product." | "Yes — that's why I want you now. Design partners shape it and get first access; the tech risk is unusually retired — formally-verified controllers, a Q4_K compute core bit-exact to the ggml reference, and a whole-chip design that already elaborates. The bounded remaining work is FPGA fit/Fmax and end-to-end fidelity. I'm asking for your requirements + an LOI, not a purchase." |
 
 ---
 

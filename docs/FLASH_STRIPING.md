@@ -10,10 +10,14 @@ first-class performance lever, not an afterthought.** This doc consolidates the 
 that deliver it and lays out the striping design space.
 
 The workload (real GLM-5.2): **75 MoE layers × 256 experts, top-8 fetched per layer per
-token, ~37 MB/expert (FP8)**, plus the always-read shared expert, MLA/attention weights,
-embeddings and the DSA index. The 753 GB of weights live on the NVMe SSD; fast DDR is the working
-cache (hit rate `h`; DDR4 on the prove-it rung, DDR5/HBM once funded — see
-[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); the FP8 die computes.
+token, ~22 MB/expert (Q4_K, ~0.6 B/param avg [EST])**, plus the always-read shared expert,
+MLA/attention weights, embeddings and the DSA index. In roofline terms (see the ledger in
+[`../README.md`](../README.md)) a token touches **~25 GB of weights**, of which the **~14 GB of
+routed experts (top-8, and they *change* every token) is the wall that must stream from
+NVMe/Flash** — the ~9–11 GB hot-set (attention / dense / shared) can live cache-resident in DDR.
+The **~467 GB of Q4_K weights** live on the NVMe SSD; fast DDR is the working cache (hit rate `h`;
+DDR4 on the prove-it rung, DDR5/HBM once funded — see
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); the Q4_K die computes.
 
 ---
 
@@ -45,9 +49,11 @@ reads/cycle aggregate**.
 - **Verified:** 2049 directed tests + **BMC K=12** — per-channel no-overflow
   (`cnt[c] ≤ QDEPTH`), `outstanding ≤ N_CH·QDEPTH`, `inflight ≤ outstanding`, no underflow
   (see [`FORMAL.md`](FORMAL.md)).
-- **Measured effect:** latency-hide ~7.99× (Little's law) × N_CH banking → **~57× combined
-  @ 8ch × Q8**; throughput is then **linear in N_CH** (4ch ≈ 3→12 tok/s in
-  [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md) P1.1).
+- **Measured effect (fabric, format-agnostic):** latency-hide ~7.99× (Little's law) × N_CH
+  banking → **~57× combined @ 8ch × QDEPTH=8** (the "Q8" here is *queue depth 8*, not a numeric
+  format); throughput is then **linear in N_CH** (the fabric behavior was measured in
+  [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md) P1.1). Absolute single-user tok/s under Q4_K are the
+  §5 roofline, not the prior FP8-era anchors.
 
 ### 1b. The placement — `tools/flash_layout.py` (P1.2, ✅ built, measured)
 
@@ -82,7 +88,7 @@ hotspots* (+40%), not reaching peak. **8 channels is the top-8 sweet spot** for 
 below it you serialize, above it you pay channels that a single token can't all use (though
 batching does — §4).
 
-**The pigeonhole is a property of placing an atomic 37 MB expert on one channel.** Remove that
+**The pigeonhole is a property of placing an atomic ~22 MB expert on one channel.** Remove that
 constraint and the cap disappears — which is strategy B.
 
 ---
@@ -91,14 +97,14 @@ constraint and the cap disappears — which is strategy B.
 
 | Strategy | Unit on a channel | Per-token balance | State / cost | Status |
 |---|---|---|---|---|
-| **A. Whole-expert placement** | one 37 MB expert → one channel | pigeonhole-capped (~55% @8ch) | offline map `layout[L·256+e]` (`flash_layout.py`) | ✅ built |
+| **A. Whole-expert placement** | one ~22 MB expert → one channel | pigeonhole-capped (~55% @8ch) | offline map `layout[L·256+e]` (`flash_layout.py`) | ✅ built |
 | **B. Sub-expert striping (RAID-0)** | each expert's bytes striped over **all** N_CH | **~100%, data-independent** | none (address arithmetic) | 📐 proposed |
 | **C. Hybrid** | stripe within a channel *group*, place groups | tunable | group map + stripe | 📐 proposed |
 
 ### B — sub-expert striping (the pigeonhole-free option)
 
 Stripe **every** expert's weight block across **all** `N_CH` channels (RAID-0), stripe unit
-`S`. Then **every** expert fetch — whichever 8 the router picks — reads `37 MB / N_CH` from
+`S`. Then **every** expert fetch — whichever 8 the router picks — reads `~22 MB / N_CH` from
 each channel: all channels are always busy, **aggregate BW is fully used regardless of the
 data-dependent selection.** The pigeonhole cap vanishes; there is no offline map to compute or
 ship (the channel is just `addr[BANK_LSB +: log2(N_CH)]` at fine granularity — the fabric of
@@ -107,8 +113,8 @@ ship (the channel is just `addr[BANK_LSB +: log2(N_CH)]` at fine granularity —
 **The one constraint — keep the stripe ≥ the NVMe/SSD efficient read granularity.** An NVMe
 read command carries fixed per-command overhead, and the SSD internally reads NAND pages
 (~16 KB); stripes finer than that waste bandwidth (per-command overhead + a full internal
-page-read per stripe). At `S ≥ 16 KB`: a 37 MB expert over `N_CH = 32` = ~1.15 MB/channel =
-~72 pages/channel → efficient, no random-read penalty. So choose `page ≤ S ≤ 37 MB/N_CH`.
+page-read per stripe). At `S ≥ 16 KB`: a ~22 MB expert over `N_CH = 32` = ~0.69 MB/channel =
+~44 pages/channel → efficient, no random-read penalty. So choose `page ≤ S ≤ ~22 MB/N_CH`.
 
 **Trade vs A:** B needs **more channels than top-k to *matter* (A) is false for B** — B is
 balanced at *any* `N_CH`, including `N_CH > 8`, because it doesn't rely on 8 experts hitting 8
@@ -141,10 +147,12 @@ the **non-target aggregate/datacenter regime**, not the product. The product is 
 single-user box running `B=1`**; large `B` only arises when batching many *different* users'
 tokens together, which the personal box does not do. This paragraph is kept as analysis of what
 the *same* silicon could do batched. With `B` tokens
-processed per weight fetch (the **PE_M-batch path — now complete: DONE 4/4 across
-swiglu/router/mla/mtp, and the union-fetch integrated in `glm_decoder_block_fp8`** [FP8 prior
-track — branch `fp8`; Q4_K sibling is `glm_decoder_block_q4k`], all verified bit-exact on the FP8
-track), a layer's *union* of active experts approaches all 256 as `B` grows
+processed per weight fetch (the **PE_M-batch path** — on the current Q4_K track the per-layer
+expert-*union* skip is folded inline into **`glm_decoder_block_q4k`** — a *structural* choice of
+*which* experts to fetch, so it is format-agnostic. The 4/4 PE_M bit-exact verification across
+swiglu/router/mla/mtp was on the **prior FP8 track (branch `fp8`)**; a Q4_K assembled-model
+bit-exact re-run is **PENDING** — no end-to-end Q4_K numeric golden exists yet), a layer's *union*
+of active experts approaches all 256 as `B` grows
 (`E[distinct] = 256·(1−0.96875^B)`, where `0.96875 = 1−8/256`), so the
 fetch set is large and naturally spreads across channels — the pigeonhole tail shrinks and
 `N_CH > 8` becomes useful even under strategy A. The decoder block's PE_M>1 MoE loop already
@@ -159,39 +167,42 @@ striping keeps the single-user product (`B=1`) balanced — *that* is this box; 
 
 ## 5. Bandwidth → throughput (why this is the cheap lever)
 
-Baseline (measured `h`, [EST] BW): **NVMe/storage 50 GB/s, h=27%, K=1 → ~3 tok/s, ~8–10 J/token**
-([`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md)). Because tok/s is linear in realized NVMe BW:
+Per the honest Q4_K roofline (ledger in [`../README.md`](../README.md)), single-user decode is
+memory-bandwidth-bound: **tok/s ≈ (sustained storage BW) / (~14 GB routed-expert stream/token)**,
+*assuming the ~9–11 GB hot-set (attention / dense / shared) is DDR-cache-resident* so only the
+~14 GB of top-8 routed experts must stream from NVMe/Flash each token. Because tok/s is then linear
+in realized aggregate NVMe BW, striping the routed-expert stream across drives/lanes is the lever:
 
-| Realized NVMe/storage BW | approx single-user tok/s | how |
+| Realized aggregate NVMe BW (routed stream) | strategy | approx single-user tok/s [EST] |
 |---|---|---|
-| 50 GB/s (baseline aggregate) | ~3 | baseline |
-| ~4× (4 channels, strategy A) | ~12 | flash_xbar P1.1 (measured linear) |
-| ~8× × 0.55 (8 channels, strategy A) | ~13–14 | + flash_layout +40% (pigeonhole-capped) |
-| ~8× × ~1.0 (8 channels, strategy B) | ~24 | sub-expert striping removes the cap |
-| ~16–32 channels (strategy B) | ~24–40+ | push N_CH; B stays balanced |
+| ~7–14 GB/s (1–2 NVMe, Gen4/5 x4) | — (single/dual drive) | ~0.5–1 |
+| ~28 GB/s (4 drives/channels) | A | ~2 |
+| ~100 GB/s (striped ~14 drives) × 0.55 balance | A (pigeonhole-capped) | ~3–4 |
+| ~100 GB/s (striped ~14 drives) × ~1.0 balance | B (sub-expert) | **~5–8 (rung ①)** |
 
-**Honest BW anchor [EST]:** the absolute figures above are roofline numbers carried over from a
-NAND-multi-channel model, not per-device NVMe measurements — a single NVMe SSD is ~3.5 GB/s
-(PCIe Gen3 x4), ~7 GB/s (Gen4 x4), ~14 GB/s (Gen5 x4). So the 50 GB/s baseline and the N× rows
-are **aggregate across multiple NVMe drives / many PCIe lanes** — realizing them is the custom
-board's job (several M.2/PCIe endpoints), not a single-drive claim, and the specific 50 GB/s
-anchor does not cleanly re-derive to one NVMe. The tok/s stay [EST]. Mapped to the ladder
-([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): the **one-NVMe prove-it rung ①** sits at the low
-rows → **~5–8 tok/s [EST]** near-term; the **multi-NVMe / many-lane aggregate is the funded custom
-board (rung ②)** → the **~15–40 tok/s [EST]** rows; a device-level BW jump (HBF, §6 — rung-③-class)
-rides the same curve beyond.
+**Honest BW anchor [EST].** These are roofline numbers, not silicon: a single NVMe SSD is
+~3.5 GB/s (PCIe Gen3 x4), ~7 GB/s (Gen4 x4), ~14 GB/s (Gen5 x4). The ~28 GB/s and ~100 GB/s rows are
+**aggregate across multiple NVMe drives / many PCIe lanes** — realizing them is the custom board's
+job (several M.2/PCIe endpoints), not a single-drive claim. The tok/s stay [EST] until a Vivado fit
++ a running board (per the ledger, real systems land below the roofline). The `~0.55` vs `~1.0`
+column is exactly §2/§3's pigeonhole story: strategy A caps the delivered fraction of aggregate BW
+at ~55% @8ch, strategy B removes that cap.
 
-The **~15–40 tok/s [EST] sweet spot — the table's ~24–40+ rows, realized on the funded custom
-board (rung ②: multiple NVMe drives / many PCIe lanes), not the near-term single-NVMe prove-it box
-(rung ①, ~5–8 tok/s [EST]; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md))** — a usable interactive
-rate on a box that runs the **full
-753 GB GLM-5.2 model fully offline / air-gapped** (nothing leaves because there is no path out;
-the model is provisioned once, itself doable offline) at a fraction of cloud cost/power — is
-reachable by **adding NVMe drives / PCIe lanes + striping** —
-**not** by moving to HBM. NVMe scales
-by `$/GB` commodity SSD; HBM charges a `$/GB/s` premium. Each channel adds an NVMe controller +
-PCIe I/O power (a power/area/cost limit), so `N_CH` is bounded — but the scaling curve is
-dramatically cheaper per GB/s than HBM.
+**Where the ladder rungs actually sit ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) — the honest
+correction.** Striped NVMe is a **rung-① lever**: streaming the ~14 GB routed wall over ~100 GB/s of
+aggregate NVMe lands the prove-it box at **~5–8 tok/s [EST]**. It does **not** by itself reach the
+funded-board **~15–40 tok/s [EST] (rung ②)** — that rung is a **memory-tier jump**, feeding the
+working set from **DDR5/HBM (~400 GB/s–1 TB/s)**, not from more NVMe. Two limits are why: (1) each
+NVMe channel adds a controller + PCIe I/O power/area/cost, so `N_CH` — and thus aggregate NVMe BW —
+is **bounded** well below the hundreds of GB/s rung ② needs; and (2) getting rung ②'s speed from a
+*cache* instead requires a high **expert-cache hit-rate** on the routed experts, which **routing
+entropy caps** (predictor-prefetch is a **MEASURED no-op** in this codebase) unless you accept
+**non-bit-exact pruning**. So the honest framing is: **striping wins rung ①; rung ② is a
+fast-memory-tier + cache-hit-rate problem, not "just add NVMe."** What striping *does* keep true is
+that within its regime the commodity `$/GB` NVMe curve is far cheaper per GB/s than HBM's `$/GB/s`
+premium — it is how you make **rung ① cheap**, running the **full ~467 GB GLM-5.2 model fully
+offline / air-gapped** (nothing leaves because there is no path out; provisioned once, itself doable
+offline) at a fraction of cloud cost/power.
 
 ---
 
@@ -217,8 +228,12 @@ placement strategy here rides the same curve.
   [`ULTRA_PERF.md`](ULTRA_PERF.md), [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md), and
   [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) for the rung staging). Real systems
   land below the roofline (achievable-vs-peak BW, cache-`h` optimism, second-order walls).
-- **The compute is bit-exact** to real GLM-5.2-FP8 ([`BIT_ACCURACY.md`](BIT_ACCURACY.md));
-  striping is a *placement* choice and does not touch numerics.
+- **Striping is a *placement* choice and does not touch numerics** — it is entirely
+  format-agnostic (address→bytes), so this whole doc holds under Q4_K unchanged. On the compute
+  side, the Q4_K **GEMM core / primitives are bit-exact only to the team's own ggml-Q4_K reference**
+  (`tools/q4k_ref.py`) — a **self-referential** check, **not** the real downloaded GGUF bytes or
+  llama.cpp's runtime arithmetic, and the **assembled end-to-end Q4_K model golden does not yet
+  exist**; see the honest proof scope in [`../README.md`](../README.md).
 
 ## 8. Files
 

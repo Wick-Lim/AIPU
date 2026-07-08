@@ -1,36 +1,39 @@
 # Product Roadmap — GLM-5.2 accelerator (product, not research)
 
-> **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native**, targeting the
-> published `unsloth/GLM-5.2-GGUF:UD-Q4_K_XL` checkpoint (GGML Q4_K). **FP8 is the PRIOR /
-> PRESERVED track** on branch **`fp8`** (tag `fp8-verified-baseline`), removed from `main` in
-> commit `cbef69d`. Everything in the body below still describes the **FP8** flow (the P1.1
-> real-checkpoint gate, `glm_model_fp8`, `glm_fp8_soc_ms`, `tools/glm_fp8_ref.py`,
-> `tools/ckpt_pack.py`, `make bitacc`/`make bcov` — **all deleted from `main`**). The Q4_K
-> equivalents are `glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`, `moe_router_q4k`,
-> `swiglu_expert_q4k`, `mtp_head_q4k`, `glm_q4k_soc(_ms)`, `glm_q4k_system(_cdc)`,
-> `weight_loader_q4k.v`, `tools/q4k_ref.py`, `tools/ckpt_pack_q4k.py`.
+> **TRACK NOTE (Q4_K-native).** The current / `main` track is **Q4_K-native**, targeting the published
+> [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF) checkpoint (467 GB,
+> ~38% smaller than the 753 GB FP8 checkpoint). The active datapath is `glm_model_q4k`,
+> `glm_decoder_block_q4k`, `mla_attn_q4k`, `moe_router_q4k`, `swiglu_expert_q4k`, `mtp_head_q4k`,
+> with system tops `glm_q4k_soc(_ms)` → `glm_q4k_system` → `glm_q4k_system_cdc`, the Q4_K GEMM core
+> `glm_matmul_q4k`, the loader `weight_loader_q4k.v`, and the ggml-Q4_K reference `tools/q4k_ref.py`
+> (checkpoint packer `tools/ckpt_pack_q4k.py`). **FP8 is the PRIOR / PRESERVED track** on branch
+> **`fp8`** + tag **`fp8-verified-baseline`** (and the older research prototype on branch `prototype`,
+> frozen at `47fb7f8`); it is referenced here as prior/preserved, never current. See
+> [`Q4K_RETARGET.md`](Q4K_RETARGET.md).
 >
-> **Honest scope of the Q4_K proof** (per the evidence ledger): `make q4k` proves the Q4_K
-> GEMM core (`glm_matmul_q4k`) **bit-exact to the team's own ggml-Q4_K reference**
-> (`tools/q4k_ref.py`) — **not** "bit-exact to the real UD-Q4_K_XL file": the RTL is
-> **Q4_K-only** (no Q6_K/Q8_0/F16, which the dynamic UD mix uses) and is never checked against
-> the real GGUF bytes or llama.cpp arithmetic. The assembled model is exercised only as
-> **spec==greedy self-consistency** (DUT-vs-DUT), with **no** end-to-end numeric golden. Every
-> tok/s, FPGA-fit, BOM/TCO, and LOI figure is **[EST]/[PENDING]**, not measured. **A deeper
-> Q4_K rewrite of this doc's body is deferred** (see DEFERRED-REWRITE list).
+> **Honest scope of the Q4_K proof** (per the evidence ledger, consistent with the
+> [README](../README.md) *What's proven* table). `make q4k` proves the Q4_K **GEMM core**
+> (`glm_matmul_q4k`) **bit-exact to the team's own ggml-Q4_K reference** (`tools/q4k_ref.py`) — **not**
+> "bit-exact to the real UD-Q4_K_XL file": the RTL is **Q4_K-only** (no Q6_K/Q8_0/F16, which the dynamic
+> UD mix keeps for sensitive tensors) and is never checked against the real GGUF bytes or llama.cpp
+> arithmetic. The **assembled** `glm_model_q4k` has **no end-to-end numeric golden** — it is exercised
+> only as **spec==greedy self-consistency** (DUT-vs-DUT, the "greedy golden" is itself a `glm_model_q4k`).
+> Every tok/s, FPGA-fit, BOM/TCO, and LOI figure is **[EST]/[PENDING]**, not measured. These OPEN items —
+> **assembled-Q4_K numeric golden, mixed-type Q6_K/Q8_0/F16 path, real-checkpoint validation, FPGA fit**
+> — are exactly what the gates below are framed around.
 
-The `prototype` branch (frozen at `47fb7f8`) holds the **research prototype**: the full FP8
-datapath + memory system + ultra-perf batching stack, **bit-exact and mechanism-proven at a
-small-but-faithful slice**, with honest gaps documented. It answers *"does the architecture work,
-and how fast can it go?"* — **yes**, and the levers are measured.
+The `prototype` branch (frozen at `47fb7f8`) holds the **prior FP8 research prototype**: the full FP8
+datapath + memory system + ultra-perf batching stack, bit-exact and mechanism-proven at a
+small-but-faithful slice, with honest gaps documented. It answered *"does the architecture work, and how
+fast can it go?"* — for FP8, at a slice. It is **not** the current product.
 
-`main` now develops the **GLM-5.2-FP8 accelerator at rung ① — the FPGA prove-it track**: a
-manufacturable design whose near-term goal is a **working FPGA demo** proving the published
-`zai-org/GLM-5.2-FP8` runs **reliably on real low-end FPGA silicon, offline and bit-exact**. The
-**full product** — the funded custom board (rung ②) and the volume ASIC/SoC (rung ③) — is the
-**roadmap documented below**, not the code `main` develops right now. The mindset shifts from
-*demonstrate + measure a mechanism* to *run the real model correctly, at full scale, robustly, and
-ship it.*
+`main` now develops exactly one thing — the **GLM-5.2 Q4_K local-inference accelerator at rung ① — the
+FPGA prove-it track**: a manufacturable design whose near-term goal is a **working FPGA demo** proving the
+published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` runs **reliably on real low-end FPGA silicon, offline and
+bit-exact-to-our-ggml-Q4_K-reference**. The **full product** — the funded custom board (rung ②) and the
+volume ASIC/SoC (rung ③) — is the **roadmap documented below**, not the code `main` develops right now.
+The mindset shifts from *demonstrate + measure a mechanism* to *run the real model correctly, at full
+scale, robustly, and ship it.*
 
 > **What the product IS: a LOCAL, single-user personal box that works with the ethernet unplugged.**
 > One box, one user, running the full 753 B model **locally** — it **works fully offline / air-gapped:
@@ -42,192 +45,224 @@ ship it.*
 > classified, isolated OT & critical-infra, field/edge, denied-connectivity), and **own it outright** —
 > no per-token API fees, no vendor that can rate-limit, deprecate, or cut you off. *Offline alone is
 > table-stakes (a 70 B laptop model is offline too); the moat is the **combination** — offline + full
-> frontier (753 B) + appliance/seat price.* (Honest: the 753 GB checkpoint is loaded **once** — itself
-> doable offline — and model updates are physical re-provisioning; after that, fully disconnected.) The
-> performance metric that
-> matters is **single-user interactive throughput**, and it is **rung-dependent** (set by the
-> silicon's memory bandwidth — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST]
-> on the near-term prove-it FPGA (rung ①), ~15–40 tok/s [EST] on the funded custom board (rung ②)**,
-> and ~40+ at manufacturing volume (rung ③) — the **same bit-exact FP8 RTL** on every rung, only the
-> memory interface changes. The design is deliberately **NVMe/PCIe-bandwidth-bound to be cheap** (an
-> NVMe SSD holds the whole model; **fast DDR** — DDR4 on rung ①, DDR5 or HBM on rung ② — caches the
-> hot working set). Any **aggregate / datacenter-batch** numbers in these docs
-> (B≈256, ~50 tok/s *aggregate*, per-user ~0.14 tok/s) are a **secondary analysis of a different,
-> non-target deployment** of the same silicon — the RTL supports it, but it is **not this product**,
-> and its per-user latency never describes the box you plug in.
+> frontier (753 B) + appliance/seat price.* (Honest: the ~467 GB Q4_K checkpoint is loaded **once** —
+> itself doable offline — and model updates are physical re-provisioning; after that, fully disconnected.)
+> The performance metric that matters is **single-user interactive throughput**, and it is
+> **rung-dependent** (set by the silicon's memory bandwidth — see
+> [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST] on the near-term prove-it FPGA (rung ①),
+> ~15–40 tok/s [EST] on the funded custom board (rung ②)**, and ~40+ at manufacturing volume (rung ③) —
+> the **same bit-exact Q4_K RTL** on every rung, only the memory interface changes. The design is
+> deliberately **NVMe/PCIe-bandwidth-bound to be cheap** (an NVMe SSD holds the whole model; **fast DDR** —
+> DDR4 on rung ①, DDR5 or HBM on rung ② — caches the hot working set). Any **aggregate / datacenter-batch**
+> numbers in these docs (B≈256, per-user ~0.14 tok/s) are a **secondary analysis of a different,
+> non-target deployment** of the same silicon — the RTL supports it, but it is **not this product**, and
+> its per-user latency never describes the box you plug in.
 
-> **Two tracks.** This doc is the **RTL / silicon track** (make the chip correct, full-scale,
-> robust, synthesizable). The **device / appliance track** — the USB-C external box (form factor,
-> power, thermal, host software, enclosure, manufacturing, pricing) — is in
-> [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md). Its first gates (real-model fidelity + FPGA fit)
-> are P1.1 and the vendor-flow measurement here.
+> **Two tracks.** This doc is the **RTL / silicon track** (make the chip correct, full-scale, robust,
+> synthesizable). The **device / appliance track** — the USB-C external box (form factor, power, thermal,
+> host software, enclosure, manufacturing, pricing) — is in
+> [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md). Its first gates (real-model fidelity + FPGA fit) are the
+> P1 fidelity chain and the FPGA vendor-flow measurement (P3.2 / [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)).
 
 ---
 
 ## The research → product gap (what must change)
 
-| Dimension | Prototype (have) | Product (need) |
+| Dimension | Have (Q4_K, verified in-repo) | Product (need) |
 |---|---|---|
-| Correctness scope | operator bit-exact + a **truncated full-model token chain on real weights** (dense→MoE seam, real 256-expert route, DSA threaded, argmax-identical on a real prompt — DSA-IndexShare + fused-expert blockers retired) | the **full 753 GB checkpoint** produces the real model's tokens **at full depth** end-to-end |
-| Scale | small faithful slice (128/6/8); the **full 753B config elaborates clean** (verilator, 0 errors) | full config *simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1M ctx) |
-| Batching/KV | PE_M batch on all 4 wrappers; per-row position/extent threaded model→decoder→mla; KV pager has `NSEQ` INDEPENDENT ring windows; **multi-sequence batched attention (`PER_ROW_SEQ`) is real end-to-end through the full model** — per-row-slot union + `kc_seq` routing, each row attends its own sequence's KV while sharing the query-side weight fetch (full-model TB: 2 seqs, per-row argmax/logits bit-exact, ~41% fewer attn-weight beats than two runs); all byte-identical at PER_ROW_SEQ=0; **a batched multi-seq top `glm_fp8_soc_ms` (PE_M=B model + real NSEQ-window pager + host FSM: prefill B seqs → 1 forward → commit B tokens; per-row bit-exact)**; **`DSA_REAL_IDX=1` (query-dependent IndexShare) works under multi-seq via a per-sequence `kidx_buf` pre-fetch**; **a REAL per-layer KV store (`kv_mem`) owned by the top** (host writes per (seq,layer,pos), model reads combinationally); **real draft chaining (`spec_chain_top`) + batched_moe full B-coverage (`make bcov` [FP8, removed — see branch `fp8`], B∈{1,2,3,5,8})**; **multi-step continuous-batching DECODE LOOP (`glm_fp8_soc_ms` `N_STEPS>1`: one start decodes N tokens/seq, argmax fed back, extent/pos grow, decode-token KV written to `kv_mem` and attended — each row's step-k token bit-exact vs a standalone PE_M=1 model decoding that seq alone N steps)** | a resident dense DRAFT model (K_eff↑, needs weights); real-checkpoint (P1.1, GPU) |
-| Memory | DDR5/NVMe/USB-C **stubbed** (TB) | licensed **PHY IP** integrated + signed off |
-| Verification | bounded BMC (+ clk_throttle) + directed TBs at slice; **verilator line/toggle/branch coverage** (`make coverage`, 87.8% line merged) | coverage *closure*, constrained-random regression, gate-level sim, k-induction, production-width formal |
-| Reliability | none | ECC, error recovery, CDC sign-off, reset/init hardening, DFT/scan |
-| Physical | slice-scale yosys estimates + real sky130 realizability (placement, timing met) | full synth + **FPGA** P&R + timing closure via the vendor flow → **bitstream** (rungs ①②; ASIC/tapeout is the rung-③ volume endgame, not out of scope — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
-| Software | weight-pack tools (ckpt_pack/flash_layout); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md)) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
+| Correctness scope | **Q4_K GEMM core bit-exact to the ggml-Q4_K reference** (`glm_matmul_q4k` 160/160, `q4k_prim` 18/18 vs `tools/q4k_ref.py`); `swiglu_expert_q4k` functional (240); `moe_router_q4k` structural invariants (40); the **assembled** `glm_model_q4k` exercised only as **spec==greedy self-consistency** (DUT-vs-DUT, no numeric golden) | an **assembled-Q4_K end-to-end numeric golden**, then the **full 467 GB UD-Q4_K_XL checkpoint** producing the real model's tokens **at full depth** end-to-end (real-checkpoint validation) |
+| Format coverage | **Q4_K-only** (`grep -ril 'q6_k\|q8_0\|w_type' src/` = 0); Q6_K/Q8_0/F16 have Python-only goldens in `q4k_ref.py` with **no RTL consumer** | a **mixed-type consumer** so the chip ingests a real UD-Q4_K_XL checkpoint as-is (sensitive tensors kept at Q6_K/Q8_0/F16, not re-quantized to Q4_K) |
+| Scale | small faithful slice (128/6/8); the **full 753 B UD-Q4_K_XL config elaborates clean** (`test/full_config_elab_wrap.v`, verilator 0 errors; `make synth-glm` yosys `check -assert` exit 0) — **structure only, not a sim** | full config *functionally simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1 M ctx) — currently intractable (LM-head GEMV alone ~2.4e8 K-beats/token) |
+| Batching/KV | per-row position/extent/sequence (`PER_ROW_POS/SLEN/SEQ`) threaded model→decoder→mla; `kv_cache_pager` `NSEQ` independent ring windows; multi-sequence batched attention (`PER_ROW_SEQ`) end-to-end through `glm_model_q4k`; batched multi-seq top `glm_q4k_soc_ms` with a top-owned per-layer KV store (`kv_mem`) + `N_STEPS` continuous-batching decode loop; expert-union-skip MoE batching **folded inline into `glm_decoder_block_q4k`** (standalone `batched_moe.v` removed); `spec_chain_top` MTP-chain draft — **all validated as per-row / spec==greedy self-consistency (DUT-vs-DUT vs a standalone PE_M=1 `glm_model_q4k`), not a numeric golden**; byte-identical at `PER_ROW_SEQ=0` | a resident dense DRAFT model (K_eff↑, needs a trained draft's weights); real-checkpoint validation on a GPU/large host |
+| Memory | DDR5/NVMe/USB-C **PHYs stubbed** (TB) | licensed **PHY IP** integrated + signed off |
+| Verification | bounded BMC (7 controllers + 1 ECC-ring) + 5 lifted to unbounded k-induction (`make formal`/`formal-ind`); directed TBs at slice; verilator line/toggle/branch coverage (`make coverage`) | coverage *closure*, constrained-random regression, gate-level sim, production-width formal |
+| Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`) — but `mbist_ctrl`/`icg_cell` **not yet instantiated** in `glm_q4k_system*` | full ECC/recovery, CDC sign-off, reset/init hardening, DFT/scan closed |
+| Physical | slice-scale yosys estimates; the six memory controllers alone sum to ~71,475 LUT4 (~85% of an ECP5-85), so the full system needs a larger FPGA; **prior-FP8 sky130 realizability** on branch `fp8` (see below) | full synth + **FPGA** P&R + timing closure via the vendor flow → **bitstream** (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
+| Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend being retargeted from the prior `glm_model_fp8` path to `glm_model_q4k`) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
 ---
 
-## The #1 product gate (do this FIRST)
+## The #1 product gate (do this FIRST) — the Q4_K fidelity chain
 
-**Real-checkpoint full-model fidelity.** Until the actual GLM-5.2-FP8 weights produce the actual
-model's next tokens through our datapath, there is no product. The bridge is built
-(`tools/ckpt_pack.py` + `docs/BIT_ACCURACY.md` §C). Execute it on a GPU host:
-1. Download `zai-org/GLM-5.2-FP8`; run a transformers/vLLM reference forward on a prompt → golden
-   next-token logits/argmax.
-2. Run our **bit-accurate software model** (`tools/glm_fp8_ref.py`, scaled to full config) on the
-   same weights + prompt → argmax.
-3. Assert token match over a corpus. Any divergence = a per-Linear scale-orientation / bf16-tail /
-   RoPE/KV/MoE plumbing bug to fix in the RTL contract.
+**Real-checkpoint full-model fidelity.** Until the actual GLM-5.2 Q4_K weights produce the actual model's
+next tokens through our datapath, there is no product. On the Q4_K track that gate is **not one step but a
+short chain of OPEN items** (per the evidence ledger — none of these is done):
 
-This is gating: it validates the *assembly* of hundreds of operators on *trained* weights — the
-one thing the slice cannot.
+1. **Assembled-Q4_K numeric golden** *(new, top priority — `NEXT_STEPS_PLAN.md` B9)*. Today the assembled
+   `glm_model_q4k` (including the `mla_attn_q4k` `1/sqrt(d_head)` softmax scale) is checked **only** as
+   spec==greedy self-consistency — a real lossless-speculation safety property, but **DUT-vs-DUT**, whose
+   reference is itself a `glm_model_q4k`. Nothing asserts the assembled Q4_K forward pass matches a ggml /
+   reference numeric golden. **Build a TB that compares a 1-token `glm_model_q4k` forward against an
+   independent assembled ggml-Q4_K reference** (an extension of `tools/q4k_ref.py` beyond the GEMM core).
+2. **Mixed-type Q6_K/Q8_0/F16 consumer** *(new — B10)*. The RTL is Q4_K-only, so it **cannot consume a real
+   UD-Q4_K_XL checkpoint as-is** — the dynamic mix keeps sensitive tensors at Q6_K/Q8_0/F16, for which
+   `q4k_ref.py` has Python goldens with no RTL consumer. Add an RTL dequant path (per-tensor `w_type`
+   routing) so those tensors are consumed at their real precision (not re-quantized to Q4_K, which would
+   void the fidelity of the moat).
+3. **Real-checkpoint validation** *(the standing OPEN #1 fidelity gate — `NEXT_STEPS_PLAN.md` D1)*. On a
+   GPU / large-memory host: run the real 753 B GLM (llama.cpp / the real GGUF) on a prompt → golden
+   next-token argmax; run our datapath (assembled-Q4_K golden from step 1, mixed-type from step 2) on the
+   same weights + prompt; assert token match over a corpus. Any divergence = a per-Linear
+   scale-orientation / bf16-tail / RoPE/KV/MoE plumbing bug to fix in the RTL contract. **No in-repo tool
+   exists** — the prior FP8 `modal_validate.py` was on the deleted track and is **not** a Q4_K validator.
+
+This chain is gating: it validates the *assembly* of hundreds of operators on *trained* weights — the one
+thing the slice and the spec==greedy self-consistency cannot.
 
 ---
 
 ## Product phases (main)
 
 ### P1 — Full-scale + real-model correctness  *(gates everything)*
-- P1.1 Real-checkpoint validation (above). **Blocking.**
-- P1.2 Scale the RTL/params to the full config; verify via the bit-accurate software model + a
-  full-config RTL elaboration (synth-only where sim is intractable). **Buildability fix (done):** the
-  core GEMM `glm_matmul_fp8` dequant was a fully-unrolled block-scale fold — O(NB²) area
-  (NB=ceil(KMAX/BLK); at the product KMAX=16384 → NB=128, i.e. 256 FP pipes + ~40k delay FFs *per PE*),
-  so lint-"elaborates-clean" ≠ buildable. Rewrote it as a **sequential** fold (one fp32_mul + one
-  fp32_add reused over all blocks), **O(NB²)→O(1)** FP pipes, **bit-exact** (matmul TB 224/224 at NB=2
-  and NB=16; `make bitacc` [FP8, removed — Q4_K gate is `make q4k`] 14/14 + argmax 28/28; slice-model argmax unchanged). yosys now elaborates
-  `glm_matmul_fp8` at KMAX=16384 (was an elaboration hang) — the product config is now buildable.
-- P1.3 Close the prototype correctness gaps for product: **per-position causal KV** (replace the
-  PE_M shared-pos decode-batch regime with a real per-row position/KV). **Done so far:** per-row
-  position/extent threaded model→decoder→mla; the **KV pager storage side** carries `NSEQ`
-  independent ring windows (per-seq counter/window/eviction + `flash_seq` cold keying; NSEQ=1
-  byte-identical, verified by directed multi-seq TB + BMC/k-induction); and **multi-sequence
-  batched attention (`PER_ROW_SEQ`) is now real end-to-end through the FULL MODEL** — mla replaces
-  the shared-seq union-skip with a per-row-slot union tagged by `union_seq`, emits `kc_seq` to
-  route each fetch to its sequence's window, and `PER_ROW_SEQ`/`seq_vec`/`kc_seq`/`SWIN` thread
-  model→decoder→mla. Proven: mla multi-seq TB (32, incl. weight-share), and the **full
-  glm_model_fp8 batches 2 DIFFERENT sequences** (per-row argmax/logits bit-exact vs per-seq PE_M=1
-  goldens; query-side weight stream shared, ~41% fewer attn-weight beats than two separate runs) —
-  now BOTH the DENSE and the **SPARSE** regime (S>TOPK_ATTN — the real long-context/DSA regime;
-  unblocked by the `dsa_indexer` `LANES[IDXW:0]`-truncation fix that had frozen the sparse group
-  loop for S_MAX≤4); PER_ROW_SEQ=0 byte-identical throughout. And a **batched multi-sequence TOP
-  exists and is productionizing** — `glm_fp8_soc_ms` runs `glm_model_fp8` at PE_M=B with a REAL
-  `NSEQ`-window `kv_cache_pager` **and the `expert_cache_pf` routed-expert cache** (batched MoE
-  union-skip dedups experts across sequences → the cache sees fewer distinct NVMe fetches than B
-  separate decodes): a host FSM prefills B sequences into their own windows (`append_seq`), runs
-  ONE batched forward (row r → sequence r via `seq_vec`; `kc_seq` → `gather_seq`), and commits B
-  next tokens — each row bit-exact vs a per-seq PE_M=1 model, query-side weights shared, dense +
-  sparse (`glm_fp8_soc_ms_tb`, 3 cases). And **`DSA_REAL_IDX=1` (real query-dependent IndexShare)
-  now works under multi-seq** — the DSA index pre-fetch carries a PER-SEQUENCE `kidx_buf[seq]` so
-  each row scores its top-K against ITS OWN sequence's key vectors (`mla_attn_fp8_multiseq_dsareal_tb`,
-  4 sparse cases, per-row bit-exact; byte-identical for `DSA_REAL_IDX=0` and single-seq).  And a
-  **REAL per-layer KV store now lives in the top** — `glm_fp8_soc_ms` OWNS the KV data in `kv_mem`
-  (L*NSEQ windows x KV_RESIDENT positions), written by the host prefill/decap per (seq, layer, pos)
-  and read combinationally by the model (window = db_layer*NSEQ+kc_seq), replacing the TB stub
-  (verified: all 3 SoC cases pass with kv_mem serving, dense + sparse).  **batched_moe full
-  B-coverage: DONE** (`make bcov` [FP8, removed — see branch `fp8`] — B∈{1,2,3,5,8} × routing patterns {same,distinct,random,overlap},
-  each re-proving batched_moe(PE_M=B) == B independent PE_M=1 expert runs BIT-EXACT with every union
-  expert fetched once).  **Real draft chaining: DONE** (`spec_chain_top` — the MTP head runs
-  recurrently on its chain hidden-state `h_mtp` to mint K drafts, then a PE_M=K+1 batched-verify in
-  one weight-load commits the accepted prefix; spec==greedy).  **scale-up VERIFIED at B=4**
-  (`glm_model_fp8_multiseq4_tb`:
-  4 different sequences batched in one forward, all 4 rows per-row bit-exact vs per-seq PE_M=1, dense
-  AND sparse, ~52% fewer attn-weight beats than 4 separate decodes).  **Multi-step continuous-batching
-  DECODE LOOP: DONE** — `glm_fp8_soc_ms` at `N_STEPS>1` turns one `start` into an N-token decode: the
-  host FSM runs the batched forward, streams the B argmax via `tok_valid`, writes each decode token's
-  latent into `kv_mem` at its growing position (`s_len_r + dec_step`) for every layer, feeds the
-  argmax back as the next step's input, and advances `pos`/extent — looping RUN→DECAP→RUN until N
-  tokens are committed per sequence.  `glm_fp8_soc_ms_loop_tb` (`make` target `glm_fp8_soc_ms(decode-loop)`)
-  pins it: for dense, mixed, and sparse regimes, each row's step-k token is BIT-EXACT to a standalone
-  PE_M=1 model decoding that sequence alone for N steps (same feedback + growing extent), and the
-  step-1 forward attends the step-0 decode key it wrote to `kv_mem` (a wrong feedback token,
-  position, or decode-KV read would diverge from the reference).  N_STEPS=1 is byte-identical to the
-  single-step top.  **Remains (beyond RTL):** a RESIDENT DENSE DRAFT model for higher accept rate
-  (K_eff 3–5 vs self-draft's ~1.7–2.2 — needs a trained small draft's weights); real-checkpoint
-  validation (the standing P1.1 gate — needs a GPU host).
+- **P1.1 The Q4_K fidelity chain (above). Blocking.**
+  - P1.1a Assembled-Q4_K numeric golden (B9) — **OPEN**, top priority.
+  - P1.1b Mixed-type Q6_K/Q8_0/F16 consumer (B10) — **OPEN**.
+  - P1.1c Real-checkpoint validation vs llama.cpp / the real GGUF (D1) — **OPEN**, needs a GPU/large host
+    and depends on P1.1a+P1.1b.
+- **P1.2 Scale the RTL/params to the full config.** **ELABORATED (done — structure only, not a sim):** the
+  full 753 B UD-Q4_K_XL shape (DIM 6144 / L=78 / 256-expert top-8 / VOCAB 154880 / Q_LORA 2048 / KV_LORA
+  512 **[PENDING safetensors]**) elaborates clean via `test/full_config_elab_wrap.v` (verilator, 0 errors —
+  type/width only) and the whole-chip `glm_q4k_system_cdc` passes `make synth-glm` (yosys `hierarchy -check`
+  + `check -assert`, exit 0). **NOT-YET:** full-config *functional* sim is intractable at this shape (the
+  LM-head GEMV alone is ~2.4e8 K-beats/token), so full-scale correctness rides on the P1.1 fidelity chain
+  at the slice + the elaboration study, not a full-config run. *(Prior-FP8 note: the O(NB²)→O(1) sequential
+  block-scale dequant fold that first made the product KMAX buildable — one `fp32_mul_pipe` + one
+  `fp32_add_pipe` reused over all blocks — was established and measured **bit-exact on the prior FP8 track**
+  `glm_matmul_fp8` (branch `fp8`); `glm_matmul_q4k` inherits the same sequential fp32-accumulate structure,
+  and its Q4_K bit-exactness is the `make q4k` 160/160 result. The specific FP8 buildability counts are a
+  prior-track measurement — no fabricated Q4_K equivalent.)*
+- **P1.3 Close the batched-decode / per-position-KV correctness gaps for product.** **Largely closed on
+  `main` (Q4_K modules), all as self-consistency, not a numeric golden:**
+  - **Per-row position/extent/sequence** threaded model→decoder→mla (`PER_ROW_POS` / `PER_ROW_SLEN` /
+    `PER_ROW_SEQ`), all safe-defaulting to 0 (byte-identical when off).
+  - **KV pager storage side** carries `NSEQ` independent per-seq ring windows (per-seq counter/window/
+    eviction + cold keying; NSEQ=1 byte-identical; directed multi-seq TB + BMC/k-induction).
+  - **Multi-sequence batched attention (`PER_ROW_SEQ`) end-to-end through `glm_model_q4k`** — `mla_attn_q4k`
+    replaces the shared-seq union-skip with a per-row-slot union tagged by `union_seq` and routes each
+    fetch to its sequence's window; verified in both the DENSE and the **SPARSE** (S>TOPK_ATTN, the real
+    long-context/DSA) regime. Full-model B=2 and B=4 batch different sequences in one forward, each row's
+    argmax/logits **per-row self-consistent** vs a standalone PE_M=1 `glm_model_q4k` decoding that sequence
+    alone, sharing the query-side weight fetch (fewer attn-weight beats than N separate decodes). *(These
+    per-seq PE_M=1 references are themselves `glm_model_q4k` — DUT-vs-DUT self-consistency, not a ggml
+    numeric golden; see P1.1a.)*
+  - **Batched multi-sequence TOP** `glm_q4k_soc_ms` — `glm_model_q4k` at PE_M=B with a real `NSEQ`-window
+    `kv_cache_pager` + `expert_cache_pf`, a host FSM that prefills B sequences into their windows, runs ONE
+    batched forward, and commits B tokens; a **REAL per-layer KV store** (`kv_mem`, L×NSEQ windows ×
+    resident positions) owned by the top replaces the TB stub; dense + sparse per-row self-consistent.
+  - **`DSA_REAL_IDX=1` (query-dependent IndexShare) under multi-seq** via a per-sequence `kidx_buf` prefetch.
+  - **Expert-union-skip MoE batching folded inline into `glm_decoder_block_q4k`** (PE_M>1 union scan; the
+    standalone `batched_moe.v` module was removed from `main`) — B token rows share one fetch of each
+    distinct union expert, accumulating in ascending-index order for byte-exact batch-invariance.
+  - **Multi-step continuous-batching DECODE LOOP** (`glm_q4k_soc_ms` `N_STEPS>1`) — one `start` decodes N
+    tokens/seq: the host FSM streams the B argmax, writes each decode token's latent into `kv_mem` at its
+    growing position for every layer, feeds the argmax back, and advances pos/extent; each row's step-k
+    token is **per-row self-consistent** vs a standalone PE_M=1 `glm_model_q4k` decoding that sequence alone
+    N steps. N_STEPS=1 is byte-identical to the single-step top.
+  - **Real draft chaining** (`spec_chain_top`) — the MTP head runs recurrently on its chain hidden-state
+    `h_mtp` to mint K drafts, then a PE_M=K+1 batched-verify commits the accepted prefix; committed==greedy
+    (`make spec-slow`).
+  - **Remains (beyond RTL):** a **RESIDENT DENSE DRAFT model** for higher accept rate (K_eff 3–5 vs
+    self-draft's ~1.7–2.2 — needs a trained small draft's weights); and the standing P1.1 fidelity chain.
 
 ### P2 — Productize the RTL (robustness)
-- P2.1 ECC on DDR5 + NVMe read path; error detection / correction / retry / recovery paths.
+- P2.1 ECC on DDR5 + NVMe read path; error detection / correction / retry / recovery paths. *(Built:
+  `ecc_mem_wrap` SECDED scrub-write-back + sticky `serr`/`derr`, `kv_ecc_ring` lane-SECDED + a
+  `kv_cache_pager_ecc_fv` formal harness. Remains: DDR5/NVMe payload-byte ECC + committed-BMC
+  re-parameterization for the widened word.)*
 - P2.2 Full CDC sign-off across USB / memory / compute clock domains; reset/init/boot-load hardening.
-- P2.3 Reliability (FPGA path): the built ECC (SECDED scrub) + BRAM-ECC + CDC/reset hardening
-  carry over; MBIST maps to a BRAM self-test. ASIC-specific DFT (scan-chain insertion, boundary
-  scan) is **not needed on the FPGA rungs (①②)** — the vendor JTAG/config handles device test — and
-  is **deferred to the rung-③ ASIC endgame**, where it becomes required (see
-  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
-- P2.4 Power: real ICG clock-gating cells, power domains, DVFS hooks, thermal budget.
-- P2.5 Verification closure: functional + code coverage targets, constrained-random regression,
-  gate-level (post-synth) sim, production-width controller formal + k-induction for unboundedness.
+  *(Built: `reset_sync` wired at both host/core boundaries of `glm_q4k_system_cdc`; `make cdc` structural
+  crossing check; a default-off PHY-closure loopback stage. Remains: physically feeding the returned bytes
+  back into the die.)*
+- P2.3 Reliability (FPGA path): the built ECC (SECDED scrub) + KV-ring ECC + CDC/reset hardening carry
+  over; MBIST maps to a BRAM self-test. ASIC-specific DFT (scan-chain insertion, boundary scan) is **not
+  needed on the FPGA rungs (①②)** — the vendor JTAG/config handles device test — and is **deferred to the
+  rung-③ ASIC endgame**, where it becomes required (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). *(Open:
+  `mbist_ctrl`/`icg_cell` are unit-verified but **not yet instantiated** in `glm_q4k_system*` — the MBIST
+  wrapper + top `scan_enable` stitch remain.)*
+- P2.4 Power: real ICG clock-gating cells, power domains, DVFS hooks, thermal budget. *(Built:
+  `clk_throttle` DVFS prescaler — unit + BMC verified; `clk_en_ctrl`/`icg_cell`/`clk_gate_cluster`
+  unit-verified. Remains: instantiate the ICG cluster in the system top.)*
+- P2.5 Verification closure: functional + code coverage targets, constrained-random regression, gate-level
+  (post-synth) sim, production-width controller formal + k-induction for unboundedness.
 
 ### P3 — Vendor IP + physical implementation
-- P3.1 License + integrate the PHYs: the DDR controller+PHY (**DDR4 on rung ①, DDR5 multi-channel or
-  HBM on rung ②** — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), PCIe/NVMe host controller, USB-C device.
+- P3.1 License + integrate the PHYs: the DDR controller+PHY (**DDR4 on rung ①, DDR5 multi-channel or HBM on
+  rung ②** — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), PCIe/NVMe host controller, USB-C device.
 - P3.2 Target — **FPGA-card product for the near/mid term** (rungs ①②, the committed path — see
-  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); **ASIC is the rung-③ volume endgame, not out of scope.**
-  A data-center-class FPGA + on-board DDR + NVMe (M.2/PCIe) runs the real model streamed; bitstream via
-  the vendor flow. This is a **staged ladder**: rung ① (low-end FPGA, ~5–8 tok/s [EST]) proves it
-  cheap, rung ② (custom mid-FPGA board, DDR5/HBM, ~15–40 tok/s [EST]) is the funded interactive product.
-  - **Why FPGA first, ASIC at volume:** the workload is **memory-bandwidth-bound** — performance is set
-    by memory bandwidth, which is set by the chip's IO pins + hard PHYs, which is set by budget. The FPGA
-    rungs prove the RTL on real silicon and reach product-market fit *without* a multi-million NRE bet.
-    An **ASIC is exactly what breaks the FPGA's IO/PHY ceiling**: it integrates **HBM stacks +
-    many-channel controllers + near-memory FP8 compute** that no FPGA package offers, at **~TB/s** with
-    **lower $/seat + lower power** once the NRE amortizes over manufacturing volume (rung ③). So the
-    earlier "ASIC out of scope" — argued from *"compute-bound → ASIC's compute edge is wasted"* — is
-    **superseded**: the real bottleneck is bandwidth, and ASIC is precisely how a bandwidth-bound
-    product scales past the FPGA package. Sequence: **FPGA (①②) to prove + fund → ASIC (③) when volume
-    justifies the NRE and demands lower $/seat + higher tok/s + lower power.** Not now (no volume, no
-    capital); the endgame later, for cost-down + performance + power at volume.
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); **ASIC is the rung-③ volume endgame, not out of scope.** A
+  data-center-class FPGA + on-board DDR + NVMe (M.2/PCIe) runs the real model streamed; bitstream via the
+  vendor flow. This is a **staged ladder**: rung ① (low-end FPGA, Kintex US+ KU3P-class + DDR4, ~5–8 tok/s
+  [EST]) proves it cheap, rung ② (custom mid-FPGA board, DDR5/HBM, ~15–40 tok/s [EST]) is the funded
+  interactive product. **The routed FPGA fit (LUT/DSP/BSRAM/Fmax) is [PENDING]** — no PnR/Fmax result is
+  in-repo; the [`fpga/`](../fpga/README.md) vendor-flow scaffold + [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)
+  exist to close it (needs Gowin/Vivado + a board, a user step).
+  - **Why FPGA first, ASIC at volume:** the workload is **memory-bandwidth-bound** — performance is set by
+    memory bandwidth, which is set by the chip's IO pins + hard PHYs, which is set by budget. The FPGA rungs
+    prove the RTL on real silicon and reach product-market fit *without* a multi-million NRE bet. An **ASIC
+    is exactly what breaks the FPGA's IO/PHY ceiling**: it integrates **HBM stacks + many-channel
+    controllers + near-memory compute** that no FPGA package offers, at **~TB/s** with **lower $/seat +
+    lower power** once the NRE amortizes over manufacturing volume (rung ③). So the earlier "ASIC out of
+    scope" — argued from *"compute-bound → ASIC's compute edge is wasted"* — is **superseded**: the real
+    bottleneck is bandwidth, and ASIC is precisely how a bandwidth-bound product scales past the FPGA
+    package. Sequence: **FPGA (①②) to prove + fund → ASIC (③) when volume justifies the NRE and demands
+    lower $/seat + higher tok/s + lower power.** Not now (no volume, no capital); the endgame later, for
+    cost-down + performance + power at volume.
 - P3.3 Full-scale STA (SDC), power sign-off, signal/power integrity.
 
 ### P4 — System, software, manufacturing
 - P4.1 PCB: multi-layer controlled-impedance board (FPGA + DDR5/HBM + NVMe via M.2/PCIe + USB-C), BOM,
   assembly. (This is the **rung ② custom product board**; the Tang Mega 138K Pro dev board — 32 MB onboard
-  Flash + 1 GB soldered DDR3 — is bring-up/reduced-demo only, not the shipping hardware.)
+  Flash + 1 GB soldered DDR3 — is bring-up/reduced-demo only, not the shipping hardware —
+  [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md).)
 - P4.2 Software stack: USB-C host driver, tokenizer, the checkpoint→NVMe quant-layout pipeline
-  (productionize `ckpt_pack.py`/`flash_layout.py`), inference runtime + continuous-batch scheduler.
+  (productionize `ckpt_pack_q4k.py`/`flash_layout.py`), inference runtime + continuous-batch scheduler.
 - P4.3 Qualification: reliability (temp/voltage/aging), compliance (USB-C, EMI), yield/binning.
 
 ---
 
-## What stays / what changes from the prototype
+## What stays / what changes from the prior tracks
 
-- **Keep (the core IP):** the FP8 datapath, MLA/DSA/MoE, the memory-system controllers
-  (expert_cache_pf, kv_cache_pager, ddr5_xbar, flash_xbar, weight_loader, boot_loader), the
-  batching stack (PE_M batch-widening **complete on all four FP8 wrappers** — swiglu/router/mla/mtp
-  — + model + batched_moe + spec_batched_top, and the PE_M>1 grouped MoE now **union-skips** to
-  fetch only the experts any row selected, byte-identical), the optimizations
-  (BFP accumulator, parallel indexer, decompressor), the formal harnesses, the bit-accuracy kit.
-  These are the hard, validated parts — they carry forward.
-  *(One-time naming note: `flash_xbar` — like `FLASH_LAT`, `flash_req`, `flash_seq` — is a
-  **committed RTL identifier**, kept as-is. It is the medium-agnostic storage-read fabric
-  (address → weight bytes, with read-request issue + latency-hiding). In the product its
-  NAND-specific backend is a labeled placeholder swapped for an **NVMe/PCIe host controller**; the
-  crossbar abstraction and everything above it — compute die, weight_loader, expert_cache_pf,
-  kv_cache_pager — are unchanged.)*
-- **Change (the mindset):** every prototype "demonstrates the mechanism / honest gap / TB-driven"
-  becomes a closed, full-scale, covered, signed-off product feature. Correctness is now *the real
-  model on real weights*, not a slice.
-- **Out of pure RTL (but on the product critical path):** PHY IP, physical implementation,
-  software, PCB, manufacturing. These dominate product cost/time and are mostly vendor/EDA/board
-  work, not algorithm design.
+- **Keep (the core IP):** the Q4_K datapath (`glm_matmul_q4k` bit-exact to the ggml-Q4_K reference,
+  `swiglu_expert_q4k`, `moe_router_q4k`, `mla_attn_q4k`), MLA/DSA/MoE, the memory-system controllers
+  (`expert_cache_pf`, `kv_cache_pager`, `ddr5_xbar`, `flash_xbar`, `weight_loader_q4k`, `boot_loader`), the
+  batching stack (PE_M batch-widening on all four Q4_K wrappers — swiglu/router/mla/mtp — + model +
+  `spec_batched_top`/`spec_chain_top`, and the PE_M>1 grouped MoE **union-skip folded inline into
+  `glm_decoder_block_q4k`**, byte-identical), the optimizations (BFP accumulator, parallel indexer,
+  `weight_decomp` decompressor), the formal harnesses, and the **ggml-Q4_K reference kit** (`tools/q4k_ref.py`).
+  These carry forward. **The memory system is byte-agnostic** (it moves addresses/slots/IDs, never weight
+  bytes), so it carried over from the FP8 track by parameter/doc, not logic.
+  *(One-time naming note: `flash_xbar` — like `FLASH_LAT`, `flash_req`, `flash_seq` — is a **committed RTL
+  identifier**, kept as-is. It is the medium-agnostic storage-read fabric (address → weight bytes, with
+  read-request issue + latency-hiding). In the product its NAND-specific backend is a labeled placeholder
+  swapped for an **NVMe/PCIe host controller**; the crossbar abstraction and everything above it — compute
+  die, `weight_loader_q4k`, `expert_cache_pf`, `kv_cache_pager` — are unchanged.)*
+- **Change (the mindset):** every prototype "demonstrates the mechanism / honest gap / TB-driven" becomes a
+  closed, full-scale, covered, signed-off product feature. Correctness is now *the real model on real
+  weights, numerically checked* — not a slice, and not spec==greedy self-consistency.
+- **Out of pure RTL (but on the product critical path):** PHY IP, physical implementation, software, PCB,
+  manufacturing. These dominate product cost/time and are mostly vendor/EDA/board work, not algorithm design.
+- **Prior FP8 track (branch `fp8`).** The compute-side die-shrink / accumulator / fold-pipeline PPA wins,
+  the sky130 place-and-route realizability, and the real-checkpoint bit-accuracy runs were established on
+  the **prior FP8 track** and are **FP8-specific measurements** — they are **not** re-run for Q4_K and are
+  **not** claims about the current Q4_K `main`. To inspect them: `git checkout fp8` (or the tag
+  `fp8-verified-baseline`). No Q4_K equivalent is fabricated here.
 
 ## Immediate next step (product)
 
-**P1.1**: run the real-checkpoint validation procedure (needs a GPU host) — the standing gate. The
-per-position causal-KV gap (the prototype's PE_M shared-pos limitation) is now **largely closed** on
-`main`: per-row position/extent, multi-sequence batched attention (`PER_ROW_SEQ`), and the
-multi-step continuous-batching decode loop (`glm_fp8_soc_ms` `N_STEPS>1`) make batched decode
-position-accurate and per-row bit-exact; the remaining P1.3 item is a resident dense DRAFT model
-(needs weights). Everything else (P2–P4) sequences behind a green P1.
+**Start the P1.1 Q4_K fidelity chain** — the standing gate:
+1. **P1.1a Assembled-Q4_K numeric golden** (`NEXT_STEPS_PLAN.md` B9) — the top OPEN item; move the
+   assembled `glm_model_q4k` from spec==greedy self-consistency to an actual numeric match vs an assembled
+   ggml-Q4_K reference (including the MLA `1/sqrt(d_head)` scale). This is the one thing the slice and the
+   spec loops cannot do.
+2. **P1.1b Mixed-type Q6_K/Q8_0/F16 consumer** (B10) — so the chip can ingest a real UD-Q4_K_XL checkpoint
+   as-is.
+3. **P1.1c Real-checkpoint validation** (D1, needs a GPU host) — the #1 fidelity gate, gated on 1+2.
+4. **FPGA fit** (P3.2 / [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md), needs Gowin/Vivado + a board) — the
+   routed LUT/DSP/BSRAM/Fmax that sets device size / thermal / BOM / price.
+
+The per-position causal-KV / batched-decode gap (the prototype's PE_M shared-pos limitation) is **largely
+closed** on `main` — per-row position/extent/sequence (`PER_ROW_SEQ`) and the multi-step
+continuous-batching decode loop (`glm_q4k_soc_ms` `N_STEPS>1`) make batched decode position-accurate and
+per-row self-consistent; the remaining P1.3 item is a resident dense DRAFT model (needs weights).
+Everything else (P2–P4) sequences behind a green P1.

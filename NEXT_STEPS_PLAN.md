@@ -10,7 +10,7 @@
 
 > **범위 결정:** 실제 753B 모델을 GPU로 돌려 대조하는 **실체크포인트 검증(P1.1)은 이 no-GPU 계획의
 > 범위 밖**이지만 *제외되어 사라진 것이 아니라* 여전히 **열린(OPEN) #1 정합성 게이트**다(아래 "여전히
-> 열린 갭" §참조; `docs/REAL_CKPT_VALIDATION.md`). 이 계획 내부의 검증 신뢰 기준은 기존 **모듈 단위
+> 열린 갭" §참조, 아래 D1). 이 계획 내부의 검증 신뢰 기준은 기존 **모듈 단위
 > 유닛테스트(각 TB의 독립 fp64/Q4_K golden, iverilog/CPU, GPU 0)**이며 아래 모든 작업은 **GPU 불필요**.
 
 > **제품 정체성 (단일 렌즈):** 이 가속기는 **이더넷 뽑은 채로 도는 오프라인·에어갭 로컬 싱글유저 개인
@@ -72,7 +72,7 @@
    **신규 작업 (아래 B10)**.
 4. **실체크포인트 검증 도구가 저장소에 없다.** 이전 FP8 `modal_validate.py`는 삭제된 트랙이었다. 조립-Q4_K
    토큰 정합성을 llama.cpp/실 GGUF에 대조하는 것은 **OPEN #1 정합성 게이트**이며 (1)·(3)과 GPU/대용량
-   호스트에 의존(`docs/REAL_CKPT_VALIDATION.md`). → **신규 작업 (아래 D1, no-GPU 범위 밖)**.
+   호스트에 의존. → **신규 작업 (아래 D1, no-GPU 범위 밖)**.
 5. **FPGA fit / Vivado 사인오프 미증명.** 저장소에 PnR/Fmax/LUT 결과 없음 — `docs/FPGA_DEMO_PLAN.md`는
    계획이다(Vivado-blocked). → **신규 작업 (아래 D2, OSS 플로 밖)**.
 6. **P2 클로저 잔여.** `mbist_ctrl`/`icg_cell`이 `glm_q4k_system*`에 미인스턴스; DDR5/NVMe payload ECC +
@@ -139,7 +139,7 @@
 
 | # | 작업 | 수락 기준 | 비고 |
 |---|------|-----------|------|
-| **D1** (🔴 OPEN·#1 정합성 게이트) | **실체크포인트 검증** — 실 753B GLM(llama.cpp/실 GGUF)의 next-token argmax를 우리 데이터패스에 대조. B9(조립 golden)·B10(혼합타입)에 의존 | 코퍼스에서 argmax 일치; `docs/REAL_CKPT_VALIDATION.md`. **저장소에 도구 없음 — 신규 필요**(FP8 `modal_validate.py`는 삭제된 트랙) | GPU/대용량 호스트 |
+| **D1** (🔴 OPEN·#1 정합성 게이트) | **실체크포인트 검증** — 실 753B GLM(llama.cpp/실 GGUF)의 next-token argmax를 우리 데이터패스에 대조. B9(조립 golden)·B10(혼합타입)에 의존 | 코퍼스에서 argmax 일치. **저장소에 도구 없음 — 신규 필요**(FP8 `modal_validate.py`는 삭제된 트랙) | GPU/대용량 호스트 |
 | **D2** (🔴 OPEN) | **FPGA fit / Vivado 사인오프** — rung-① 저가 FPGA에서 PnR/Fmax/LUT/타이밍 클로저 | 실 비트스트림 + Fmax/자원 리포트; `docs/FPGA_DEMO_PLAN.md`(현재 계획, Vivado-blocked) | Vivado/벤더IP |
 
 ## Quick wins — no GPU

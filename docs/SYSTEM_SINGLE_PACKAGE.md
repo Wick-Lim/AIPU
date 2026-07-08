@@ -1,15 +1,20 @@
 # Single-Package GLM-5.2 (Q4_K) Inference System — design note
 
-> **Drafted on the prior FP8 track — memory system is format-agnostic.** This single-package
-> design was first written for the FP8 datapath; the **current product datapath is Q4_K**
-> (`glm_q4k_soc` / `glm_q4k_soc_ms` over `glm_model_q4k`, a **Q4_K compute die**), and the weight
-> store is the **~467 GB `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`** (~38% smaller than the 753 GB FP8
-> checkpoint). The **memory-hierarchy / streaming / expert-cache analysis below is format-agnostic**
-> and carries over unchanged; the **concrete FP8 byte counts, per-token footprints, energy ratios,
-> and BOM numbers are the prior-FP8-track figures** and need Q4_K re-derivation (the store and
-> per-token footprint scale down ~proportionally with the ~38% smaller weights — all **[EST]**).
-> RTL/test names of the form `*_fp8` below map to their `*_q4k` equivalents on main (branch `fp8`
-> preserves the FP8 track).
+> **Current datapath is Q4_K; FP8 is the prior track (branch `fp8`).** This single-package
+> design was first drafted for the FP8 datapath; the **current product datapath is Q4_K**
+> (`glm_q4k_soc` / `glm_q4k_soc_ms` over `glm_model_q4k`, a **Q4_K compute die**, wrapped by
+> `glm_q4k_system_cdc`), and the weight store is the **~467 GB `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`**
+> (~38% smaller than the prior ~753 GB FP8 checkpoint). **The byte counts, per-token footprints,
+> cache sizes, and BOM numbers below are now the Q4_K figures** — re-derived from the prior FP8
+> track by the deterministic quant ratio (Q4_K mix ≈ **0.6 B/param** vs FP8's ~1.0, i.e. **×0.6**),
+> with FP8 shown only as the **prior comparison**. Per-bit **energy ratios are format-agnostic** and
+> carry over unchanged, as does the **memory-hierarchy / streaming / expert-cache thesis**. All
+> silicon / perf numbers stay **[EST]/[PENDING]** (no Vivado fit or board run yet — only the quant
+> byte-math is deterministic). **Not bit-exact to the published GGUF:** the RTL is **Q4_K-only**,
+> while UD-Q4_K_XL is a *mixed* k-quant (some Q6_K/Q8_0/F16 tensors) whose mixed-type path is **OPEN**;
+> the moat is **offline + full-frontier (753B) + appliance price**, *not* bit-exactness to the GGUF
+> (see [`README.md`](../README.md)). RTL/test names of the form `*_fp8` below map to their `*_q4k`
+> equivalents on main (branch `fp8` preserves the FP8 track).
 
 > **Scope.** A system design for running the *published* `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`
 > weights on **one module** — a custom Q4_K compute die + **64 GB DDR5** (the fast working
@@ -52,7 +57,7 @@
 > "out of scope."** The earlier "an ASIC's compute-density edge is wasted" call reasoned from
 > *compute-bound*; but the real bottleneck is **memory bandwidth (IO pins + PHY)**, and an ASIC is
 > **exactly what breaks the FPGA's IO/PHY ceiling** — HBM stacks + many-channel controllers +
-> near-memory FP8 compute at **~TB/s**, at **lower $/seat and lower power once amortized over volume**
+> near-memory Q4_K compute at **~TB/s**, at **lower $/seat and lower power once amortized over volume**
 > (see [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2). Its multi-million NRE + long lead time only
 > pay off **at manufacturing volume**, so it is **sequenced *after* the FPGA proves product-market
 > fit** — *not now* (no volume, no capital), but the deliberate endgame **for cost-down + performance
@@ -66,20 +71,23 @@
 One module that runs GLM-5.2 (UD-Q4_K_XL, 753B params, ~40B active/token, 1M context) by **storing
 the whole model on a cheap NVMe SSD and streaming the per-token working set through fast DDR5
 into a Q4_K compute die** — exploiting MoE sparsity (8/256 experts/layer) so only a small
-fraction of the 753 GB is touched per token. Optimize for **cost + interactive speed** (a
+fraction of the 467 GB is touched per token. Optimize for **cost + interactive speed** (a
 USB-C external accelerator) over peak throughput.
 
 ## 2. The problem
 
 | | Size [EST] | Consequence |
 |---|---|---|
-| Weights (FP8, 1 B/param) | **~753 GB** (725 GB are cold routed experts) | No chip holds it on-die or in HBM |
+| Weights (Q4_K mix, ~0.6 B/param) | **~467 GB** (~450 GB are cold routed experts; vs the prior FP8 ~753 GB) | No chip holds it on-die or in HBM |
 | Latent-KV cache @ 1M ctx | **~94 GB** (MLA; an MHA cache would be 5.36 TB) | Also too big for SRAM/HBM alone |
 | Compute / token | **~80 GFLOP** (~40B active × 2) | *Small* — a modest die does it in ~80 ms |
 
-The model is **memory-bandwidth-bound, not compute-bound**: per token you must *read* the
-active weights (~22 GB of routed experts + ~28 GB hot), and that read time dwarfs the math.
-So the design problem is a **memory hierarchy + streaming** problem.
+The model is **memory-bandwidth-bound, not compute-bound**: ~40B params are active per token
+(**≈25 GB** of weight at Q4_K's ~0.6 B/param). The pace-setting cost is the **read**, and the wall
+is the **~11–14 GB of routed experts** that change every token and stream from NVMe; the ~17 GB hot
+non-routed set stays resident in DDR5 and is re-read from fast memory. That read time dwarfs the
+~80 GFLOP of math, so the design problem is a **memory hierarchy + streaming** problem. (The KV
+cache is bf16 latent-MLA, unaffected by weight quant — still ~94 GB at 1M ctx.)
 
 ## 3. Architecture
 
@@ -89,15 +97,15 @@ So the design problem is a **memory hierarchy + streaming** problem.
    token ──▶     │   ┌───────────────┐  weight-pull   ┌────────────────────┐    │
                  │   │ Q4_K COMPUTE  │◀──(w_req/w_col)─│ 64 GB DDR5        │    │
                  │   │     DIE       │   bf16 acts     │ (~400–600 GB/s, 8–12ch)    │    │
-   logits ◀──    │   │ MLA·MoE·SwiGLU│──▶ bf16 out     │  • hot weights ~28GB│    │
+   logits ◀──    │   │ MLA·MoE·SwiGLU│──▶ bf16 out     │  • hot weights ~17GB│    │
                  │   │ + MTP + bf16  │                 │  • KV working window│    │
-                 │   │   tail        │                 │  • EXPERT CACHE ~34GB│   │
+                 │   │   tail        │                 │  • EXPERT CACHE ~20GB│   │
                  │   └───────────────┘                 └─────────┬──────────┘    │
                  │                                      miss ▲   │ refill         │
                  │                                            │   ▼                │
                  │                              ┌──────────────────────────────┐  │
                  │                              │  1–4 TB NVMe (~10s GB/s agg) │  │
-                 │                              │  • full 725 GB cold experts   │  │
+                 │                              │  • full ~450 GB cold experts  │  │
                  │                              │  • KV overflow (cold pages)    │ │
                  │                              └──────────────────────────────┘  │
                  └──────────────────────────────────────────────────────────────┘
@@ -112,7 +120,7 @@ where the cloud is barred — SCIFs, isolated OT / critical-infra, field/edge, o
 hand to a vendor); strongest-possible non-egress is its *proof* (the audit is literally "does it still
 work with the cable unplugged?" — yes). It also ends the "secured cloud" debate: in-VPC /
 zero-retention / TEE deployments all still require connectivity and fail the unplugged test. Honest
-caveats — the 753 GB model is **provisioned once** (itself doable offline / in a secure facility) and
+caveats — the 467 GB model is **provisioned once** (itself doable offline / in a secure facility) and
 model/weight updates are **physical re-provisioning**; and "offline" *alone* is table-stakes for any
 local box, so the moat is the **combination: offline + full-frontier (753B) + appliance price** (§11) —
 a 70B laptop model fails frontier quality, an 8×H100 rig fails price/form-factor, and secured cloud
@@ -124,18 +132,18 @@ Three components, three roles:
 - **64 GB DDR5** — the *fast working memory*: everything reused every token (hot weights), the
   KV working window, and the **routed-expert cache**. (~400–600 GB/s at 8–12 channels ≈ exactly the ~300–600 GB/s this workload needs, since it
   is NVMe/PCIe-bound — HBM's/GDDR6's higher BW would be wasted.)
-- **1–4 TB NVMe SSD** — the *cheap bulk store*: the entire 753 GB FP8 model + KV overflow.
+- **1–4 TB NVMe SSD** — the *cheap bulk store*: the entire 467 GB Q4_K model + KV overflow.
 
 ## 4. Memory tiering & map
 
 | Tier | Size | Bandwidth [EST] | Contents | Reused every token? |
 |---|---|---|---|---|
 | On-die SRAM | MBs | ~10s TB/s | activations, GEMM tiles, DSA index scratch, double-buffers | — |
-| **DDR5** | **64 GB** | **~400–600 GB/s (8–12 ch)** | **hot weights ~28 GB** (attention all layers, shared expert, dense FFN, router, embed/LM-head, norms) + KV working window + **expert cache ~34 GB** | hot: yes |
-| **NVMe SSD** | **1–4 TB** | **~10s GB/s agg [EST]** (per-drive ~3.5 GB/s Gen3 x4 / ~7 Gen4 x4; scale via PCIe lanes / multiple drives) | **full 725 GB cold routed-expert pool** + KV cold pages | no (streamed on demand) |
+| **DDR5** | **64 GB** | **~400–600 GB/s (8–12 ch)** | **hot weights ~17 GB** (attention all layers, shared expert, dense FFN, router, embed/LM-head, norms) + a wide KV working window + **expert cache ~20 GB** (~900 experts; the ~11 GB freed vs the FP8 hot-set widens the KV window) | hot: yes |
+| **NVMe SSD** | **1–4 TB** | **~10s GB/s agg [EST]** (per-drive ~3.5 GB/s Gen3 x4 / ~7 Gen4 x4; scale via PCIe lanes / multiple drives) | **full ~450 GB cold routed-expert pool** + KV cold pages | no (streamed on demand) |
 
-The split that makes it work: **non-routed params (~28 GB) are a *fixed* set used every
-token → resident in DDR5.** The **725 GB routed experts are a *data-dependent* set (8/256 per
+The split that makes it work: **non-routed params (~17 GB) are a *fixed* set used every
+token → resident in DDR5.** The **~450 GB routed experts are a *data-dependent* set (8/256 per
 layer, chosen at runtime) → live on the NVMe SSD, streamed/cached on demand.**
 
 ## 5. Per-token dataflow
@@ -143,30 +151,31 @@ layer, chosen at runtime) → live on the NVMe SSD, streamed/cached on demand.**
 1. **Embed** token (bf16, DDR5) → residual `x`.
 2. For each of 78 layers:
    a. RMSNorm(x) (bf16, DDR5).
-   b. **MLA attention** — weight projections (W_dq..W_o) pulled FP8 from **DDR5 (hot)**; q·K
+   b. **MLA attention** — weight projections (W_dq..W_o) pulled Q4_K from **DDR5 (hot)**; q·K
       score + softmax + weighted-V in bf16; KV append + DSA-gather of 2048 rows from the **KV
       window (DDR5)** / overflow (NVMe).
    c. **FFN** — dense layers (first 3): SwiGLU from DDR5. MoE layers (75): **router** picks
       top-8 experts → for each, **check the DDR5 expert cache → hit: read DDR5; miss: stream
-      the ~37 MB expert from the NVMe SSD into DDR5, evict LRU** → SwiGLU; + shared expert (DDR5).
+      the ~22 MB expert from the NVMe SSD into DDR5, evict LRU** → SwiGLU; + shared expert (DDR5).
    d. Residual adds (bf16).
 3. Final RMSNorm + **LM-head GEMV** (bf16, DDR5) → next-token logits → argmax/sample.
 4. **Prefetch**: while layer L computes, DMA layer L+1's likely experts NVMe→DDR5 (double-buffer).
 
-Hot reads (~28 GB) come from DDR5 (fast). The **routed-expert reads (~22 GB) are the
+Hot reads (~17 GB) come from DDR5 (fast). The **routed-expert reads (~11–14 GB) are the
 bottleneck** — DDR5-cache hits are fast, misses hit the NVMe SSD.
 
 ## 6. The bottleneck — routed-expert streaming
 
-Per token the MoE layers need **75 × 8 = 600 expert blocks** (~37 MB each) = **~22 GB [EST]**,
-scattered data-dependently across the 725 GB pool. Speed is set by:
+Per token the MoE layers need **75 × 8 = 600 expert blocks** (~22 MB each at Q4_K) = **~13 GB [EST]**
+(the wall; ~11–14 GB — vs the prior FP8's ~22 GB), scattered data-dependently across the ~450 GB
+pool. Speed is set by:
 
 ```
   t_token ≈ max( t_compute≈80ms , t_hot_DDR5 , t_routed )
-  t_routed ≈ (miss_rate × 22 GB) / NVMe_BW   +   (hit × 22 GB) / DDR5_BW
+  t_routed ≈ (miss_rate × 13 GB) / NVMe_BW   +   (hit × 13 GB) / DDR5_BW
 ```
 
-With a 34 GB expert cache (≈900 of 19,200 expert-instances) and expert-popularity skew +
+With a ~20 GB expert cache (≈900 of 19,200 expert-instances) and expert-popularity skew +
 batch reuse, the **miss rate** — not raw compute — governs throughput.
 
 ## 7. Performance model [EST]
@@ -181,31 +190,36 @@ experts × 75 layers, top-8) with a routing trace calibrated to a *trained* MoE 
 
 **batch=1 (interactive decode) hit rate vs DDR5 cache size:**
 
+The RTL cache is **slot-based**, so the hit rates are a function of *slot count* and routing,
+**independent of the quant format**; only the *bytes per slot* change (Q4_K expert ~22 MB vs FP8
+~37 MB), so each slot count maps to a **~0.6×** DDR5 cache size vs the prior FP8 track:
+
 | DDR5 cache | slots | uniform-ish (realistic) | skewed (optimistic) |
 |---|---|---|---|
-| 5.5 GB | 150 | **0 %** | **0 %** |
-| 22 GB | 600 | 26 % | 51 % |
-| **34 GB** (the 64 GB config: hot 28 + cache 34 + KV) | 900 | **27 %** | 53 % |
-| 66 GB | 1800 | 31 % | 58 % |
+| ~3.3 GB | 150 | **0 %** | **0 %** |
+| ~13 GB | 600 | 26 % | 51 % |
+| **~20 GB** (the 64 GB config: hot ~17 + cache ~20 + wide KV window) | 900 | **27 %** | 53 % |
+| ~40 GB | 1800 | 31 % | 58 % |
 
 Two non-obvious findings the sim revealed:
-- **Hard threshold at ~22 GB (= one token's 600-expert footprint).** Below it the hit rate is
-  **0 %** — in batch=1 the decoder sweeps all 75 layers per token, so an expert is evicted long
-  before the *next* token revisits its layer unless the cache holds a full token's footprint.
-  **The 64 GB DDR5 (34 GB cache) sits just past this knee.**
+- **Hard threshold at ~13 GB (= one token's 600-expert Q4_K footprint; ~22 GB on the prior FP8
+  track).** Below it the hit rate is **0 %** — in batch=1 the decoder sweeps all 75 layers per
+  token, so an expert is evicted long before the *next* token revisits its layer unless the cache
+  holds a full token's footprint. **The 64 GB DDR5 (~20 GB cache / 900 slots) sits just past this knee.**
 - **Trained routers are load-balanced → less cacheable than a naive Zipf.** The realistic
-  ("uniform-ish") hit rate at 34 GB is **~27 %**, not the ~67 % a synthetic skewed trace
+  ("uniform-ish") hit rate at ~20 GB (900 slots) is **~27 %**, not the ~67 % a synthetic skewed trace
   suggested.
 
 **Batching is the real lever, not cache size.** With layer-major batched access (experts reused
 within a layer across the batch) the hit rate is ~28–50 % (batch 8) to ~47–66 % (batch 32)
-**even at a 5.5 GB cache** — cache size becomes nearly irrelevant.
+**even at a ~3.3 GB cache** — cache size becomes nearly irrelevant.
 
 ### 7.2 Combined throughput model (batching + prefetch)
 
 With **prefetch** the NVMe *latency* is hidden behind compute (§8: 99 % of stall removed when
 the compute window ≥ NVMe latency), so the machine runs at the NVMe/PCIe **bandwidth** wall. The
-master equation (per-token routed footprint = 600 experts; FP8 = 22 GB, INT4 = 11 GB):
+master equation (per-token routed footprint = 600 experts; **Q4_K ≈ 13 GB / ~11–14 GB** — vs the
+prior FP8's 22 GB):
 
 > **aggregate tokens/s ≈ NVMe_BW / [ (1 − h) × footprint ]**  ·  (then × K for speculative/MTP)
 
@@ -216,30 +230,30 @@ batch 1 = 26.5 %, batch 8 = 29.7 %, batch 32 = 50.5 %. Each lever moves one term
 |---|---|---|
 | **Prefetch** | latency-bound → **bandwidth-bound** | required to reach the wall; 99 % stall cut |
 | **Batching** | raises **h** → lowers (1 − h) | h 27 %→50 % (batch 1→32) ⇒ only **~1.5×** here |
-| **INT4** (re-quant) | halves the **footprint** | **~2×** |
+| **Sub-Q4 re-quant** (off-path) | shrinks the **footprint** below Q4_K | modest — Q4_K already banked the FP8→Q4 **~1.6×** |
 | **Speculative/MTP** | **÷K** weight passes (K tokens/pass) | **~×K** |
 | **NVMe/PCIe bandwidth** (hardware) | raises **NVMe_BW** (more lanes / drives) | linear |
 
 **This project runs the published Q4_K weights** (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`),
-faithfully, no re-quantization — the quantified FP8 model in this section is the **prior-track**
-analysis (byte counts pending Q4_K re-derivation; the Q4_K store is already ~38% smaller). So the
-throughput levers are the faithful ones; further INT-style re-quant is *off the faithful path* (it
-means re-quantizing the model ourselves and owning the quality risk) and is listed only as an
-escape hatch. Aggregate tokens/s on the (prior-track FP8) path (NVMe 50 / 100 GB/s
-**aggregate** — striped across many PCIe lanes / multiple NVMe drives, **not** a single M.2 [EST];
-prefetch on):
+faithfully, no further re-quantization — the byte counts here **are the Q4_K figures** (re-derived
+from the prior FP8 track by the deterministic **×0.6** quant ratio; the store is ~38% smaller). So
+the throughput levers are the faithful ones; further **sub-Q4** re-quant is *off the faithful path*
+(it means re-quantizing the model ourselves and owning the quality risk) and is listed only as an
+escape hatch — and Q4_K already banked most of the old FP8→INT4 gain. Aggregate tokens/s on the
+**Q4_K path** (NVMe 50 / 100 GB/s **aggregate** — striped across many PCIe lanes / multiple NVMe
+drives, **not** a single M.2 [EST]; prefetch on):
 
-| Config (FP8 path) | h | (1−h)×22 GB | @50 GB/s | @100 GB/s |
+| Config (Q4_K path) | h | (1−h)×13 GB | @50 GB/s | @100 GB/s |
 |---|---|---|---|---|
-| batch 1 (single-user) | 27 % | 16 GB | ~3 | ~6 |
-| batch 1 + **MTP ×2** | — | — | ~6 | ~12 |
-| batch 32 | 50 % | 11 GB | ~5 | ~9 |
-| **batch 32 + MTP ×2** | — | — | **~10** | **~18** |
-| *(off-path)* INT4 batch 32 + MTP ×2 | — | 5.5 GB | ~18 | ~37 |
+| batch 1 (single-user) | 27 % | ~9.5 GB | ~5 | ~11 |
+| batch 1 + **MTP ×2** | — | — | ~10 | ~21 |
+| batch 32 | 50 % | ~6.5 GB | ~8 | ~15 |
+| **batch 32 + MTP ×2** | — | — | **~15** | **~31** |
+| *(off-path)* sub-Q4 re-quant batch 32 + MTP ×2 | — | ~4.3 GB | ~23 | ~46 |
 
-**The FP8 multiplier that matters is speculative / MTP decoding (×K).** GLM-5.2 ships an MTP head
-(`num_nextn_predict_layers=1`) and we built it (`mtp_head`): verifying K tokens per weight-load
-pass divides the NVMe traffic ~K× **without leaving FP8**. With a longer draft (a small draft
+**The multiplier that matters is speculative / MTP decoding (×K).** GLM-5.2 ships an MTP head
+(`num_nextn_predict_layers=1`) and we built it (`mtp_head_q4k`): verifying K tokens per weight-load
+pass divides the NVMe traffic ~K× **without leaving Q4_K**. With a longer draft (a small draft
 model or multi-token MTP) K can exceed 2.
 
 **Batching is not a free Nx** in this NVMe/PCIe-bandwidth-bound regime — it only helps through the
@@ -248,32 +262,33 @@ across the B streams (**per-user = aggregate ÷ B**), i.e. it trades single-user
 aggregate throughput — that **batched/aggregate regime is a non-target datacenter deployment of the
 same silicon, not this single-user (B=1) product**.
 
-**Bottom line (FP8):** this section's **conservative** model (prefetch + batch-hit-rate + MTP only)
-puts single-user at **~3–6 tokens/s**, **~6–12 with MTP ×2**. Stacking the *full* faithful lever set
+**Bottom line (Q4_K):** this section's **conservative** model (prefetch + batch-hit-rate + MTP only)
+puts single-user at **~5–11 tokens/s**, **~10–21 with MTP ×2**. Stacking the *full* faithful lever set
 (`flash_xbar` N-way read banking across PCIe lanes / drives + `weight_decomp` + activation-sparsity + draft-K + hot-weight) raises
 the single-user ceiling to **~25–40 tok/s [EST]** — the top of the **rung-2 (funded custom board)**
 range (~15–40) and the fuller-stack product headline ([`ULTRA_PERF.md`](ULTRA_PERF.md) §4). Stage
 that to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md): the old flat "~25–40" was implicitly this
 **rung-2** number and it is **not** reachable on the cheap near-term hardware — the **prove-it FPGA
 (rung 1, DDR4 ~4 ch) is ~5–8 tok/s [EST]** (real + bit-exact, slow-but-honest), and a **rung-3
-SoC/ASIC (HBM, ~TB/s) tops ~40+ [EST]** at volume. The **~10–18 aggregate** at batch 32 + MTP ×2 (~100 GB/s
+SoC/ASIC (HBM, ~TB/s) tops ~40+ [EST]** at volume. The **~15–31 aggregate** at batch 32 + MTP ×2 (~100 GB/s
 aggregate NVMe — many PCIe lanes / drives striped [EST]) is the **non-target batched/datacenter regime of the same silicon, not the product's
 speed** (the box runs B=1). Prefetch is required (hides
 latency → reach the bandwidth wall); MTP and raw NVMe/PCIe bandwidth are the real multipliers;
 batching is a modest, latency-costing aggregate boost. Interactive, not datacenter-real-time.
 Compute and the single die are *not* the limit (the die idles on NVMe reads); the wall is moving
-~11–16 GB of routed-expert weights per token across the on-module NVMe/PCIe bus. (INT4 would ~2×
-everything but is a different, re-quantized model — outside the "run the published FP8" goal.)
+~11–14 GB of routed-expert weights per token across the on-module NVMe/PCIe bus. (Further sub-Q4
+re-quant would push further but is a different, re-quantized model — outside the "run the published
+Q4_K" goal, and Q4_K already banked the FP8→Q4 ~1.6×.)
 
 ## 8. MoE expert-cache subsystem (the heart of it)
 
 Because the active expert set is **data-dependent and changes every token**, routed experts
 can't be statically placed — it's a **caching + scheduling** problem:
 
-- **Cache** (DDR5, ~34 GB): LRU/LFU of expert blocks; exploits expert-popularity skew.
+- **Cache** (DDR5, ~20 GB / ~900 Q4_K experts): LRU/LFU of expert blocks; exploits expert-popularity skew.
 - **Batching**: many tokens/sequences route to overlapping experts → load once, reuse across
   the batch (biggest throughput lever; costs latency). **RTL-measured** through the committed
-  `expert_cache_ctrl` at 34 GB cache: batch 1 / 8 / 32 → **26.5 % / 29.7 % / 50.5 %** hit rate
+  `expert_cache_ctrl` at ~20 GB cache (900 slots): batch 1 / 8 / 32 → **26.5 % / 29.7 % / 50.5 %** hit rate
   (same router picks, only access order changes — isolating batching as the lever). **The stronger
   batching lever is expert-*union* reuse** — fetch each layer's union of selected experts once and
   share it across B rows — now realized in RTL: `glm_decoder_block_q4k`'s PE_M>1 MoE loop fetches
@@ -292,8 +307,8 @@ can't be statically placed — it's a **caching + scheduling** problem:
   The residual is the irreducible DDR5 read floor (`+CACHE_HIT_LAT` per resident hit); a
   second-level DDR5→die read-ahead could hide that too (future work).
 - **Layout**: store co-activated experts contiguously / aligned for sequential NVMe reads
-  (bandwidth- not IOPS-bound, since each expert is a ~37 MB contiguous block).
-- **Speculative / MTP decoding**: GLM-5.2 ships an MTP head (built here as `mtp_head`) — verify
+  (bandwidth- not IOPS-bound, since each expert is a ~22 MB contiguous Q4_K block).
+- **Speculative / MTP decoding**: GLM-5.2 ships an MTP head (built here as `mtp_head_q4k`) — verify
   K tokens per weight-load pass → cut weight traffic ~K×.
 
 ## 9. Hardware ceiling vs software leverage
@@ -312,7 +327,8 @@ for the per-rung tok/s [EST].
 
 ## 10. Power / heat
 
-The dominant dynamic energy is **moving ~16–22 GB/token of weights**. Keeping the whole model
+The dominant dynamic energy is **moving ~11–14 GB/token of routed weights** (Q4_K; ~22 GB on the
+prior FP8 track). Keeping the whole model
 **on-module** (DDR5 + NVMe next to the die) is the key win — vastly less energy than streaming
 weights from a host over USB/PCIe. Among the fast-tier options DDR5 is the **lowest-power**
 choice (mainstream, not the high-speed/high-power GDDR6; its per-bit energy is above an
@@ -341,7 +357,7 @@ heatsink/fan (a small box, not a thin USB stick), powerable over USB-C PD (~60�
 (DDR5 is the cheapest fast tier — ~5–8× under 64 GB HBM (~$1–1.5k) and below GDDR6 (~$200–500),
 at no performance loss since the workload is NVMe/PCIe-bound. The trade is a **wide 8–12-channel
 memory controller** (server-class) to reach the bandwidth, not extra chips — DIMMs are dense and
-upgradeable. The NVMe SSD that holds the entire 753 GB model is cheap either way — a small fraction of the DDR5 BOM.)
+upgradeable. The NVMe SSD that holds the entire 467 GB model is cheap either way — a small fraction of the DDR5 BOM.)
 
 *Not included:* the board (a few DDR5 DIMMs across 8–12 channels + the die + an NVMe SSD via M.2/PCIe on a PCB —
 DDR5 needs **no CoWoS / interposer**, a real simplification vs HBM, and far fewer devices than
@@ -383,18 +399,22 @@ NVMe/PCIe-bound.
 ## 13. Open questions / honest limits
 
 - **Expert-cache hit rate** — now estimated (§7.1) on a *calibrated* GLM-scale trace through
-  the real `expert_cache_ctrl` RTL: ~27 % at batch=1 / 34 GB cache, with a hard 0 % floor below
-  ~22 GB, and batching as the dominant lever. Still **calibrated, not captured** — the actual
+  the real `expert_cache_ctrl` RTL: ~27 % at batch=1 / ~20 GB cache (900 slots), with a hard 0 %
+  floor below ~13 GB (Q4_K; the floor is slot-based), and batching as the dominant lever. Still
+  **calibrated, not captured** — the actual
   numbers need a *real* GLM-5.2 routing trace (can't run 753B here); the trained-router balance
   assumption could be off in either direction.
 - **NVMe/PCIe bandwidth** (~10s GB/s **aggregate**) is assumed; this is **not** one M.2's figure — a
   single PCIe Gen3 x4 NVMe is ~3.5 GB/s and Gen4 x4 ~7 GB/s [EST], so ~10s GB/s means **striping many
   PCIe lanes / several NVMe drives**, which the custom board must actually deliver. PCIe/NVMe read BW
   still caps well below DDR5 (which is exactly why the NVMe tier, not DDR5, is the wall).
-- **64 GB DDR5 is comfortable for FP8** (hot 28 GB + ~34 GB cache, ~923 cache slots); **48 GB
-  drops the cache below the ~22 GB / 600-slot batch=1 threshold → ~27 % slower single-user**
-  (measured), while **~56 GB already recovers full performance**. Batched serving is insensitive
-  to cache size, so 48 GB is fine there.
+- **64 GB DDR5 is comfortable for Q4_K** (hot ~17 GB + ~20 GB cache / ~900 slots + a wide KV
+  window); the batch=1 knee is now **~13 GB / 600 slots** (Q4_K experts are ~22 MB), so the DDR5
+  sizing is **far more forgiving than on FP8** — **48 GB still clears the knee** (hot 17 + ≥13 GB
+  cache, with room to spare) at full single-user performance, and only well under ~40 GB does the
+  cache risk dropping below the 600-slot floor. Batched serving is insensitive to cache size, so a
+  smaller DDR5 is fine there too. (On the prior FP8 track the same knee sat at ~22 GB, so 48 GB FP8
+  fell short → ~27 % slower single-user; Q4_K's smaller experts remove that constraint.)
 - **Wide memory controller** (an 8–12-channel DDR5 subsystem to reach ~400–600 GB/s, server-class
   routing/signal-integrity) is DDR5's real engineering cost — but it needs no advanced packaging
   (no CoWoS/interposer) and far fewer devices (a few DIMMs vs ~32 GDDR6 chips), and the DIMMs are

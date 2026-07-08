@@ -1,28 +1,45 @@
-# Physical characterization — REAL sky130 standard cells
+# Physical characterization — REAL sky130 standard cells (prior FP8 track)
 
-> **Prior FP8 track.** This doc describes the FP8 datapath, now the *prior* track (preserved on
-> branch `fp8`). The current product track is **Q4_K** — see [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /
-> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names below of the form `*_fp8` map to their
-> `*_q4k` equivalents on main.
+> **⚠ PRIOR FP8 TRACK — this is *not* the current product's physical run.** Everything in the
+> **Results** and **Post-placement P&R** sections below is a place-and-route of **`glm_matmul_fp8`**,
+> the FP8 GEMM tile of the **prior / datacenter track**. That module is **deleted from `main`** and
+> preserved on branch **`fp8`** (+ tag `fp8-verified-baseline`). The current product is **Q4_K**
+> local-device inference — the Q4_K GEMM tile is `glm_matmul_q4k`, the whole-chip top is
+> `glm_q4k_system_cdc` (see [`Q4K_RETARGET.md`](Q4K_RETARGET.md),
+> [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md), [`../README.md`](../README.md)).
+>
+> **No Q4_K sky130 / ORFS physical run has been done — it is OPEN / [PENDING].** The numbers here are
+> **prior-FP8 measurements**; they are presented *as* prior-FP8 work and are **not** relabeled as
+> Q4_K, and **no Q4_K physical result has been fabricated** to stand in for them. RTL/test names of
+> the form `*_fp8` map to their `*_q4k` equivalents on `main` (`glm_matmul_fp8`→`glm_matmul_q4k`,
+> `glm_fp8_system_cdc`→`glm_q4k_system_cdc`, `weight_loader`→`weight_loader_q4k`).
+>
+> **What still carries across both tracks** (format-agnostic, updated framing only): the
+> ASIC-vs-FPGA **bandwidth** reasoning below, the shared fp32 MAC pipe (`glm_fp_pipe.v`, still on
+> `main` and used by the Q4_K dequant→MAC path), and the **memory-system controller** ECP5 fit — the
+> crossbars / KV pager / expert cache are pure control fabric with no FP8-vs-Q4_K datapath in them.
 
 > **Scope note — ASIC is the rung-③ volume endgame, not "out of scope"** (see
 > [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). The **near-term** product path is an **FPGA card**
 > (ladder rungs ①②, [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P3.2); a custom **ASIC** is the
 > **rung-③ endgame at manufacturing volume** — precisely what breaks the FPGA's IO/PHY *bandwidth*
-> ceiling (HBM stacks + many-channel controllers + near-memory FP8 compute at ~TB/s) for lower
+> ceiling (HBM stacks + many-channel controllers + near-memory Q4_K compute at ~TB/s) for lower
 > $/seat + higher tok/s + lower power once the multi-million NRE amortizes over volume. (The earlier
 > "ASIC out of scope" was argued from *compute*-bound reasoning; the real bottleneck is **memory
 > bandwidth**, which is exactly what an ASIC's PHY/HBM breaks — so ASIC is sequenced *after* FPGA
 > proves PMF, not abandoned.) This sky130 (an ASIC PDK) characterization therefore does **double
-> duty**: (1) near-term **realizability evidence** — proof that the RTL synthesizes and *places* to
-> real standard cells with timing met, i.e. it is physically sound and will map cleanly to FPGA
-> fabric; and (2) **groundwork for that rung-③ ASIC** — a real-PDK PPA basis for the eventual volume
-> tapeout, **not a deprioritized dead-end**. The numbers stand as real-cell PPA anchors; the flow is
-> not the *near-term* product's physical path (rungs ①② ship on FPGA), but it is the volume endgame's
-> foundation.
+> duty**: (1) near-term **realizability evidence** — proof that a real compute-tile RTL synthesizes
+> and *places* to real standard cells with timing met, i.e. it is physically sound and will map
+> cleanly to FPGA fabric; and (2) **groundwork for that rung-③ ASIC** — a real-PDK PPA basis for the
+> eventual volume tapeout. **Caveat:** the tile actually run through this flow is the **prior FP8**
+> `glm_matmul_fp8`. The current product's PPA basis is the **Q4_K** tile `glm_matmul_q4k`, whose real
+> sky130 / ORFS run is **[PENDING]** (see banner). The FP8 numbers stand as real-cell PPA anchors for
+> a *closely related* fixed-point-accumulate GEMM; they are directional evidence for the Q4_K tile,
+> not a measurement of it.
 
-Moves the FP8 compute die's area/timing from **[EST]** (market/physics models) to **real
-synthesized numbers on a real open-source PDK**. Flow: yosys 0.66 `synth` → `dfflibmap` →
+Moves the **prior FP8** compute tile's (`glm_matmul_fp8`) area/timing from **[EST]** (market/physics
+models) to **real synthesized numbers on a real open-source PDK**. *(The equivalent run for the
+current **Q4_K** tile `glm_matmul_q4k` is **[PENDING]**.)* Flow: yosys 0.66 `synth` → `dfflibmap` →
 `abc -liberty` mapping to the **SkyWater sky130 high-density** standard-cell library
 (`sky130_fd_sc_hd`, typical corner `tt_025C_1v80`, via `volare` PDK
 `c6d73a35…`). `stat -liberty` gives real cell area (µm²); `abc … stime` gives the mapped
@@ -30,17 +47,21 @@ register-to-register critical-path delay (→ fmax). This is **pre-P&R** (gate-l
 no routing parasitics), so post-route fmax/area would be somewhat worse — but these are
 *real cells on a real PDK*, not estimates.
 
-## Results (sky130_fd_sc_hd, tt corner)
+## Results — prior FP8 tile (sky130_fd_sc_hd, tt corner)
+
+*(Prior-FP8 measurements. `glm_matmul_fp8` is deleted from `main`; see banner. `fp32_mac_pipe`
+lives in `glm_fp_pipe.v`, which is **still on `main`** and shared by the Q4_K dequant→MAC path, so
+that row is directly relevant to the Q4_K tile.)*
 
 | Module | Real area (µm²) | of which sequential | Critical path | fmax (pre-route) |
 |---|---|---|---|---|
-| `glm_matmul_fp8` (block-scaled FP8 GEMM, PE 4×4, K=256) | **262,689** | 39.1 % (102,719) | **35.4 ns** | ~28 MHz |
-| `fp32_mac_pipe` (the pipelined fp32 MAC) | **48,121** | — | **7.6 ns** | **~131 MHz** |
+| `glm_matmul_fp8` (prior-FP8, block-scaled FP8 GEMM, PE 4×4, K=256) | **262,689** | 39.1 % (102,719) | **35.4 ns** | ~28 MHz |
+| `fp32_mac_pipe` (shared pipelined fp32 MAC, `glm_fp_pipe.v`) | **48,121** | — | **7.6 ns** | **~131 MHz** |
 
-## Post-placement P&R (real ORFS flow, sky130hd)
+## Post-placement P&R (real ORFS flow, sky130hd) — prior FP8 tile
 
-Beyond the pre-route synthesis above, `glm_matmul_fp8` was pushed through the **OpenROAD
-flow (ORFS, `openroad/orfs` image, sky130hd platform)** — real floorplan + legalized
+Beyond the pre-route synthesis above, the **prior-FP8** `glm_matmul_fp8` was pushed through the
+**OpenROAD flow (ORFS, `openroad/orfs` image, sky130hd platform)** — real floorplan + legalized
 placement + timing-driven resizing + post-placement STA:
 
 | Flow stage | Result |
@@ -56,8 +77,8 @@ placement** numbers with the timing-driven resizer engaged — most of the P&R f
 synthesis. Post-placement timing is **fully met at 40 ns (25 MHz) with +15.89 ns slack** →
 critical path ≈ 24 ns → **~41 MHz post-placement**, *better* than the pre-route 35.4 ns
 because the resizer buffers/upsizes the dequant/fold path — a direct, measured confirmation of
-the "pipeline the fold stage → higher fmax" thesis, which has **since been applied in RTL** (see
-item 2 below: fold-drain pipelined, 2×2/K256 45 → 70 MHz on real sky130 cells).
+the "pipeline the fold stage → higher fmax" thesis (all on the **prior FP8** tile; the fold-drain
+pipeline it validates was applied in `src/glm_matmul_fp8.v` on branch `fp8`, item 2 below).
 
 **Where it stops, and why (environment, not design).** The flow died at **CTS** with
 `illegal instruction`: `openroad/orfs` ships an **amd64-only** OpenROAD binary, and on this
@@ -67,33 +88,38 @@ parasitic extraction → post-route STA/power need an **x86-64 Linux host (or cl
 finish — the design passed synthesis, floorplan and placement cleanly; the block is a pure
 host-architecture limit.
 
-## What this establishes
+## What this establishes (prior FP8 track)
 
-1. **The −87.6% accumulator claim now has a real-cell anchor.** `glm_matmul_fp8`'s
-   BFP fixed-point accumulator maps to real sky130 cells; the 262,689 µm² figure (39%
-   sequential) is a concrete area for the FP8 GEMM tile, replacing the cell-count `[EST]`
-   of `docs/PPA_FP8.md` with a PDK-mapped number.
+1. **The −87.6% accumulator claim has a real-cell anchor — on the prior FP8 tile.**
+   `glm_matmul_fp8`'s BFP fixed-point accumulator maps to real sky130 cells; the 262,689 µm²
+   figure (39% sequential) is a concrete area for the FP8 GEMM tile, replacing the cell-count
+   `[EST]` of the prior FP8 PPA analysis (`PPA_FP8.md`, now on branch `fp8`). The −87.6%
+   fixed-point-accumulate win is an **FP8-specific, prior-track** result; the Q4_K tile
+   (`glm_matmul_q4k`) has its own dequant→fp32-accumulate path whose real-cell area is **[PENDING]**.
 
-2. **The fmax-limiting path is REAL, and the pipeline fix is now APPLIED.** The pipelined MAC
-   closes at ~131 MHz (7.6 ns), but `glm_matmul_fp8`'s own register-to-register path is
-   35.4 ns (~28 MHz) — i.e. the **block-dequant / accumulate-fold logic AROUND the
-   pipelined MAC, not the MAC itself, is the fmax limiter**. This is exactly the
-   "fmax-limiting paths" `docs/PPA_FP8.md` flagged, now measured on real cells — and **now
-   fixed** (Ph1): the dequant/fold stage (the accumulator drain) has been pipelined in
-   `src/glm_matmul_fp8.v`, registering `acc_sel_r`/`wf_sel_r` before the block-scale
-   `fp32_mul_pipe` so `fixed_to_fp32` (48-bit leading-one + barrel-shift + RNE) no longer
-   shares a stage with the mul's 24×24 mantissa multiply. `DEQ_LAT +1`, latency-transparent
-   via `out_valid`; data **bit-identical** (`glm_matmul_fp8_tb` ALL 224, err/tol 0.4317
-   unchanged; all consumers pass). Real sky130_fd_sc_hd (tt) timing confirms the win: the
-   isolated fold segment `accx → fixed_to_fp32 → block-scale mul` drops **15,576 → 12,390 ps
-   (−20.5%, 64.2 → 80.7 MHz)** and the full 2×2/K256 module **22,186 → 14,189 ps
-   (45 → 70 MHz)**. (The PE 4×4 pre-route 35.4 ns global path is the `c_out` positional-shifter
-   topo artifact `PPA_FP8.md` flags — deliberately untouched; the ORFS post-placement resizer
-   above already resolves it.)
+2. **The fmax-limiting path was REAL, and the pipeline fix was applied — on the prior FP8 tile.**
+   The shared pipelined MAC closes at ~131 MHz (7.6 ns), but `glm_matmul_fp8`'s own
+   register-to-register path is 35.4 ns (~28 MHz) — i.e. the **block-dequant / accumulate-fold
+   logic AROUND the pipelined MAC, not the MAC itself, was the fmax limiter**. This was flagged by
+   the prior FP8 PPA analysis and then measured on real cells — and **fixed** (on branch `fp8`,
+   `src/glm_matmul_fp8.v`): the dequant/fold stage (the accumulator drain) was pipelined, registering
+   `acc_sel_r`/`wf_sel_r` before the block-scale `fp32_mul_pipe` so `fixed_to_fp32` (48-bit
+   leading-one + barrel-shift + RNE) no longer shares a stage with the mul's 24×24 mantissa multiply.
+   `DEQ_LAT +1`, latency-transparent via `out_valid`; data **bit-identical** (prior-FP8
+   `glm_matmul_fp8_tb`, ALL 224, err/tol 0.4317 unchanged). Real sky130_fd_sc_hd (tt) timing
+   confirmed the win: the isolated fold segment `accx → fixed_to_fp32 → block-scale mul` dropped
+   **15,576 → 12,390 ps (−20.5%, 64.2 → 80.7 MHz)** and the full 2×2/K256 module
+   **22,186 → 14,189 ps (45 → 70 MHz)**. *(All prior-FP8 numbers.)* The Q4_K tile has an
+   analogous per-column-dequant → fp32-MAC drain in `src/glm_matmul_q4k.v`; whether it hits the same
+   fold-stage limit and needs the same pipeline is **not yet characterized on cells — [PENDING].**
 
 ## Honest scope (what would take it to full physical sign-off)
 
-- **Through placement, not yet routed.** Synthesis, floorplan and legalized placement are
+- **This is the prior FP8 tile, not the Q4_K product.** The single biggest open item: **no Q4_K
+  sky130 / ORFS physical run exists.** `glm_matmul_q4k` (and the whole `glm_q4k_system_cdc`) has been
+  elaborated and structurally checked (`make synth-glm`, see below) but **not** synth-mapped to real
+  cells or placed. Everything above characterizes `glm_matmul_fp8` on branch `fp8`.
+- **Through placement, not yet routed (prior FP8).** Synthesis, floorplan and legalized placement are
   done on the real ORFS flow (see the post-placement section — 357,320 µm², timing met at
   40 ns). The remaining **CTS → routing → parasitic extraction → post-route STA** did not run
   here because `openroad/orfs` is **amd64-only** and TritonCTS SIGILLs under ARM emulation on
@@ -103,27 +129,35 @@ host-architecture limit.
 - **No power yet.** Dynamic/leakage power needs the post-route netlist + activity (VCD) →
   a power analysis pass. The clock-gating (`clk_en_ctrl`/`icg_cell`) is in place to exploit
   the ~75%-idle die, but the J/token figure stays a model estimate until a routed power run.
-- **Per-module, not full-chip.** The whole `glm_fp8_system_cdc` is elaboration- and
-  structurally-clean (`make synth-glm`), but a full-chip sky130 map/P&R (with the memory
-  macros as real SRAM) is a larger effort; the FP8 GEMM + MAC above are the compute core.
+- **Per-module, not full-chip.** The whole `glm_q4k_system_cdc` is elaboration- and
+  structurally-clean (`make synth-glm`: yosys `hierarchy -check` + `check -assert`, 0 unresolved),
+  but a full-chip sky130 map/P&R (with the memory macros as real SRAM) is a larger effort; the prior
+  FP8 GEMM + the shared fp32 MAC above are the compute-core datapoints.
 
-## Reproduce
+## Reproduce (prior FP8 tile — on branch `fp8`)
+
+`glm_matmul_fp8.v` is deleted from `main`; the command below reproduces the prior-FP8 result on
+branch `fp8` (`git checkout fp8`). The analogous **Q4_K** run — swapping in `src/glm_matmul_q4k.v` /
+`-top glm_matmul_q4k` — has **not yet been done ([PENDING])**.
 
 ```sh
 python3 -m volare enable --pdk sky130 c6d73a35f524070e85faff4a6a9eef49553ebc2b
 LIB=~/.volare/volare/sky130/versions/c6d73a35*/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+# branch fp8:
 yosys -p "read_verilog -sv -I src src/glm_matmul_fp8.v src/glm_fp_pipe.v; \
           synth -top glm_matmul_fp8 -flatten; dfflibmap -liberty $LIB; \
           abc -liberty $LIB; stat -liberty $LIB"          # -> Chip area
 # timing: append an abc -script ending in `topo; stime`  # -> Delay = <ps>
 ```
 
-## FPGA resource fit (ECP5) — partial, honest
+## FPGA resource fit (ECP5) — memory-system controllers, partial & honest
 
-Since the **near-term** product is an **FPGA card** (ladder rungs ①②; the ASIC is the rung-③ volume
-endgame, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), a first look at whether the *full system* fits
-a real FPGA. Partitioned `synth_ecp5` (yosys 0.66) of each memory-system controller
-**standalone** completed cleanly:
+The memory-system controllers below are **format-agnostic** (pure control fabric — crossbars, KV
+pager, expert cache, boot/weight loaders — with **no** FP8-vs-Q4_K datapath), so this ECP5 fit
+carries across both tracks. Since the **near-term** product is an **FPGA card** (ladder rungs ①②;
+the ASIC is the rung-③ volume endgame, [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), this is a first
+look at whether the *full system* fits a real FPGA. Partitioned `synth_ecp5` (yosys 0.66) of each
+controller **standalone** completed cleanly:
 
 | block | LUT4 | FF | CCU2C | MULT18 | EBR |
 |---|---|---|---|---|---|
@@ -131,9 +165,13 @@ a real FPGA. Partitioned `synth_ecp5` (yosys 0.66) of each memory-system control
 | `flash_xbar` | 26,112 | 17,011 | 0 | 0 | 0 |
 | `kv_cache_pager` | 25,249 | 25,367 | 17 | 0 | 0 |
 | `expert_cache_pf` | 744 | 287 | 80 | 0 | 0 |
-| `weight_loader` | 302 | 202 | 63 | 0 | 0 |
+| `weight_loader_q4k` † | 302 | 202 | 63 | 0 | 0 |
 | `boot_loader` | 931 | 399 | 74 | 0 | 0 |
 | **sum (6 controllers)** | **71,475** | **51,773** | 234 | 0 | 0 |
+
+† `weight_loader_q4k` was retargeted from the prior `weight_loader` to Q4_K super-block decode; the
+row is the **prior-track partitioned synth** figure, a Q4_K re-synth refresh is **[PENDING]**. The
+other five controllers are datapath-independent and unchanged.
 
 vs an **ECP5-85** (`LFE5UM5G-85`: ~84k LUT4, ~84k FF, 156 MULT18, 208 EBR): the **memory-system
 controllers alone are ~85% of LUT4 / 62% of FF** — so the full system (controllers + the compute
@@ -141,17 +179,21 @@ die) **does not fit an ECP5-85**; a larger FPGA is needed. (The 0 EBR reflects t
 RAM is external/TB-modeled here, so these are the control-fabric + QDEPTH-queue costs; the crossbars'
 deep outstanding queues are the LUT/FF drivers.)
 
-**Honest correction — the compute die's ECP5 size was NOT obtained, and it is NOT "32–64× over".**
-The exploratory pass could not `synth_ecp5` the compute die (`glm_model_fp8`): yosys 0.66 is
-prohibitively slow / artifact-prone elaborating it. That pass *reported* the die as ~10–17× over an
-ECP5-85 due to a `glm_matmul_fp8` at `KMAX=16384 → NB=128` accumulator banks — **this is a synth
-artifact, not the real design.** Independently disproven: (1) `glm_model_fp8` **simulates and passes**
-(`ALL 3 TESTS PASSED`, ~13 min in iverilog) — a real NB=128 die would blow the sim up far beyond that;
-(2) the instantiation trace shows every in-die matmul has its `KMAX` **overridden** to `FF_KMAX_D/M`
-(= 256/128 at the slice → **NB ≤ 2**), never the module-default 16384. So the die is small (NB ≤ 2);
-its ECP5-mapped size is simply **unmeasured** (an EDA-tooling limit of yosys-0.66 `synth_ecp5` on this
-design), not a design over-provisioning.
+**Honest correction — the compute die's ECP5 size was NOT obtained (prior FP8 exploration).** The
+prior-FP8 exploratory pass could not `synth_ecp5` the FP8 die (`glm_model_fp8`, now deleted): yosys
+0.66 is prohibitively slow / artifact-prone elaborating it. That pass *reported* the die as ~10–17×
+over an ECP5-85 due to a `glm_matmul_fp8` at `KMAX=16384 → NB=128` accumulator banks — **this was a
+synth artifact, not the real design.** It was independently disproven at the time: the FP8 die
+simulated and passed, and every in-die matmul had its `KMAX` **overridden** to `FF_KMAX_D/M`
+(= 256/128 at the slice → **NB ≤ 2**), never the module-default 16384 — so the die was small
+(NB ≤ 2), its ECP5-mapped size simply **unmeasured** (a yosys-0.66 `synth_ecp5` tooling limit),
+not a design over-provisioning. **For the current Q4_K product**, the compute die is
+`glm_model_q4k`; its ECP5-mapped fit is **likewise unobtained — [PENDING]** (and no assembled-Q4_K
+end-to-end functional golden exists yet, per [`../README.md`](../README.md)), so the "die is small"
+conclusion carries as a **design-soundness expectation**, not a measured Q4_K fit.
 
-**Takeaway:** ECP5-85 is too small for the full system (controllers ~85% alone) → target a larger
-FPGA; the full-system ECP5 mapped fit remains **unobtained** (yosys-0.66 `synth_ecp5` scalability),
-a real next-step item (a newer yosys / vendor flow, or the FPGA-prototype step of `PRODUCT_ROADMAP.md`).
+**Takeaway:** ECP5-85 is too small for the full system (memory-system controllers ~85% alone) →
+target a larger FPGA; the full-system ECP5 mapped fit (and the compute die's fit specifically)
+remains **unobtained / [PENDING]** — a real next-step item (a newer yosys / vendor flow, or the
+FPGA-prototype / Vivado-fit step of [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) and
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).

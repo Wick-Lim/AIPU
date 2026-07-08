@@ -10,7 +10,8 @@ single goal is **Gate 3**: one signed design-partner LOI. Companion to the custo
 > *actually have the can't-cloud constraint* to (a) validate the pain, (b) shape the product, and (c)
 > sign a **non-binding LOI to pilot when the demo lands**. Never imply a product you can ship today —
 > the credibility is the whole asset. Sell the **vision + the design-partner relationship**, backed by
-> the measured evidence (verified RTL, real-checkpoint bit-accuracy), not a demo you don't have.
+> the measured evidence (verified RTL, formally-proven memory controllers, and Q4_K compute kernels
+> bit-exact to the ggml reference), not a demo you don't have.
 
 ---
 
@@ -74,8 +75,8 @@ Practice Technology" on LinkedIn; boutiques in IP / M&A / regulated-industry pra
 
 ## 2. The message (positioning, translated for legal — not the investor story)
 
-Lead with *their* pain and the *capability* it unlocks, not FP8/RTL. Three lines you can say in an
-elevator:
+Lead with *their* pain and the *capability* it unlocks, not the quantization format or the RTL. Three
+lines you can say in an elevator:
 
 > **"Your attorneys are locked out of the best AI on exactly their most valuable work — the privileged,
 > client-confidential matters — because every frontier model lives in the cloud. We're building an
@@ -91,14 +92,18 @@ breach" pitch (that just competes with "don't use AI at all").
 **Don't oversell "offline" alone** — a 70B laptop model is offline too. The moat is the *combination*:
 offline + a **full frontier (753B)** model + an **appliance / per-seat** price. (A laptop model fails on
 quality; an 8×H100 rack fails on price and form factor; "secured cloud" fails the unplugged test.) Be
-honest on provisioning, too: the 753 GB of weights load **once** (itself doable offline, in a secure
-facility), and model updates are a **physical re-provision** — expected and fine for air-gap buyers, but
-say so.
+honest on provisioning, too: the ~467 GB of weights (UD-Q4_K_XL) load **once** (itself doable offline,
+in a secure facility), and model updates are a **physical re-provision** — expected and fine for air-gap
+buyers, but say so.
 
-Keep two proof-points in your back pocket for the technical/security persona (these are *measured*, not
-marketing): the datapath is **bit-exact to the published model** and the memory controllers are
-**formally verified** — i.e. "provably offline **and** provably correct." Don't lead with them; deploy
-them when the approver asks "how do I trust it."
+Keep two proof-points in your back pocket for the technical/security persona (these are *measured in
+gated simulation / formally proven*, not marketing): the core compute kernels are **bit-exact to the
+ggml Q4_K reference** (the open quantization the model ships in), and the memory controllers are
+**formally verified** (BMC, several lifted to unbounded k-induction) — i.e. "provably offline **and** the
+datapath provably matches the reference." Be honest about scope: this is verified at the **kernel /
+controller** level; **whole-model fidelity against a real checkpoint is still an open gate (P1.1)**, so
+don't imply the assembled model has been validated end-to-end. Don't lead with any of this; deploy it
+when the approver asks "how do I trust it."
 
 ---
 
@@ -146,9 +151,10 @@ them when the approver asks "how do I trust it."
 ### Follow-ups (space 4–6 days; stop after two)
 - **Nudge 1:** *"Bumping this up — one line is enough: is 'frontier AI that never leaves your network'
   a real need for [Firm]'s confidential matters, or not a fit? Either answer helps me."*
-- **Nudge 2 (value, then close the loop):** *"Last note — [one concrete proof: 'we just got the FP8
-  compute die mapping to an FPGA, de-risking the box's cost']. If the timing's wrong I'll stop here;
-  if it's worth a look, grab any 20 min: [link]."*
+- **Nudge 2 (value, then close the loop):** *"Last note — [one concrete proof: 'the Q4_K compute path
+  now reproduces the ggml reference kernels bit-for-bit in simulation, and the memory controllers are
+  formally verified']. If the timing's wrong I'll stop here; if it's worth a look, grab any 20 min:
+  [link]."*
 
 ---
 
@@ -174,7 +180,8 @@ budget. **Red flags** (deprioritize): "we just use ChatGPT, it's fine" · no con
 
 **Then — and only then — the vision (2 min):** the one-box/one-seat appliance, full 753B locally and
 **fully offline / air-gapped** (it works with the ethernet unplugged — nothing leaves because there's no
-path out), provably the same answers as the real model (auditable). Show the 1-page
+path out) — **provably local and auditable** (the non-egress is the unplugged test; the compute path is
+verified against the ggml Q4_K reference, with whole-model fidelity the open gate). Show the 1-page
 brief / evidence. Be explicit about stage: *"here's what's proven today, here's the two gates left, and
 here's why I want a design partner **now** — so we build the thing your firm would actually deploy."*
 
@@ -186,9 +193,9 @@ No cost. In return you get first access and you shape the product around your co
 
 | They say | You say (honest) |
 |---|---|
-| "You don't even have a product." | "Correct — that's *why* I want you now. Design partners shape it and get first access; the tech risk is unusually retired (verified datapath, real-checkpoint bit-accuracy, FPGA fit de-risked). I'm asking for input + an LOI, not a purchase." |
+| "You don't even have a product." | "Correct — that's *why* I want you now. Design partners shape it and get first access; the hard tech risk is unusually retired (compute kernels bit-exact to the ggml Q4_K reference in sim, memory controllers formally verified). The two open gates are whole-model fidelity and the FPGA fit — exactly what a design partner helps us close. I'm asking for input + an LOI, not a purchase." |
 | "How is this different from Harvey / Copilot?" | "Those still send your text to a cloud. This runs the whole model **offline, inside your network** — it works with the ethernet unplugged, so nothing can leave. That's the exact line your confidential matters can't cross." |
-| "Our GC will never approve cloud AI." | "Right — that's the point. There's no cloud, and no connection: the box runs with the ethernet unplugged. Your security team can audit that nothing egresses — because there's no path out — and that the output matches the real model bit-for-bit." |
+| "Our GC will never approve cloud AI." | "Right — that's the point. There's no cloud, and no connection: the box runs with the ethernet unplugged. Your security team can audit that nothing egresses — because there's no path out — while the compute path itself is verified against the open Q4_K reference kernels." |
 | "Why not a private cloud — in-VPC / tenant deployment, a zero-retention API, or a TEE / confidential-computing enclave?" | "Those are all still the cloud: they need a live connection, so they can't pass the test your constraint actually sets — *does it work with the ethernet unplugged?* A VPC, a zero-retention promise, and a TEE each fail it (no link, no service). This is the only option that runs disconnected, which is what ends the 'secured cloud' debate for good." |
 | "Is a local model good enough?" | "The small models that fit a laptop aren't — that's the gap. This runs the *full* 753B frontier model locally and offline, not a shrunk one. Offline alone is table-stakes (a laptop model is offline too); the moat is the combination — offline **and** full-frontier, at a per-seat price." |
 | "What will it cost?" | "TBD until the FPGA fit closes — we're targeting a **per-seat** price, in the range of the premium tools you already buy, not a datacenter build. Design partners get preferential terms." |
