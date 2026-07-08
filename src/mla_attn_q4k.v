@@ -451,6 +451,15 @@ module mla_attn_q4k #(
     localparam integer DRW = (PE_M <= 1) ? 1 : $clog2(PE_M);
     localparam integer TKW = (TOPK <= 1) ? 1 : $clog2(TOPK);
     reg [DRW-1:0]  dsa_row;                           // which row's selection is scoring now
+    // next DSA row, CLAMPED to PE_M-1: only consumed in the S_DSA advance branch,
+    //   which is guarded by dsa_row != PE_M-1, so the clamp never fires dynamically
+    //   (byte-identical). It exists so the slen_r/qrot variable selects below have a
+    //   STATIC max index of PE_M-1 (Vivado Synth 8-524 rejects the raw dsa_row+1
+    //   form: its 32-bit static max (2**DRW-1)+1 rows overruns the (IDXW+1)*PE_M-bit
+    //   slen_r even though the guard makes that unreachable).
+    wire [DRW:0]   dsa_row_p1  = {1'b0, dsa_row} + 1'b1;
+    wire [DRW-1:0] dsa_row_nxt = (dsa_row_p1 >= PE_M) ? DRW'(PE_M-1)
+                                                      : dsa_row_p1[DRW-1:0];
     integer        uk, ur, up;                        // union-build loop vars
     reg            un_pres;                            // key present in some row's selection
     reg [IDXW:0]   un_cnt;                             // running union count (blocking)
@@ -1238,10 +1247,10 @@ module mla_attn_q4k #(
                         //   query + causal extent (a fresh per-query list, exactly
                         //   like that row's PE_M=1 standalone decode).
                         for (d_i=0; d_i<NOPE; d_i=d_i+1)
-                            dsa_qidx[16*d_i +: 16] <= qrot[dsa_row + 1'b1][d_i];
-                        dsa_slen  <= slen_r[(IDXW+1)*(dsa_row + 1'b1) +: (IDXW+1)];
+                            dsa_qidx[16*d_i +: 16] <= qrot[dsa_row_nxt][d_i];
+                        dsa_slen  <= slen_r[(IDXW+1)*dsa_row_nxt +: (IDXW+1)];
                         dsa_start <= 1'b1;
-                        dsa_row   <= dsa_row + 1'b1;
+                        dsa_row   <= dsa_row_nxt;
                     end
                 end
             end
