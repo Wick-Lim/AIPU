@@ -47,6 +47,24 @@ UltraScale+ parts), but you must generate a $0 license once:
 `run_fit.sh` auto-mounts the `.lic` and sets `XILINXD_LICENSE_FILE`; the fixed MAC
 keeps the node-locked license valid across container runs.
 
+> The portal now names the free tier **"Vivado Basic Tier License, Node Locked"**
+> (the ML-Standard/WebPACK successor); it grants `Vivado_Synthesis` +
+> `Vivado_Implementation` + `Vivado_Simulation`, which covers this whole flow.
+
+### Docker crash workaround (handled automatically by `run_fit.sh`)
+With a valid license, Vivado 2026.1 in Docker then **aborts at launch** with
+`realloc(): invalid pointer` — the FlexLM checkout (`libXil_lmgr11.so`) scans
+network devices through `libudev`, and Vivado's bundled `libtcmalloc.so.4`
+(loaded as `NEEDED` by the main binary, pure malloc interposition — zero direct
+`tc_*` references) mixes allocators with glibc-internal allocations inside that
+scan. Verified on Ubuntu 20.04 and 22.04 images; `LD_PRELOAD`/`/etc/ld.so.preload`
+shims do **not** help because lmgr `dlopen`s libudev directly. The fix that works:
+bind-mount an **empty stub** `.so` over the bundled `libtcmalloc.so.4` (removes the
+interposition; everything runs on plain glibc). `run_fit.sh` builds and mounts the
+stub automatically. Feature libs additionally need `libpixman-1-0 libcairo2
+libpango-1.0-0 libglib2.0-0 libfreetype6 libfontconfig1` (also installed by the
+script).
+
 ## Adjust for your board
 - **Part**: edit `PART` in `synth_ku3p.tcl` (package/speed grade, e.g. `xcku3p-ffvb676-2-e`).
 - **Fmax sweep**: tighten `core_clk` period in `constraints.xdc`; achieved Fmax = `1/(period − WNS)` (WNS from `out/timing.rpt`).

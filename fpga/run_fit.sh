@@ -31,6 +31,25 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 VOL=xilinx_install
 FIXMAC=02:42:c0:a8:64:02                       # -> FlexLM hostid 0242c0a86402
 LIC_HOST="${XILINX_LICENSE:-/Users/Shared/xilinx/Xilinx.lic}"
+VIVADO_LIB=/opt/Xilinx/2026.1/Vivado/lib/lnx64.o
+STUB_HOST=/Users/Shared/xilinx/libtcmalloc_stub.so.4
+
+# ---- tcmalloc-stub workaround (REQUIRED in Docker; verified 2026-07) ----
+# Vivado's bundled libtcmalloc.so.4 interposes malloc/realloc globally. During
+# FlexLM license checkout, lmgr's libudev device scan then mixes tcmalloc and
+# glibc-internal allocations -> "realloc(): invalid pointer" abort at launch.
+# The binary has ZERO direct tc_* symbol references (interposition-only), so an
+# EMPTY stub .so bind-mounted over the bundled lib removes the interposition and
+# everything runs on plain glibc. (Vivado's own bin/vivado already disables its
+# other custom allocator the same way: "CR-1074520 ... use the system default".)
+if [[ ! -f "$STUB_HOST" ]]; then
+  echo "building tcmalloc stub -> $STUB_HOST"
+  docker run --rm -v "$(dirname "$STUB_HOST")":/out ubuntu:22.04 bash -c '
+    apt-get update -qq >/dev/null 2>&1
+    apt-get install -y -qq --no-install-recommends gcc libc6-dev >/dev/null 2>&1
+    echo "int __xil_tcmalloc_stub;" > /tmp/stub.c
+    gcc -shared -fPIC -Wl,-soname,libtcmalloc.so.4 -o /out/'"$(basename "$STUB_HOST")"' /tmp/stub.c'
+fi
 
 # ---- license preflight: mount the .lic if present, else tell the user how ----
 LIC_ARGS=()
@@ -55,6 +74,7 @@ fi
 docker run --rm \
   --mac-address "$FIXMAC" \
   -v ${VOL}:/opt/Xilinx:ro \
+  -v "$STUB_HOST":"$VIVADO_LIB"/libtcmalloc.so.4:ro \
   -v "${REPO}":/work \
   "${LIC_ARGS[@]}" \
   -w /work \
@@ -64,7 +84,8 @@ docker run --rm \
     apt-get update -qq
     # Vivado runtime deps; libtinfo5 is the classic one 22.04 lacks (grab from focal).
     apt-get install -y -qq --no-install-recommends \
-      libx11-6 libxext6 libxrender1 libxtst6 libxi6 libncurses5 locales wget ca-certificates >/dev/null 2>&1 || true
+      libx11-6 libxext6 libxrender1 libxtst6 libxi6 libncurses5 locales wget ca-certificates \
+      libpixman-1-0 libcairo2 libpango-1.0-0 libglib2.0-0 libfreetype6 libfontconfig1 >/dev/null 2>&1 || true
     if ! ldconfig -p | grep -q libtinfo.so.5; then
       wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb -O /tmp/t.deb 2>/dev/null \
         && dpkg -i /tmp/t.deb >/dev/null 2>&1 || true
