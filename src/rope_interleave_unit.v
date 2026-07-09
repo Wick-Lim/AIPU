@@ -312,92 +312,279 @@ module rope_interleave_unit #(
     endfunction
 
     //========================================================================
-    // PER-LANE COMBINATIONAL DATAPATH
+    // PER-LANE PIPELINED DATAPATH   (REPIPELINED FOR FMAX -- bit-exact)
     //   lane j handles pair index (beat*LANES + j):
     //   phase = POS * F[pair];  frac_turns = phase[BFR-1:0]  (mod-1 = truncate);
     //   cos/sin from frac_turns; rotate (x0,x1) -> {y1,y0} bf16.
+    //
+    //   The whole chain used to be ONE combinational cone captured on the
+    //   x_valid cycle -- the deepest path in the chip (the first XCKU3P route
+    //   measured it at 98.4 ns / 382 logic levels: 9 serial multiplies through
+    //   the int phase mult, the Taylor-Horner trig, and the rotation).  It is
+    //   now cut into PLAT=10 registered stages, at most ONE serial fp32
+    //   mul(+add) per stage -- the SAME primitive calls (fp32_mul / fp32_add /
+    //   frac46_to_fp32) in the SAME grouping and order, so every captured beat
+    //   is BYTE-IDENTICAL to the single-cycle version (register insertion
+    //   only; the exact glm_act S2a/S2b precedent).
+    //
+    //   INTERFACE SEMANTICS (what changed, what did not):
+    //     * input side UNCHANGED: in_req pulls one beat/cycle, a beat is
+    //       accepted on every (S_RUN && x_valid) edge, back-to-back capable.
+    //     * y_valid/y_out now fire PLAT cycles after their beat's accept edge,
+    //       one per accepted beat, IN ORDER.  Every consumer (mla_attn_q4k /
+    //       mla_attn FSMs, the TB capture) is order/latency-agnostic: they
+    //       capture on y_valid pulses and advance on done.
+    //     * done still fires after the LAST y_valid (S_DRAIN waits for the
+    //       pipe to empty), busy covers the drain.
+    //     * per-stage registers are ENABLED by their valid tap (vp[k]) -- on
+    //       stall/idle cycles the stage holds, so the trig/rotate logic sees
+    //       frozen operands: the same operand-isolation power intent as the
+    //       old pos_hold/beat_hold/xin_hold block, now for free.
     //========================================================================
     reg  [POSW-1:0]      pos_q;                                   // captured POS
     reg  [BAW:0]         beat;
 
-    integer              j;
-    // phase_j high bits [PW-1:BFR] are the whole-turn count, intentionally
-    // discarded (mod-1 reduction keeps only [BFR-1:0]).  Waive the unused-upper
-    // lint, exactly as glm_fp.vh does for its wide intermediates.
-    /* verilator lint_off UNUSEDSIGNAL */
-    reg  [PW-1:0]        phase_j;
-    /* verilator lint_on UNUSEDSIGNAL */
-    reg  [BFR-1:0]       frac_j;
-    reg  [63:0]          cs_j;
-    reg  [31:0]          cos_j, sin_j;
-    reg  [31:0]          x0_j, x1_j;
-    reg  [31:0]          x0c, x1s, x0s, x1c;
-    reg  [31:0]          y0_j, y1_j;
-    reg  [LANES*32-1:0]  rot_beat;
-
-    //------------------------------------------------------------------------
-    // POWER: operand-isolate the deep fp32 trig+rotate cone on STALL cycles.
-    //   rot_beat is sampled into y_out ONLY when x_valid (S_RUN); on !x_valid
-    //   the freshly-computed result is discarded.  So we FREEZE the cone's
-    //   inputs (pos / beat-derived ROM select / x_in) to their last active
-    //   values whenever x_valid is low.  The combinational Taylor-trig +
-    //   rotation cone then stops re-evaluating during stalls -- no input
-    //   toggling, no dynamic power -- while every CAPTURED beat is byte-
-    //   identical to before (when x_valid is high the cone sees the live
-    //   pos_q/beat/x_in exactly as it did previously).
-    //------------------------------------------------------------------------
-    wire                cone_en = x_valid;       // result is captured this cycle
-    reg  [POSW-1:0]     pos_hold;
-    reg  [BAW:0]        beat_hold;
-    reg  [LANES*32-1:0] xin_hold;
-    always @(posedge clk) begin
-        if (rst) begin
-            pos_hold  <= {POSW{1'b0}};
-            beat_hold <= {(BAW+1){1'b0}};
-            xin_hold  <= {LANES*32{1'b0}};
-        end else if (cone_en) begin
-            pos_hold  <= pos_q;                  // latch the live inputs while active
-            beat_hold <= beat;
-            xin_hold  <= x_in;
-        end
-    end
-    wire [POSW-1:0]     pos_eff  = cone_en ? pos_q : pos_hold;
-    wire [BAW:0]        beat_eff = cone_en ? beat  : beat_hold;
-    wire [LANES*32-1:0] xin_eff  = cone_en ? x_in  : xin_hold;
-
-    always @* begin
-        rot_beat = {LANES*32{1'b0}};
-        for (j = 0; j < LANES; j = j + 1) begin : LANE
-            // pair index this lane processes (beat*LANES + j); turn ROM lookup.
-            // Inputs are the frozen-on-stall cone operands (pos_eff/beat_eff/
-            // xin_eff): identical to pos_q/beat/x_in on captured (x_valid) beats.
-            phase_j = {{(PW-POSW){1'b0}}, pos_eff}
-                      * turn_rom[32'(beat_eff) * LANES + j];
-            frac_j  = phase_j[BFR-1:0];                          // (pos*invf/2pi) mod 1
-            cs_j    = cossin_turn(frac_j);
-            cos_j   = cs_j[63:32];
-            sin_j   = cs_j[31:0];
-            // x_in lane packing: [32*j +:16]=x_even=x0, [32*j+16 +:16]=x_odd=x1
-            x0_j = bf16_to_fp32(xin_eff[32*j      +: 16]);
-            x1_j = bf16_to_fp32(xin_eff[32*j + 16 +: 16]);
-            // y0 = x0*cos - x1*sin ; y1 = x0*sin + x1*cos
-            x0c = fp32_mul(x0_j, cos_j);
-            x1s = fp32_mul(x1_j, sin_j);
-            x0s = fp32_mul(x0_j, sin_j);
-            x1c = fp32_mul(x1_j, cos_j);
-            y0_j = fp32_add(x0c, {x1s[31]^1'b1, x1s[30:0]});      // x0c - x1s
-            y1_j = fp32_add(x0s, x1c);
-            rot_beat[32*j      +: 16] = fp32_to_bf16(y0_j);
-            rot_beat[32*j + 16 +: 16] = fp32_to_bf16(y1_j);
-        end
-    end
-
-    //========================================================================
-    // FSM  (UNCHANGED)
-    //========================================================================
-    localparam [1:0] S_IDLE=2'd0, S_RUN=2'd1, S_DONE=2'd2;
+    // FSM state (declared before the datapath: `accept` reads it)
+    localparam [1:0] S_IDLE=2'd0, S_RUN=2'd1, S_DRAIN=2'd2, S_DONE=2'd3;
     reg [1:0] state;
 
+    localparam integer PLAT = 10;              // accept edge -> y_valid edge
+    reg  [PLAT-1:0]      vp;                   // valid pipe (vp[0] newest)
+    wire                 accept = (state == S_RUN) && x_valid;
+
+    // quadrant sign/swap fixup ({cos,sin} from the [0,pi/2) pair) -- the exact
+    // case mapping cossin_turn applied, factored so stage 9 can call it.
+    function automatic [63:0] quad_fix(input [1:0] q,
+                                       input [31:0] cosv, input [31:0] sinv);
+        reg [31:0] cf, sf;
+        begin
+            case (q)
+                2'd0: begin cf = cosv;                    sf = sinv;                    end
+                2'd1: begin cf = {~sinv[31], sinv[30:0]}; sf = cosv;                    end
+                2'd2: begin cf = {~cosv[31], cosv[30:0]}; sf = {~sinv[31], sinv[30:0]}; end
+                default: begin cf = sinv;                 sf = {~cosv[31], cosv[30:0]}; end
+            endcase
+            quad_fix = {cf, sf};
+        end
+    endfunction
+
+    // ---- per-lane stage registers (stage k written at accept-edge + k-1) ----
+    reg [BFR-1:0] s1_frac [0:LANES-1];                    // ST1: int phase mult
+    reg [31:0]    s1_x0   [0:LANES-1];                    //      + bf16 widen
+    reg [31:0]    s1_x1   [0:LANES-1];
+    reg [1:0]     s2_q    [0:LANES-1];                    // ST2: frac46 -> fp32 r
+    reg [31:0]    s2_r    [0:LANES-1];
+    reg [31:0]    s2_x0   [0:LANES-1], s2_x1 [0:LANES-1];
+    reg [1:0]     s3_q    [0:LANES-1];                    // ST3: th = r * pi/2
+    reg [31:0]    s3_th   [0:LANES-1];
+    reg [31:0]    s3_x0   [0:LANES-1], s3_x1 [0:LANES-1];
+    reg [1:0]     s4_q    [0:LANES-1];                    // ST4: u = th^2
+    reg [31:0]    s4_th   [0:LANES-1], s4_u [0:LANES-1];
+    reg [31:0]    s4_x0   [0:LANES-1], s4_x1 [0:LANES-1];
+    reg [1:0]     s5_q    [0:LANES-1];                    // ST5: Horner level 1
+    reg [31:0]    s5_th   [0:LANES-1], s5_u [0:LANES-1];
+    reg [31:0]    s5_sp   [0:LANES-1], s5_cp [0:LANES-1];
+    reg [31:0]    s5_x0   [0:LANES-1], s5_x1 [0:LANES-1];
+    reg [1:0]     s6_q    [0:LANES-1];                    // ST6: Horner level 2
+    reg [31:0]    s6_th   [0:LANES-1], s6_u [0:LANES-1];
+    reg [31:0]    s6_sp   [0:LANES-1], s6_cp [0:LANES-1];
+    reg [31:0]    s6_x0   [0:LANES-1], s6_x1 [0:LANES-1];
+    reg [1:0]     s7_q    [0:LANES-1];                    // ST7: Horner level 3
+    reg [31:0]    s7_th   [0:LANES-1], s7_u [0:LANES-1];
+    reg [31:0]    s7_sp   [0:LANES-1], s7_cp [0:LANES-1];
+    reg [31:0]    s7_x0   [0:LANES-1], s7_x1 [0:LANES-1];
+    reg [1:0]     s8_q    [0:LANES-1];                    // ST8: Horner level 4
+    reg [31:0]    s8_th   [0:LANES-1];                    //      (sp final, cosv)
+    reg [31:0]    s8_sp   [0:LANES-1], s8_cosv [0:LANES-1];
+    reg [31:0]    s8_x0   [0:LANES-1], s8_x1 [0:LANES-1];
+    reg [31:0]    s9_cos  [0:LANES-1], s9_sin [0:LANES-1];// ST9: sinv + quad fix
+    reg [31:0]    s9_x0   [0:LANES-1], s9_x1 [0:LANES-1];
+    reg [31:0]    s10_x0c [0:LANES-1], s10_x1s [0:LANES-1];// ST10: 4 rot muls
+    reg [31:0]    s10_x0s [0:LANES-1], s10_x1c [0:LANES-1];
+
+    integer j;
+
+    // ---- per-stage combinational next-values (registered below) ----
+    // ST1 next: phase = pos * F[pair]  (the int DSP multiply), + bf16 widen.
+    // phase high bits [PW-1:BFR] are the whole-turn count, intentionally
+    // discarded (mod-1 reduction keeps only [BFR-1:0]).
+    /* verilator lint_off UNUSEDSIGNAL */
+    reg [PW-1:0]  c1_phase;
+    /* verilator lint_on UNUSEDSIGNAL */
+    reg [BFR-1:0] n1_frac [0:LANES-1];
+    reg [31:0]    n1_x0   [0:LANES-1], n1_x1 [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST1
+            c1_phase   = {{(PW-POSW){1'b0}}, pos_q}
+                         * turn_rom[32'(beat) * LANES + j];
+            n1_frac[j] = c1_phase[BFR-1:0];
+            n1_x0[j]   = bf16_to_fp32(x_in[32*j      +: 16]);
+            n1_x1[j]   = bf16_to_fp32(x_in[32*j + 16 +: 16]);
+        end
+    end
+    // ST2 next: r = frac46->fp32 (normalize shifter -- its own stage).
+    reg [31:0] n2_r [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST2
+            n2_r[j] = frac46_to_fp32(s1_frac[j][BFR-3 -: 46]);
+        end
+    end
+    // ST3 next: th = r * pi/2.
+    reg [31:0] n3_th [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST3
+            n3_th[j] = fp32_mul(s2_r[j], FP_PI_HALF);
+        end
+    end
+    // ST4 next: u = th*th.
+    reg [31:0] n4_u [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST4
+            n4_u[j] = fp32_mul(s3_th[j], s3_th[j]);
+        end
+    end
+    // ST5..ST8 next: the sin/cos Horner ladders, ONE mul+add level per stage,
+    // sin and cos in parallel -- same call grouping as cossin_quad.
+    reg [31:0] n5_sp [0:LANES-1], n5_cp [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST5
+            n5_sp[j] = fp32_add(S3, fp32_mul(s4_u[j], S4));
+            n5_cp[j] = fp32_add(C3, fp32_mul(s4_u[j], C4));
+        end
+    end
+    reg [31:0] n6_sp [0:LANES-1], n6_cp [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST6
+            n6_sp[j] = fp32_add(S2, fp32_mul(s5_u[j], s5_sp[j]));
+            n6_cp[j] = fp32_add(C2, fp32_mul(s5_u[j], s5_cp[j]));
+        end
+    end
+    reg [31:0] n7_sp [0:LANES-1], n7_cp [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST7
+            n7_sp[j] = fp32_add(S1, fp32_mul(s6_u[j], s6_sp[j]));
+            n7_cp[j] = fp32_add(C1, fp32_mul(s6_u[j], s6_cp[j]));
+        end
+    end
+    reg [31:0] n8_sp [0:LANES-1], n8_cosv [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST8
+            n8_sp[j]   = fp32_add(S0, fp32_mul(s7_u[j], s7_sp[j]));
+            n8_cosv[j] = fp32_add(C0, fp32_mul(s7_u[j], s7_cp[j]));
+        end
+    end
+    // ST9 next: sinv = th * sp, then the quadrant sign/swap.
+    reg [63:0] c9_cs;
+    reg [31:0] n9_cos [0:LANES-1], n9_sin [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST9
+            c9_cs     = quad_fix(s8_q[j], s8_cosv[j],
+                                 fp32_mul(s8_th[j], s8_sp[j]));
+            n9_cos[j] = c9_cs[63:32];
+            n9_sin[j] = c9_cs[31:0];
+        end
+    end
+    // ST10 next: the four rotation multiplies (parallel).
+    reg [31:0] n10_x0c [0:LANES-1], n10_x1s [0:LANES-1];
+    reg [31:0] n10_x0s [0:LANES-1], n10_x1c [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NST10
+            n10_x0c[j] = fp32_mul(s9_x0[j], s9_cos[j]);
+            n10_x1s[j] = fp32_mul(s9_x1[j], s9_sin[j]);
+            n10_x0s[j] = fp32_mul(s9_x0[j], s9_sin[j]);
+            n10_x1c[j] = fp32_mul(s9_x1[j], s9_cos[j]);
+        end
+    end
+    // ST11 (= y_out write) next: y0 = x0c - x1s ; y1 = x0s + x1c ; bf16 round.
+    reg [31:0] c11_y0, c11_y1;
+    reg [LANES*32-1:0] n11_y;
+    always @* begin
+        n11_y = {LANES*32{1'b0}};
+        for (j = 0; j < LANES; j = j + 1) begin : NST11
+            c11_y0 = fp32_add(s10_x0c[j], {s10_x1s[j][31]^1'b1, s10_x1s[j][30:0]});
+            c11_y1 = fp32_add(s10_x0s[j], s10_x1c[j]);
+            n11_y[32*j      +: 16] = fp32_to_bf16(c11_y0);
+            n11_y[32*j + 16 +: 16] = fp32_to_bf16(c11_y1);
+        end
+    end
+
+    // ---- pipeline registers: stage k enabled by its valid tap ----
+    always @(posedge clk) begin
+        if (rst) begin
+            vp <= {PLAT{1'b0}};
+            for (j = 0; j < LANES; j = j + 1) begin
+                s1_frac[j] <= {BFR{1'b0}}; s1_x0[j] <= 32'b0; s1_x1[j] <= 32'b0;
+                s2_q[j] <= 2'b0; s2_r[j] <= 32'b0; s2_x0[j] <= 32'b0; s2_x1[j] <= 32'b0;
+                s3_q[j] <= 2'b0; s3_th[j] <= 32'b0; s3_x0[j] <= 32'b0; s3_x1[j] <= 32'b0;
+                s4_q[j] <= 2'b0; s4_th[j] <= 32'b0; s4_u[j] <= 32'b0;
+                s4_x0[j] <= 32'b0; s4_x1[j] <= 32'b0;
+                s5_q[j] <= 2'b0; s5_th[j] <= 32'b0; s5_u[j] <= 32'b0;
+                s5_sp[j] <= 32'b0; s5_cp[j] <= 32'b0; s5_x0[j] <= 32'b0; s5_x1[j] <= 32'b0;
+                s6_q[j] <= 2'b0; s6_th[j] <= 32'b0; s6_u[j] <= 32'b0;
+                s6_sp[j] <= 32'b0; s6_cp[j] <= 32'b0; s6_x0[j] <= 32'b0; s6_x1[j] <= 32'b0;
+                s7_q[j] <= 2'b0; s7_th[j] <= 32'b0; s7_u[j] <= 32'b0;
+                s7_sp[j] <= 32'b0; s7_cp[j] <= 32'b0; s7_x0[j] <= 32'b0; s7_x1[j] <= 32'b0;
+                s8_q[j] <= 2'b0; s8_th[j] <= 32'b0;
+                s8_sp[j] <= 32'b0; s8_cosv[j] <= 32'b0; s8_x0[j] <= 32'b0; s8_x1[j] <= 32'b0;
+                s9_cos[j] <= 32'b0; s9_sin[j] <= 32'b0; s9_x0[j] <= 32'b0; s9_x1[j] <= 32'b0;
+                s10_x0c[j] <= 32'b0; s10_x1s[j] <= 32'b0;
+                s10_x0s[j] <= 32'b0; s10_x1c[j] <= 32'b0;
+            end
+        end else begin
+            vp <= {vp[PLAT-2:0], accept};
+            for (j = 0; j < LANES; j = j + 1) begin
+                if (accept) begin
+                    s1_frac[j] <= n1_frac[j];
+                    s1_x0[j]   <= n1_x0[j];  s1_x1[j] <= n1_x1[j];
+                end
+                if (vp[0]) begin
+                    s2_q[j]  <= s1_frac[j][BFR-1 -: 2];
+                    s2_r[j]  <= n2_r[j];
+                    s2_x0[j] <= s1_x0[j];  s2_x1[j] <= s1_x1[j];
+                end
+                if (vp[1]) begin
+                    s3_q[j]  <= s2_q[j];  s3_th[j] <= n3_th[j];
+                    s3_x0[j] <= s2_x0[j]; s3_x1[j] <= s2_x1[j];
+                end
+                if (vp[2]) begin
+                    s4_q[j]  <= s3_q[j];  s4_th[j] <= s3_th[j];  s4_u[j] <= n4_u[j];
+                    s4_x0[j] <= s3_x0[j]; s4_x1[j] <= s3_x1[j];
+                end
+                if (vp[3]) begin
+                    s5_q[j]  <= s4_q[j];  s5_th[j] <= s4_th[j];  s5_u[j] <= s4_u[j];
+                    s5_sp[j] <= n5_sp[j]; s5_cp[j] <= n5_cp[j];
+                    s5_x0[j] <= s4_x0[j]; s5_x1[j] <= s4_x1[j];
+                end
+                if (vp[4]) begin
+                    s6_q[j]  <= s5_q[j];  s6_th[j] <= s5_th[j];  s6_u[j] <= s5_u[j];
+                    s6_sp[j] <= n6_sp[j]; s6_cp[j] <= n6_cp[j];
+                    s6_x0[j] <= s5_x0[j]; s6_x1[j] <= s5_x1[j];
+                end
+                if (vp[5]) begin
+                    s7_q[j]  <= s6_q[j];  s7_th[j] <= s6_th[j];  s7_u[j] <= s6_u[j];
+                    s7_sp[j] <= n7_sp[j]; s7_cp[j] <= n7_cp[j];
+                    s7_x0[j] <= s6_x0[j]; s7_x1[j] <= s6_x1[j];
+                end
+                if (vp[6]) begin
+                    s8_q[j]  <= s7_q[j];  s8_th[j] <= s7_th[j];
+                    s8_sp[j] <= n8_sp[j]; s8_cosv[j] <= n8_cosv[j];
+                    s8_x0[j] <= s7_x0[j]; s8_x1[j] <= s7_x1[j];
+                end
+                if (vp[7]) begin
+                    s9_cos[j] <= n9_cos[j]; s9_sin[j] <= n9_sin[j];
+                    s9_x0[j]  <= s8_x0[j];  s9_x1[j]  <= s8_x1[j];
+                end
+                if (vp[8]) begin
+                    s10_x0c[j] <= n10_x0c[j]; s10_x1s[j] <= n10_x1s[j];
+                    s10_x0s[j] <= n10_x0s[j]; s10_x1c[j] <= n10_x1c[j];
+                end
+            end
+        end
+    end
+
+    //========================================================================
+    // FSM  (input pull unchanged; y side fed by the pipe; drain before done)
+    //========================================================================
     always @(posedge clk) begin
         if (rst) begin
             state   <= S_IDLE;
@@ -411,8 +598,11 @@ module rope_interleave_unit #(
         end else begin
             // defaults (every reg written every cycle -> no latch)
             done    <= 1'b0;
-            y_valid <= 1'b0;
             in_req  <= 1'b0;
+
+            // ---- output side: driven by the pipe tail, in every state ----
+            y_valid <= vp[PLAT-1];
+            if (vp[PLAT-1]) y_out <= n11_y;
 
             case (state)
                 // -----------------------------------------------------------
@@ -430,16 +620,20 @@ module rope_interleave_unit #(
                 S_RUN: begin
                     in_req <= 1'b1;                                // keep asking
                     if (x_valid) begin
-                        y_out   <= rot_beat;
-                        y_valid <= 1'b1;
                         if (beat == LAST_BEAT) begin
                             in_req <= 1'b0;
                             beat   <= {(BAW+1){1'b0}};
-                            state  <= S_DONE;
+                            state  <= S_DRAIN;
                         end else begin
                             beat <= beat + 1'b1;
                         end
                     end
+                end
+                // -----------------------------------------------------------
+                S_DRAIN: begin
+                    // all beats accepted; wait for the pipe to empty (the last
+                    // y_valid has fired once vp is all-zero).
+                    if (vp == {PLAT{1'b0}}) state <= S_DONE;
                 end
                 // -----------------------------------------------------------
                 S_DONE: begin
