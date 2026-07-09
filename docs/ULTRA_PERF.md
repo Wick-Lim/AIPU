@@ -31,10 +31,12 @@ a *different arithmetic contract*. Levers that change outputs are flagged **NOT 
 > 753 GB FP8 checkpoint; ~0.6 B/param avg vs ~1.0). The workload is **memory-bandwidth-bound**, so fewer
 > bytes/token ⇒ more tok/s at the same bandwidth — Q4_K is ~**1.6× faster** than FP8 on the same rung
 > **[EST]**. Every per-token byte figure below is the Q4_K figure (~0.6× the prior-FP8 count). **Honest
-> gaps (ledger):** the RTL is **Q4_K-only** (`grep -ril 'q6_k|q8_0' src/` = 0; no `w_type` field in
-> `weight_loader_q4k`), so it **cannot consume a real UD-Q4_K_XL checkpoint as-is** — the dynamic mix keeps
-> sensitive tensors at Q6_K/Q8_0/F16, which would have to be re-quantized to Q4_K (voids the lossless
-> premise) or pre-dequantized to bf16. Mixed-type support is **NOT-YET**.
+> gaps (ledger):** mixed-type support is **DONE** — Q6_K/Q8_0/F16 dequant primitives (`src/q4k_mixed.vh`),
+> per-column `w_type` routing in `glm_matmul_q4k`, and `desc_wtype` in `weight_loader_q4k` (gates:
+> `make mixedtype` — q6k_prim, q8_0_prim, glm_matmul_mixed 32/32, weight_loader_q4k_mixed 192/192 incl. a
+> 24-tile mixed sequence; bit-exact to the same `tools/q4k_ref.py` reimpl golden), so the chip **can** now
+> consume a real UD-Q4_K_XL checkpoint's dynamic type mix (sensitive tensors at Q6_K/Q8_0/F16) — still
+> **not bit-verified against the real GGUF bytes**.
 
 > **Naming note (storage backend).** The committed RTL identifiers — `flash_xbar`, `FLASH_LAT`,
 > `flash_req`, `flash_seq`, `flash_layout`, `flash_is_expert`, `flash_expert_id`, … — are kept
@@ -82,19 +84,21 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 
 ## 1. Headline table — TOP opportunities (ranked by impact × feasibility)
 
-> **Status legend.** A **✅ RTL-present** mechanism means the Q4_K module carries the structure. It does
-> **not** mean the *assembled Q4_K path* is numerically verified: the ledger is explicit that **no
-> end-to-end functional golden for the assembled `glm_model_q4k` exists** — the model/decoder/mla/mtp-level
-> TBs run the **generic bf16 twin** (`src/glm_model.v`, zero Q4_K), not the `_q4k` product, and the batched
+> **Status legend.** A **✅ RTL-present** mechanism means the Q4_K module carries the structure. The
+> **assembled end-to-end numeric golden for `glm_model_q4k` is now DONE**: `make model-q4k` runs the full
+> forward (embed → Lx(MLA+DSA+MoE) → final norm → LM head → argmax) against the numpy reference
+> `tools/glm_model_q4k_ref.py` — **ALL 1155 TESTS bit-exact** (logits+argmax+h_state), plus
+> `make model-q4k-acthw` (the same golden through the ACT_HW=1 serialized-activation datapath, also 1155).
+> Caveat that stays: the golden is our **own numpy reimpl, NOT llama.cpp/GGUF**. The batched
 > `PE_M`/union/paged-KV paths were verified **bit-exact on the prior FP8 track (branch `fp8`)**, not on
 > Q4_K. Where a row says a mechanism was "verified bit-exact", that is a **[prior-FP8]** result unless
-> stated otherwise. What *is* checked on Q4_K end-to-end: `spec_decode_top` **19/19 spec==greedy**
+> stated otherwise. Also checked on Q4_K end-to-end: `spec_decode_top` **19/19 spec==greedy**
 > (DUT-vs-DUT self-consistency, the "greedy golden" is itself a `glm_model_q4k` — a lossless-speculation
 > safety property, **not** a numeric golden), + `spec_batched/chain` via `make spec-slow`.
 
 | # | Opportunity | Mechanism (1-line) | Quantified impact **[EST]** | Where | Effort | Ceiling? |
 |---|-------------|--------------------|------------------------------|-------|--------|----------|
-| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **RTL-present in `glm_decoder_block_q4k`** | Fetch the per-layer expert *union* once from the NVMe SSD, reuse across B token-rows (the PE_M>1 grouped MoE scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; multi-seq batched top (`glm_q4k_soc_ms`, `PER_ROW_SEQ`) + paged KV. **Union-skip verified bit-exact [prior-FP8]; Q4_K assembled-path golden = NOT-YET** | rtl-here | high | ✅ |
+| 1 | **Expert-grouped layer-synchronous batched MoE** — union-fetch ✅ **RTL-present in `glm_decoder_block_q4k`** | Fetch the per-layer expert *union* once from the NVMe SSD, reuse across B token-rows (the PE_M>1 grouped MoE scans the expert axis + skips non-union experts) | Aggregate **6–8×**: ~36–50 tok/s @B≈256 vs ~6 single-user; multi-seq batched top (`glm_q4k_soc_ms`, `PER_ROW_SEQ`) + paged KV. **Union-skip verified bit-exact [prior-FP8]; Q4_K B=1 assembled golden DONE (`make model-q4k`, 1155 bit-exact); batched (PE_M>1) Q4_K golden = NOT-YET** | rtl-here | high | ✅ |
 | 2 | **PE_M batch-widening of the Q4_K wrappers** — ✅ **RTL-present (4/4)** | **All four** wrappers (`swiglu_expert_q4k`/`moe_router_q4k`/`mla_attn_q4k`/`mtp_head_q4k`) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Weight-share property (*"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"*) verified bit-exact **[prior-FP8]** | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW. **Q4_K unit TBs: functional/invariant, not a PE_M golden** | **rtl-here** | RTL done | (enabler) |
 | 3 | **Stronger weight decompressor (context-modeled)** — ✅ **RTL-present (`weight_decomp2`)** | Spend idle die on an order-1 context-modeled Huffman decoder in the NVMe→DDR5 refill path | ~1.3–1.5× fewer streamed bytes **[prior-FP8, on the FP8 byte stream]** → **Q4_K applicability PENDING** (Q4_K is *already* 4-bit — an extra entropy coder gains less; re-measure needed) | **rtl-here** | RTL done | ✅? |
 | 4 | **Resident dense draft model → high-K spec decode** | ~1–3B DDR5-resident draft proposes K=4–8; target verifies in one pass | K_eff 1.7→**3–5** → ~2–3× single-user, **bit-exact** | rtl-here* | high | ✅ |
@@ -108,7 +112,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 | 12 | **MLA weight absorption (attend in 512-dim latent)** | Fold W_uk into q, W_uv into W_o; drop per-key up-projection | Removes ~3.2e5 per-key GEMMs/tok; **bit-exact** (matmul reassoc) | **rtl-here** | high | ✅ |
 | 13 | **Near-storage / computational-storage expert compute** — the **rung-③ endgame** | Move the Q4_K dequant+MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling (breaks the FPGA IO/PHY wall). **No J/tok win** | **rung ③** | high | ✅ |
 | 14 | **Batch × MTP multiply** | Run all B streams' MTP drafts in the same grouped pass | ~1.7× *on top of* batch → ~60–85 tok/s aggregate @B≈256 | **rtl-here** | low | (compose) |
-| 15 | **Paged multi-sequence KV cache** — ✅ **RTL-present (`kv_cache_pager` NSEQ windows + `glm_q4k_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler for B>1 *distinct users* in one forward. **Verified per-row bit-exact [prior-FP8] at B=2/4; Q4_K assembled golden = NOT-YET** | **rtl-here** | RTL done | (enabler) |
+| 15 | **Paged multi-sequence KV cache** — ✅ **RTL-present (`kv_cache_pager` NSEQ windows + `glm_q4k_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler for B>1 *distinct users* in one forward. **Verified per-row bit-exact [prior-FP8] at B=2/4; Q4_K multi-seq assembled golden = NOT-YET (B=1 `glm_model_q4k` golden DONE)** | **rtl-here** | RTL done | (enabler) |
 
 \* #4 RTL substrate (g_kn verifier) exists; the draft *weights* are a training task.
 
@@ -133,8 +137,9 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   logic was **folded inline** into the decoder, so there is no separate module on `main`), and a
   multi-sequence batched top (`glm_q4k_soc_ms`, `PER_ROW_SEQ`) decodes B distinct users in one forward with
   paged per-seq KV. **The union-skip + per-row bit-exactness were verified on the prior FP8 track (branch
-  `fp8`); on Q4_K the assembled batched path is NOT-YET checked against any golden** (the decoder TB runs the
-  bf16 twin). New knee at **B≈256** (all 256 experts active: `E[distinct]=256·(1−0.96875^B)`), new ceiling =
+  `fp8`); on Q4_K the assembled *batched* (PE_M>1) path is NOT-YET checked against any golden** (the B=1
+  assembled `glm_model_q4k` forward IS now golden-checked — `make model-q4k`, 1155 bit-exact vs the numpy
+  ref). New knee at **B≈256** (all 256 experts active: `E[distinct]=256·(1−0.96875^B)`), new ceiling =
   the compute roofline **~50 tok/s aggregate @100 GB/s NVMe [EST]**, reached near B≈355. **But per-user
   latency floors at ~0.14 tok/s at that batch — so THIS regime is offline/throughput serving, NOT the local
   personal box.** The personal box runs at B=1 (single-user row above); this bullet just documents that the
@@ -221,16 +226,17 @@ a Q4_K golden is stated per step.**
    non-union expert (the FP8 `batched_moe.v` union-skip logic was **folded inline** here). This was verified
    **BYTE-IDENTICAL on the prior FP8 track [prior-FP8]** (union_tb / `_pem` / decoder TB, and `make bcov`
    B∈{1,2,3,5,8} — *all FP8-track, removed from `main`, see branch `fp8`*). **On Q4_K the assembled decoder
-   path has NO functional golden (ledger NOT-YET)** — the decoder TB runs the generic bf16 twin, so the union
-   fetch's Q4_K numeric correctness is unproven. Effect *when realized*: up to **~32×** fewer NVMe/storage
+   path is now covered at B=1 by the `glm_model_q4k` end-to-end golden** (`make model-q4k`, 1155 bit-exact
+   vs `tools/glm_model_q4k_ref.py`), **but the PE_M>1 union fetch has no Q4_K golden (NOT-YET)** — its
+   Q4_K numeric correctness at batch is unproven. Effect *when realized*: up to **~32×** fewer NVMe/storage
    expert fetches at small batch (real 256-expert config); ~no benefit at B≈256 (union≈all). What still needs
    inventing is scaling the dispatcher/scheduler (a)/(c) to the datacenter B≈256 regime.
 3. **Paged KV (#15) — substrate RTL-present.** `kv_cache_pager` carries `NSEQ` independent ring windows
    (per-seq counter/window/eviction) and `glm_q4k_soc_ms` OWNS a real per-(layer,seq) KV store (`kv_mem`) the
    multi-seq model reads combinationally; `PER_ROW_SEQ`/`kc_seq` route each row to its own sequence's window.
    MLA latent KV ~1 KB/tok/layer → B=256 at few-K ctx fits the DDR5 freed by the shrunken (one-layer-union)
-   expert cache. Per-row bit-exactness at B=2/4 was verified **[prior-FP8]**; the Q4_K assembled golden is
-   **NOT-YET**. Remaining: scale the window count to datacenter B and a vLLM-style shared-pool block table.
+   expert cache. Per-row bit-exactness at B=2/4 was verified **[prior-FP8]**; the Q4_K *multi-seq* assembled golden is
+   **NOT-YET** (the B=1 `glm_model_q4k` golden is DONE — `make model-q4k`). Remaining: scale the window count to datacenter B and a vLLM-style shared-pool block table.
 
 **Payoff [EST]:** per-token routed footprint `75·256·(1−0.96875^B)·(~23 MB)/B` (75 MoE layers; ~23 MB per
 expert-per-layer at Q4_K = ~0.6× the prior-FP8 ~37 MB) → at B=256 ≈ **~1.7 GB/tok** (~8× vs the ~14 GB

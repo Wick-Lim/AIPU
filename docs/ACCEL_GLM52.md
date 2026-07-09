@@ -15,15 +15,20 @@
 > **`fp8-verified-baseline`**, referenced here as prior/preserved, never current.
 
 > **What is actually proven (read this before any "bit-exact" below).**
-> - The **one** bit-exact-vs-ggml result is the **Q4_K GEMM core** (`make q4k` →
->   `glm_matmul_q4k`, `q4k_prim`), bit-exact to the team's **own** ggml-Q4_K reimplementation
->   `tools/q4k_ref.py` — **NOT** the real downloaded GGUF bytes and **NOT** llama.cpp's runtime
->   (llama.cpp quantizes activations to Q8_K and dots in integer; this RTL uses bf16 activations
->   + fp32 accumulate — a **different** arithmetic contract). It is also **Q4_K-only** (no
->   Q6_K/Q8_0/F16 RTL consumer).
-> - The **assembled `glm_model_q4k` has NO end-to-end numeric golden.** It is exercised only as
->   **spec-decode == greedy self-consistency** (a DUT-vs-DUT safety property where the "greedy
->   golden" is *itself* a `glm_model_q4k`), never against ggml/llama.cpp numerically.
+> - The bit-exact-vs-ggml results are the **Q4_K GEMM core** (`make q4k` →
+>   `glm_matmul_q4k`, `q4k_prim`) and — no longer Q4_K-only — the **Q6_K/Q8_0/F16 mixed-type
+>   path** (`make mixedtype`: `src/q4k_mixed.vh` dequant primitives, per-column `w_type` routing
+>   in `glm_matmul_q4k`, `desc_wtype` in `weight_loader_q4k`), both bit-exact to the team's
+>   **own** ggml reimplementation `tools/q4k_ref.py` — **NOT** the real downloaded GGUF bytes and
+>   **NOT** llama.cpp's runtime (llama.cpp quantizes activations to Q8_K and dots in integer;
+>   this RTL uses bf16 activations + fp32 accumulate — a **different** arithmetic contract).
+> - The **assembled `glm_model_q4k` now HAS an end-to-end numeric golden** (`make model-q4k`):
+>   the full forward (embed → L×(MLA+DSA+MoE) → final norm → LM head → argmax) is bit-exact —
+>   **ALL 1155 TESTS** (logits+argmax+h_state) — vs the numpy reference
+>   `tools/glm_model_q4k_ref.py`, plus `make model-q4k-acthw` (the same golden through the
+>   ACT_HW=1 serialized-activation datapath, also 1155). Caveat that stays: the golden is the
+>   team's **own** numpy reimpl, **NOT** llama.cpp/GGUF. **Spec-decode == greedy
+>   self-consistency** remains as an additional DUT-vs-DUT safety property.
 > - The generic **bf16/fp32 twins** (`glm_model`, `mla_attn`, `mtp_head`, …) that carry the
 >   per-unit fp32/fp64-golden TBs are the *structural siblings* of the Q4_K units — they contain
 >   **zero Q4_K**, so they do **not** verify the assembled Q4_K numeric path.
@@ -38,7 +43,8 @@
 > - **DERIVED / BUILDABLE** — the small-but-faithful RTL decoder block we actually
 >   build and verify on iverilog/verilator/yosys: the Q4_K GEMM core bit-exact to the
 >   independent ggml-Q4_K reference (`tools/q4k_ref.py`), the surrounding operators against
->   fp32/fp64 goldens, and the assembled model as spec==greedy self-consistency.
+>   fp32/fp64 goldens, and the assembled model bit-exact vs its own end-to-end numpy golden
+>   (`tools/glm_model_q4k_ref.py`, `make model-q4k`) plus spec==greedy self-consistency.
 > - **SYSTEM-LEVEL ESTIMATE** — the full 753B-param multi-chip / streaming machine, designed on
 >   paper, sized from the config, never claimed as "built".
 >
@@ -51,10 +57,12 @@
 > below scale ~proportionally). UD-Q4_K_XL is a **dynamic mix** — most tensors Q4_K, sensitive
 > ones kept at Q6_K/Q8_0/F16 (~0.6 B/param average). The **moat, stated scoped:** the Q4_K GEMM
 > core is **bit-exact to `tools/q4k_ref.py`, the team's own faithful reimplementation of ggml's
-> `dequantize_row_q4_K`** — **NOT** bit-exact to the real downloaded GGUF file, to llama.cpp, or
-> to the *full* UD-Q4_K_XL mix (the RTL has **no consumer** for the Q6_K/Q8_0/F16 tensors — a
-> real checkpoint would have to be re-quantized to Q4_K, which voids the moat, or fed
-> pre-dequantized as bf16). See [`Q4K_RETARGET.md`](Q4K_RETARGET.md) and
+> `dequantize_row_q4_K`** — **NOT** bit-exact to the real downloaded GGUF file or to llama.cpp.
+> The RTL now **consumes the full UD-Q4_K_XL type mix**: Q6_K/Q8_0/F16 have RTL consumers
+> (`src/q4k_mixed.vh` dequant primitives, per-column `w_type` routing in `glm_matmul_q4k`,
+> `desc_wtype` in `weight_loader_q4k`; `make mixedtype`, bit-exact to the same `tools/q4k_ref.py`
+> reimpl) — so a real checkpoint's type mix can be consumed natively, though still not
+> bit-verified against the real GGUF bytes. See [`Q4K_RETARGET.md`](Q4K_RETARGET.md) and
 > [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md).
 
 ---
@@ -163,7 +171,7 @@ datacenter analysis of the same silicon**, kept for sizing — not the product's
    │     │             ▼                                                                    │
    │     │      [gather 2048 K/V rows] → inner attention (in mla_attn_q4k)                  │
    │     │        QK^T(qk=256) · causal mask · [glm_softmax bf16] · A·V(v=256) · W_o         │
-   │     │             │   (NOTE: 1/√qk_head_dim scale currently OMITTED — see §4.1)         │
+   │     │             │   (1/√qk_head_dim softmax scale APPLIED — see §4.1)                 │
    │  x += ◄───────────┘  (bf16 residual add)                                               │
    │     │                                                                                  │
    │  [rmsnorm_unit] pre-FFN ──────────────►  FFN                                           │
@@ -208,7 +216,9 @@ an fp32 residual). Norms, softmax, RoPE, router, embed and the LM head stay **bf
 datapath's canonical numerics (no fixed-point Q-format; the legacy scalar-TPU `tpu_defs.vh`
 Q15.16/Q7.8 path was removed, see the correction below).
 
-Weight-type key: **Q4_K** = weight matmul, ggml Q4_K dequant → fp32 MAC → bf16 (`glm_matmul_q4k`).
+Weight-type key: **Q4_K** = weight matmul, ggml Q4_K dequant → fp32 MAC → bf16 (`glm_matmul_q4k`;
+the same engine also consumes UD-Q4_K_XL's Q6_K/Q8_0/F16 columns via per-column `w_type` —
+`src/q4k_mixed.vh`, `make mixedtype`, bit-exact to the same reimpl golden).
 **bf16** = a `modules_to_not_convert` op or an activation×activation matmul (`glm_matmul_pipe` /
 `glm_softmax` / the elementwise leaves). No activation quant anywhere.
 
@@ -223,7 +233,7 @@ Weight-type key: **Q4_K** = weight matmul, ggml Q4_K dequant → fp32 MAC → bf
 | 7 | DSA indexer scoring (small-dim dot over all keys) | `dsa_indexer` | **fp32** score accum, bf16 in |
 | 8 | DSA top-2048 select (+causal recent window) | `topk_select` (in `dsa_indexer`) | index compare (argmax-style) |
 | 9 | IndexShare reuse (freq 4, offset 3) | `mla_attn_q4k` / block control + index cache | control |
-| 10 | QK^T over selected keys (qk 256) | inner attention in `mla_attn_q4k` (act×act) | **bf16** ×, fp32 acc → bf16 *(1/√d omitted, §4.1)* |
+| 10 | QK^T over selected keys (qk 256) | inner attention in `mla_attn_q4k` (act×act) | **bf16** ×, fp32 acc → bf16 *(1/√d applied, §4.1)* |
 | 11 | Causal mask + softmax over N≤2048 | `glm_softmax` | **bf16** max + exp-sum + probs |
 | 12 | A·V (v_head 256) + output proj W_o | AV in `mla_attn_q4k` (bf16) + `glm_matmul_q4k` (W_o) | bf16 AV / **Q4_K** W_o |
 | 13 | MoE router (W_g → sigmoid → top-8) | `moe_router_q4k` (W_g via `glm_matmul_q4k`) | **Q4_K** W_g GEMV, bf16 tail, fp32 score |
@@ -285,11 +295,11 @@ fp32 MAC → bf16); the activation×activation QK^T and A·V are **bf16** (`glm_
   (rotate (x[2i], x[2i+1]) — NOT rotate_half), **θ=8e6**, cos/sin from an **fp32 angle
   table** (position up to 2²⁰ makes θ^(−2i/64) span a range bf16 angles cannot resolve),
   applied in bf16.
-- **⚠️ KNOWN NUMERIC GAP — softmax scale.** The current `mla_attn_q4k` computes QK^T scores
-  **without** the `1/√qk_head_dim` softmax scale. Because there is no independent numeric golden
-  for the assembled model (§6) and the bf16-twin TB golden **omits the same scale**, this
-  divergence from the reference GLM-5.2 math is **silent** in the current tests. It is a real
-  **NOT-YET** correctness gap, not a proven-equivalent design choice.
+- **Softmax scale — gap FIXED.** `mla_attn_q4k` now applies the `1/√qk_head_dim` softmax scale
+  once at score capture (elaboration-time fp32 constant `SM_SCALE_F32`, bit-identical to the
+  numpy golden's `np.float32(1)/np.sqrt(np.float32(QK_DIM))`). The earlier omission was a real
+  correctness gap; it was exposed and closed by the assembled end-to-end golden
+  (`make model-q4k` vs `tools/glm_model_q4k_ref.py` — §6).
 - **Absorb mode (designed, [SYS-EST] — not in the as-built unit).** In decode one can fold W_uk
   into W_uq and W_uv into W_o so K/V are never materialized and attention runs directly on c_kv.
   The as-built `mla_attn_q4k` **materializes** K/V per key (sharing that fetch across the batch's
@@ -382,13 +392,17 @@ fp32 MAC → bf16); the activation×activation QK^T and A·V are **bf16** (`glm_
 This is the honest verification picture. Read "golden" carefully — the goldens are **the team's
 own** references, never the real GGUF bytes or llama.cpp.
 
-**(a) The one bit-exact-vs-ggml result — the Q4_K weight math.** `tools/q4k_ref.py` is an
-independent reimplementation of ggml's `dequantize_row_q4_K` + the Q4_K matmul contract. The RTL
-Q4_K primitives (`q4k.vh`: fp16→fp32 decode, `get_scale_min_k4`) and the Q4_K GEMM core
-(`glm_matmul_q4k`) are **bit-exact** to it: `make q4k` → `q4k_prim` **18/18**, `glm_matmul_q4k`
-**160/160**. This proves the *weight dequant → fp32 MAC → bf16* contract, **not** the assembled
-model and **not** the real GGUF/llama.cpp runtime (which uses Q8_K-quantized activations + integer
-dot — a different arithmetic contract).
+**(a) The bit-exact-vs-ggml results — the Q4_K weight math + the Q6_K/Q8_0/F16 mix.**
+`tools/q4k_ref.py` is an independent reimplementation of ggml's `dequantize_row_q4_K` + the Q4_K
+matmul contract. The RTL Q4_K primitives (`q4k.vh`: fp16→fp32 decode, `get_scale_min_k4`) and the
+Q4_K GEMM core (`glm_matmul_q4k`) are **bit-exact** to it: `make q4k` → `q4k_prim` **18/18**,
+`glm_matmul_q4k` **160/160**. The **mixed-type path** (Q6_K/Q8_0/F16: `src/q4k_mixed.vh` dequant
+primitives, per-column `w_type` routing in `glm_matmul_q4k`, `desc_wtype` in `weight_loader_q4k`)
+is bit-exact to the same reimpl golden: `make mixedtype` → `q6k_prim`, `q8_0_prim`,
+`glm_matmul_mixed` **32/32**, `weight_loader_q4k_mixed` **192/192** (incl. a 24-tile mixed
+sequence). This proves the *weight dequant → fp32 MAC → bf16* contract, **not** the real
+GGUF/llama.cpp runtime (which uses Q8_K-quantized activations + integer dot — a different
+arithmetic contract); the assembled model has its own golden, (c).
 
 **(b) Per-unit goldens are on the generic bf16/fp32 TWINS, not the `_q4k` product.** The
 `rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer`/`topk_select`, `mla_attn`, `mtp_head`,
@@ -399,13 +413,17 @@ The Q4_K operator wrappers are checked only **functionally / by invariant**: `sw
 **240/240** (functional, self-labeled — not bit-exact), `moe_router_q4k` **40/40**
 (renorm/top-K invariants — not a numeric golden).
 
-**(c) The assembled `glm_model_q4k` has NO end-to-end numeric golden — [NOT-YET].** Nothing
-asserts the assembled Q4_K forward pass matches ggml/llama.cpp (or even the bf16 twin) on logits.
-It is exercised **only** as **spec-decode == greedy self-consistency**: `spec_decode_top` **19/19**
-(`make unittests`) proves the speculative loop emits exactly what greedy would — but the "greedy
-golden" is *itself* a `glm_model_q4k` sharing the same weight ROMs (a real lossless-speculation
-safety property, a DUT-vs-DUT check, **not** a numeric golden). Larger loops (`spec_batched_top` /
-`spec_chain_top`) via `make spec-slow`.
+**(c) The assembled `glm_model_q4k` end-to-end numeric golden — DONE.** `make model-q4k` runs the
+full forward (embed → Lx(MLA+DSA+MoE) → final norm → LM head → argmax) against the numpy
+reference `tools/glm_model_q4k_ref.py`: **ALL 1155 TESTS bit-exact** (logits+argmax+h_state).
+`make model-q4k-acthw` repeats the same golden through the ACT_HW=1 serialized-activation
+datapath (also 1155) — ACT_HW is a result-invariant resource knob. The caveat that **stays**: the
+golden is the team's **own** numpy reimpl, **NOT** llama.cpp/GGUF — nothing yet asserts the
+forward pass matches the real GGUF bytes or llama.cpp's runtime. Separately,
+**spec-decode == greedy self-consistency**: `spec_decode_top` **19/19** (`make unittests`) proves
+the speculative loop emits exactly what greedy would — the "greedy golden" is *itself* a
+`glm_model_q4k` sharing the same weight ROMs (a lossless-speculation safety property, a
+DUT-vs-DUT check). Larger loops (`spec_batched_top` / `spec_chain_top`) via `make spec-slow`.
 
 **Numerics policy (as built — matches §3):**
 1. RMSNorm Σx² in **fp32** (6144 bf16 terms overflow bf16 precision), bf16 I/O.
@@ -416,15 +434,17 @@ safety property, a DUT-vs-DUT check, **not** a numeric golden). Larger loops (`s
 5. router **renorm-then-scale** order (checked by `moe_router_q4k`'s invariant TB).
    All fp32 ops are `glm_fp.vh`'s IEEE `fp32_mul`/`fp32_add` (no fixed-point Q-format).
 
-**⚠️ Known numeric gap:** MLA omits the `1/√qk_head_dim` softmax scale (§4.1) — silent because the
-bf16-twin TB golden omits it too, and there is no assembled-model golden to catch it.
+**Numeric gap closed:** MLA now applies the `1/√qk_head_dim` softmax scale (§4.1) — the earlier
+omission was exposed and fixed via the assembled-model golden (`make model-q4k`).
 
 **Quantization:** **weights Q4_K** (256-weight super-block: fp16 `d`/`dmin` + 6-bit scales +
 4-bit codes, dequant per ggml); **activations and the latent KV cache are bf16** — there is no
-activation quant and no INT8 cache (unlike the prior FP8 track). The RTL is **Q4_K-only**: the
-dynamic UD-Q4_K_XL mix keeps sensitive tensors at Q6_K/Q8_0/F16, for which the RTL has **no
-consumer** (`grep -ril 'q6_k|q8_0' src/` = 0) — a real checkpoint would be re-quantized to Q4_K
-(voids the moat) or fed pre-dequantized as bf16. **[NOT-YET]**
+activation quant and no INT8 cache (unlike the prior FP8 track). The RTL is **no longer
+Q4_K-only**: the dynamic UD-Q4_K_XL mix keeps sensitive tensors at Q6_K/Q8_0/F16, and the RTL now
+has consumers for all of them (`src/q4k_mixed.vh` dequant primitives, per-column `w_type` routing
+in `glm_matmul_q4k`, `desc_wtype` in `weight_loader_q4k` — `make mixedtype`, bit-exact to the
+same `tools/q4k_ref.py` reimpl golden, §6a). The chip CAN consume a real UD-Q4_K_XL checkpoint's
+type mix; bit-verification against the real GGUF bytes remains **[NOT-YET]**.
 
 **Structural / elaboration sign-off (not a sim):** the whole 2-clock Q4_K top
 (`glm_q4k_system_cdc`) passes yosys `hierarchy -check` + `check -assert` (`make synth-glm`, 0
@@ -432,9 +452,13 @@ unresolved); the full 753B UD-Q4_K_XL shape (`glm_model_q4k` at DIM 6144 / L=78 
 VOCAB 154880) elaborates clean (`test/full_config_elab_wrap.v`, `iverilog -tnull`, type/width only —
 *no stimulus, no golden, no run*).
 
-**Verification gates:** (1) iverilog functional vs golden (`make q4k` / `make unittests`);
-(2) yosys structural synth (`make synth-glm`); (3) **routed PnR / Fmax / LUT-DSP fit — [PENDING]**
-(Vivado/Gowin/nextpnr-blocked; no routed-netlist result in-repo).
+**Verification gates:** (1) iverilog functional vs golden (`make q4k` / `make unittests` /
+`make mixedtype` / `make model-q4k`); (2) yosys structural synth (`make synth-glm`); (3) routed
+PnR / Fmax / LUT-DSP fit — **MEASURED**: Vivado ML 2026.1 real synth + full place&route of
+`glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): **141,710 LUT (87.1%)**, 99.6K FF,
+**421 DSP**, 0 BRAM, hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through three bit-exact
+repipeline rounds, campaign ongoing — see `fpga/README.md` + `fpga/results/`. (The old
+Gowin/nextpnr scaffold was removed, superseded by the Vivado flow.)
 
 ---
 
@@ -532,11 +556,11 @@ The GEMM engine is the **Q4_K weight core `glm_matmul_q4k`** (with its bf16 sibl
   `tools/q4k_ref.py` (`make q4k`); the surrounding leaves get their own iverilog TB vs an
   fp32/fp64 golden of the same equation — but the `mla_attn`/`glm_model`/`mtp_head` goldens run
   against the **generic bf16 twins** (`src/glm_model.v` …), *not* the `_q4k` product (§6b).
-- yosys structural synth (`make synth-glm`); routed **PnR/Fmax — [PENDING]** (§6).
+- yosys structural synth (`make synth-glm`); routed PnR/Fmax — **measured** on Vivado/XCKU3P (§6).
 - Block bring-up: (a) attention sub-block vs the twin's golden attention; (b) FFN sub-block
   (router+experts+combine) — Q4_K units checked functionally / by invariant; (c) the **assembled
-  Q4_K model has no end-to-end numeric golden** — it is exercised only as **spec-decode == greedy
-  self-consistency** (`spec_decode_top` 19/19; §6c), **not** rel-err/argmax vs a numeric oracle.
+  Q4_K model is bit-exact vs its end-to-end numpy golden** (`make model-q4k`, all 1155 tests;
+  §6c), plus **spec-decode == greedy self-consistency** (`spec_decode_top` 19/19).
 
 ### 8.4 The CONCRETE FIRST unit to build
 
@@ -555,11 +579,11 @@ The GEMM engine is the **Q4_K weight core `glm_matmul_q4k`** (with its bf16 sibl
 
 | Proven by the buildable slice **[BUILT]** | Designed on paper **[SYS-EST]** |
 |---|---|
-| Q4_K weight core **bit-exact vs ggml ref** (`glm_matmul_q4k`, `q4k_prim`) | 725B cold-expert residency (1.45 TB bf16 / ~435 GB Q4_K) |
+| Q4_K weight core **bit-exact vs ggml ref** (`glm_matmul_q4k`, `q4k_prim`) + Q6_K/Q8_0/F16 mixed path (`make mixedtype`) | 725B cold-expert residency (1.45 TB bf16 / ~435 GB Q4_K) |
 | Per-unit twins vs fp32/fp64 golden (rmsnorm, rope, dsa, mla, mtp) | 94.2 GB 1M-context latent cache (bf16) |
 | Q4_K operators functional/invariant (swiglu 240, router 40) | Q4_K residency of the ~467 GB UD-Q4_K_XL image |
-| Assembled model = **spec==greedy self-consistency** (19/19) — *no numeric golden* | Multi-chip HBM farm + cross-chip expert sharding |
-| Structural sign-off: 753B-shape elaboration + whole-top synth | 512× FLOP-cap payoff at 1M context |
+| Assembled model **bit-exact vs own numpy golden** (`make model-q4k`, 1155) + spec==greedy (19/19) | Multi-chip HBM farm + cross-chip expert sharding |
+| Structural sign-off: 753B-shape elaboration + whole-top synth; routed Vivado PnR/Fmax on XCKU3P (`fpga/`) | 512× FLOP-cap payoff at 1M context |
 | PE_M batching + union-fetch (params present; bit-exact only on prior FP8 track) | Full-rate expert-stream bandwidth at 753B |
 
 ---
@@ -578,10 +602,14 @@ the 1M bottleneck to latent-cache bandwidth (the indexer's O(S) pass) rather tha
 Power follows the same story — NVMe/DDR traffic for expert + cache movement dwarfs the PE-array
 energy. The tok/s is **rung-dependent** (bandwidth set by IO pins/PHYs → budget): roughly
 **~5–8 tok/s on the prove-it FPGA (rung ①) → ~15–40 on the funded custom board (rung ②) → ~40+ at
-volume (rung ③)** with **~9 → ~3 J/token**, all **[EST]** until a Vivado fit + a running board —
-see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md). No routed PPA
-(LUT/DSP/Fmax) result is in-repo: routed PnR is **[PENDING]**; only structural yosys synth
-(`make synth-glm`) is done.
+volume (rung ③)** with **~9 → ~3 J/token**, all **[EST]** until a running board —
+see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md). A routed PPA
+result **is now in-repo**: Vivado ML 2026.1 real synth + full place&route of `glm_q4k_system_cdc`
+on XCKU3P (compact config + ACT_HW=1) — **141,710 LUT (87.1%)**, 99.6K FF, **421 DSP**, 0 BRAM,
+hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through three bit-exact fmax repipeline rounds
+(`rope_interleave_unit` 10-stage; `glm_act` 20-stage + rmsnorm reduce/rsqrt; `glm_matmul_q4k`
+dequant+MAC 5-stage), campaign ongoing — see `fpga/README.md` + `fpga/results/`. ACT_HW is a
+result-invariant resource knob (`glm_act` HW_LANES serialization).
 
 > **Prior-FP8 note.** Earlier revisions of this doc/track carried specific **FP8** measurements
 > (sky130 PPA slack, LUT/DSP counts, cycle counts, byte/BOM figures). Those are **prior-FP8**
@@ -591,5 +619,6 @@ see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md)
 ---
 
 *Buildable RTL under `src/` (`glm_*_q4k` compute + memory-system modules). Q4_K GEMM golden
-`tools/q4k_ref.py`; per-unit/block TBs under `test/`. The Q4_K weight core is the one
-bit-exact-vs-ggml result; the assembled model is exercised as spec==greedy self-consistency.*
+`tools/q4k_ref.py`; per-unit/block TBs under `test/`. The Q4_K weight core and the Q6_K/Q8_0/F16
+mixed path are bit-exact vs the ggml reimpl; the assembled model is bit-exact vs its own
+end-to-end numpy golden (`make model-q4k`) and also exercised as spec==greedy self-consistency.*

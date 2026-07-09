@@ -7,8 +7,18 @@ remains is: (1) the four **system tops**, (2) the **weight path** (loader / pack
 cache / fabric sizing + per-tensor type map), (3) **FP8 removal** from `main`, and
 (4) the **Makefile** Q4 gate. This document enumerates each precisely.*
 
+*STATUS (2026-07): all four have since **landed on `main`** — the `glm_q4k_*` tops exist
+(`make synth-glm` signs off `-top glm_q4k_system_cdc`), the Q4_K weight path **including
+the mixed-type Q6_K/Q8_0/F16 consumers** is in and gated (`make q4k`, `make mixedtype`),
+FP8 is **removed from `main`** (§3 executed), and the Makefile gate is wired — plus the
+assembled full-forward numeric goldens `make model-q4k` / `make model-q4k-acthw`
+(ALL 1155 TESTS bit-exact vs `tools/glm_model_q4k_ref.py`). Still OPEN: bit-exactness vs
+the real GGUF bytes / llama.cpp runtime. The sections below stand as the executed-plan
+record, with per-section (DONE) notes.*
+
 Companion: `docs/Q4K_RETARGET.md` (numerics + leaf/operator status, already ✅). The FP8
-baseline is preserved on branch `fp8` (+ tag `fp8-verified-baseline`); **delete nothing now.**
+baseline is preserved on branch `fp8` (+ tag `fp8-verified-baseline`); the §3 deletion
+has since been executed on `main`.
 
 ---
 
@@ -45,6 +55,9 @@ Four tops, in dependency order. Each is a **copy → swap the die instance → s
 forwarded weight ports → recompute the `_NB→_NSB` derived params**. No datapath math is
 touched. Recommended new names: `glm_q4k_soc.v`, `glm_q4k_soc_ms.v`, `glm_q4k_system.v`,
 `glm_q4k_system_cdc.v` (siblings, so the FP8 tops stay buildable until §3 deletes them).
+**(DONE — all four `glm_q4k_*` tops landed under these names; §3 has since deleted the
+FP8 siblings. Gated by `synth-glm` elaboration + Verilator lint; dedicated top TBs are
+still open.)**
 
 ### 1.1 `glm_fp8_soc.v` → `glm_q4k_soc.v` (548 lines)
 The minimal SoC: die + `expert_cache_pf` + `kv_cache_pager` + single Flash arbiter.
@@ -101,7 +114,7 @@ optional `weight_decomp`.
 
 ### 1.4 `glm_fp8_system_cdc.v` → `glm_q4k_system_cdc.v` (571 lines) — the synth top
 Two-clock CDC wrapper. `make synth-glm` elaborates **this** as the whole-chip sign-off top
-(`hierarchy -top glm_fp8_system_cdc`).
+(was `hierarchy -top glm_fp8_system_cdc`; DONE — now `-top glm_q4k_system_cdc`).
 
 - **Instance to swap:** `u_core : glm_fp8_system` → `glm_q4k_system` (line ~399).
 - **Weight-bus re-port + `_NB→_NSB`:** as §1.1 — the CDC wrapper just forwards the same
@@ -126,7 +139,7 @@ FP8 checkpoint) runs with **no re-quantization**.
 weight**; blended with the Q6_K/Q8_0/F16 sensitive-tensor tail, the whole checkpoint lands
 at 467/753 = **62% → ~38% smaller**.
 
-### 2.1 `weight_loader.v` — the byte-layout rewrite (the real work)
+### 2.1 `weight_loader.v` — the byte-layout rewrite (the real work) — DONE (`src/weight_loader_q4k.v` + `test/weight_loader_q4k_tb.v`)
 Current loader (265 lines) reads a **word-addressed FP8 tile**: a SCALE region
 (`nblk*PE_N` bf16 words, one per (K-block, column)) then a CODE region (`k_len` words, each
 `word[8*pj+:8]=W[k][pj]`, one FP8 byte/column). It drives `glm_matmul_fp8`'s pull
@@ -151,7 +164,7 @@ Retarget → `weight_loader_q4k.v` driving `glm_matmul_q4k`'s pull:
   driving `glm_matmul_q4k` and checking the streamed result bit-exactly against
   `tools/q4k_ref.py` (the same golden the leaf TBs already use).
 
-### 2.2 `tools/ckpt_pack.py` — the memory-image / GGUF packer (rewrite)
+### 2.2 `tools/ckpt_pack.py` — the memory-image / GGUF packer (rewrite) — landed as `tools/ckpt_pack_q4k.py`
 Current packer (419 lines) parses HF `zai-org/GLM-5.2-FP8` (safetensors: `.weight`
 F8_E4M3 + `.weight_scale_inv` F32/BF16 + bf16 tail) and emits the FP8 `weight_mem.hex`
 that `weight_loader.v` reads. It imports `glm_fp8_ref` for `fp32_to_bf16`.
@@ -200,24 +213,29 @@ at the system level is **routing the type per tensor**:
 - **Source of truth:** the GGUF tensor-info table's ggml-type enum per tensor (read by the
   §2.2 packer). The packer emits, alongside `weight_mem.hex`, a **per-tensor type manifest**
   (`name → {type, base, k_len, n_sblk}`).
-- **RTL selection:** `glm_matmul_q4k` today assumes Q4_K. For the mixed model either
+- **RTL selection (DONE — option (b) landed):** `glm_matmul_q4k` originally assumed Q4_K.
+  For the mixed model either
   (a) keep a single Q4_K core and pre-dequant Q6_K/Q8_0/F16 tensors to the Q4_K bus in the
   loader, or (b) add a small per-tile `w_type` input that switches the dequant function
   (all four dequants are combinational `function automatic` in `q4k.vh`). Option (b)
   preserves each sensitive tensor at its native GGUF type (no lossy re-quant to Q4_K),
   keeping the loaded weight image byte-faithful to the checkpoint — note this is
   **weight-image fidelity, not inference bit-exactness vs llama.cpp** (which remains OPEN:
-  the RTL uses bf16 acts + fp32 accumulate, a different arithmetic contract), and the
-  mixed-type consumer itself is **NOT-YET** (the RTL datapath is Q4_K-only today). It is a
-  **loader + one mux** change, no new math. The type comes from the §2.2 manifest, latched
-  per tile at `start`.
+  the RTL uses bf16 acts + fp32 accumulate, a different arithmetic contract). The
+  mixed-type consumer is **DONE**: `src/q4k_mixed.vh` dequant primitives, per-column
+  `w_type` routing in `src/glm_matmul_q4k.v`, `desc_wtype` in `src/weight_loader_q4k.v` —
+  gated by `make mixedtype` (`q6k_prim`, `q8_0_prim`, `glm_matmul_mixed` 32/32,
+  `weight_loader_q4k_mixed` 192/192 incl. a 24-tile mixed sequence), bit-exact to the same
+  `tools/q4k_ref.py` reimpl golden (still not bit-verified vs the real GGUF bytes). The
+  type comes from the §2.2 manifest, latched per tile at `start`.
 
 ---
 
-## 3. FP8 removal from `main` (DO NOT DELETE NOW — preserved on branch `fp8`)
+## 3. FP8 removal from `main` (DONE — executed; preserved on branch `fp8`)
 
 Once the Q4_K datapath is complete (§1–§2 landed + gated green), delete the FP8 track from
-`main` in one commit. **All of this is preserved on branch `fp8` + tag
+`main` in one commit. **(DONE — this removal has been executed on `main`; the list below
+is the record of what was removed.)** **All of this is preserved on branch `fp8` + tag
 `fp8-verified-baseline`.** Exact list:
 
 **`src/` (FP8 datapath — 9 files):**
@@ -274,10 +292,13 @@ source list, and the `cdc` sim target's FP8 wiring. Retire `full_config_elab_wra
 
 ## 4. Makefile — the Q4 gate
 
-**Today:** the Makefile has **zero** `q4k` targets; the four Q4_K unit TBs
-(`q4k_prim`, `glm_matmul_q4k`, `swiglu_expert_q4k`, `moe_router_q4k`) exist and pass but are
-**not wired into any gate**. `all: unittests synth-glm formal`, and `synth-glm` elaborates
-`-top glm_fp8_system_cdc`.
+**At planning time:** the Makefile had **zero** `q4k` targets; the four Q4_K unit TBs
+(`q4k_prim`, `glm_matmul_q4k`, `swiglu_expert_q4k`, `moe_router_q4k`) existed and passed but
+were **not wired into any gate**. `all: unittests synth-glm formal`, and `synth-glm`
+elaborated `-top glm_fp8_system_cdc`. **(DONE — `q4k` is now wired into `unittests`, joined
+by the `mixedtype` sub-gate and the assembled `model-q4k` / `model-q4k-acthw` full-forward
+goldens, and `synth-glm` elaborates `-top glm_q4k_system_cdc` — the "After §3" shape in
+§4.2 is the live state.)**
 
 ### 4.1 Add a `q4k` sub-gate (verified recipes — all four build & pass green today)
 Add a `.PHONY: q4k` target, invoked by `unittests` (or run standalone). The exact recipes,
@@ -335,6 +356,11 @@ Phased, so the FP8 gate keeps passing until §3:
 ---
 
 ## 5. Ordered execution checklist
+
+*(Status: steps 1, 5, 6 and 8 are DONE; steps 2–3 landed the four tops (their dedicated
+top TBs remain open — the tops are gated by `synth-glm` elaboration + lint); step 4 landed
+as `tools/ckpt_pack_q4k.py` with its synthetic-GGUF round-trip self-test. Still OPEN:
+bit-exactness vs the real GGUF bytes / llama.cpp.)*
 
 1. **`weight_loader_q4k.v` + `weight_loader_q4k_tb`** (§2.1) — the byte-layout keystone;
    verify bit-exact to `q4k_ref` driving `glm_matmul_q4k`.

@@ -17,7 +17,7 @@ lands.
 
 | Piece | Status |
 |---|---|
-| Device protocol (`aipu_device.py`) | **real** — mirrors `glm_fp8_system_cdc`'s host interface exactly (`start`/`prompt_tok`/`start_pos`/`s_len` → `busy`/`done`/`next_tok`/`tok_valid`) + the boot-loader-done readiness gate |
+| Device protocol (`aipu_device.py`) | **real** — mirrors `glm_q4k_system_cdc`'s host interface exactly (`start`/`prompt_tok`/`start_pos`/`s_len` → `busy`/`done`/`next_tok`/`tok_valid`) + the boot-loader-done readiness gate |
 | OpenAI API surface (`aipu_server.py`) | **real** — `/v1/models`, `/v1/chat/completions` (streaming SSE + non-streaming), `/health`; stdlib only, 0 deps |
 | Generation loop | **real** — prefill → autoregressive decode → token streaming |
 | Tokenizer | **both** — byte-level (stdlib, exact round-trip) **and the REAL GLM-5.2 BPE** (`tokenizer.json` via the `tokenizers` lib); `make_tokenizer()` picks GLM when available, else byte. Verified: round-trips English / Korean / code, streaming-safe across multi-byte chars (tokenizer vocab 154856 tokens, eos `<\|endoftext\|>`=154820; the RTL config / LM-head width pads this to **154880** = next multiple of 128, so RTL-side docs quote 154880) |
@@ -117,7 +117,7 @@ From the `openai` Python SDK:
 ```python
 from openai import OpenAI
 c = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
-print(c.chat.completions.create(model="aipu-glm-5.2-fp8",
+print(c.chat.completions.create(model="aipu-glm-5.2-q4k",
       messages=[{"role": "user", "content": "hi"}]).choices[0].message.content)
 ```
 
@@ -141,14 +141,16 @@ loop, streaming, tokenizer, and OpenAI surface are unchanged.
 - **`MockDevice`** (`--backend mock`, default) — replays a canned reply through the
   protocol; zero deps, instant. Proves the plumbing for byte OR GLM vocab.
 - **`SimulatorBackend`** (`--backend sim`, `aipu_sim_backend.py`) — **implemented**:
-  runs the committed `glm_model_fp8` slice via its iverilog/`vvp` build and returns the
+  runs the prior-track `glm_model_fp8` slice via its iverilog/`vvp` build and returns the
   **REAL argmax tokens the RTL forward pass produces** (measured: `{4, 31, 20}`), wired
   into the device protocol — the *server → real RTL → real token* co-sim path. Honest
   caveats: **SLOW** (~12 min/run — measured 752 s, cached per process, not interactive);
   **slice** model (VOCAB=256, untrained → real datapath outputs, not language);
   **fixed** testbench vectors (arbitrary-prompt drive needs the model's full weight/KV
-  pull-port ROM harness — a larger TB effort). Needs `build/glm_model_fp8_sim`
-  (`make unittests`, ~8 min once).
+  pull-port ROM harness — a larger TB effort); and the `glm_model_fp8` slice has since been
+  **removed from `main`** (preserved on branch `fp8`) — the backend still points at
+  `build/glm_model_fp8_sim` (buildable on branch `fp8`) and is being **retargeted to
+  `glm_model_q4k`**.
 - **`USBBackend`** (to build at D1) — the real USB-C driver: enumerate the device, send
   the token/control words over the bulk endpoint, read back `next_tok` (the CDC host
   interface is already in the RTL). Pairs with the GLM tokenizer + a chat template.

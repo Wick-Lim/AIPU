@@ -14,13 +14,15 @@
 > **Honest scope of the Q4_K proof** (per the evidence ledger, consistent with the
 > [README](../README.md) *What's proven* table). `make q4k` proves the Q4_K **GEMM core**
 > (`glm_matmul_q4k`) **bit-exact to the team's own ggml-Q4_K reference** (`tools/q4k_ref.py`) — **not**
-> "bit-exact to the real UD-Q4_K_XL file": the RTL is **Q4_K-only** (no Q6_K/Q8_0/F16, which the dynamic
-> UD mix keeps for sensitive tensors) and is never checked against the real GGUF bytes or llama.cpp
-> arithmetic. The **assembled** `glm_model_q4k` has **no end-to-end numeric golden** — it is exercised
-> only as **spec==greedy self-consistency** (DUT-vs-DUT, the "greedy golden" is itself a `glm_model_q4k`).
-> Every tok/s, FPGA-fit, BOM/TCO, and LOI figure is **[EST]/[PENDING]**, not measured. These OPEN items —
-> **assembled-Q4_K numeric golden, mixed-type Q6_K/Q8_0/F16 path, real-checkpoint validation, FPGA fit**
-> — are exactly what the gates below are framed around.
+> "bit-exact to the real UD-Q4_K_XL file": the RTL now also consumes **Q6_K/Q8_0/F16** (per-column
+> `w_type` routing, `make mixedtype`, bit-exact to the same reference) but is never checked against the
+> real GGUF bytes or llama.cpp arithmetic. The **assembled** `glm_model_q4k` now has an **end-to-end
+> numeric golden** — `make model-q4k`: full forward vs the numpy reference `tools/glm_model_q4k_ref.py`,
+> ALL 1155 tests bit-exact (logits+argmax+h_state; plus `make model-q4k-acthw` through the ACT_HW=1
+> datapath) — but that golden is still our own numpy reimpl, NOT llama.cpp/GGUF. The **FPGA fit is
+> measured** (Vivado ML 2026.1 synth + full P&R on XCKU3P — see P3.2); every tok/s, BOM/TCO, and LOI
+> figure remains **[EST]**, not measured. The remaining OPEN item — **real-checkpoint validation vs the
+> real GGUF bytes / llama.cpp** — is exactly what the gates below are framed around.
 
 The `prototype` branch (frozen at `47fb7f8`) holds the **prior FP8 research prototype**: the full FP8
 datapath + memory system + ultra-perf batching stack, bit-exact and mechanism-proven at a
@@ -70,14 +72,14 @@ scale, robustly, and ship it.*
 
 | Dimension | Have (Q4_K, verified in-repo) | Product (need) |
 |---|---|---|
-| Correctness scope | **Q4_K GEMM core bit-exact to the ggml-Q4_K reference** (`glm_matmul_q4k` 160/160, `q4k_prim` 18/18 vs `tools/q4k_ref.py`); `swiglu_expert_q4k` functional (240); `moe_router_q4k` structural invariants (40); the **assembled** `glm_model_q4k` exercised only as **spec==greedy self-consistency** (DUT-vs-DUT, no numeric golden) | an **assembled-Q4_K end-to-end numeric golden**, then the **full 467 GB UD-Q4_K_XL checkpoint** producing the real model's tokens **at full depth** end-to-end (real-checkpoint validation) |
-| Format coverage | **Q4_K-only** (`grep -ril 'q6_k\|q8_0\|w_type' src/` = 0); Q6_K/Q8_0/F16 have Python-only goldens in `q4k_ref.py` with **no RTL consumer** | a **mixed-type consumer** so the chip ingests a real UD-Q4_K_XL checkpoint as-is (sensitive tensors kept at Q6_K/Q8_0/F16, not re-quantized to Q4_K) |
+| Correctness scope | **Q4_K GEMM core bit-exact to the ggml-Q4_K reference** (`glm_matmul_q4k` 160/160, `q4k_prim` 18/18 vs `tools/q4k_ref.py`); `swiglu_expert_q4k` functional (240); `moe_router_q4k` structural invariants (40); the **assembled** `glm_model_q4k` full forward **bit-exact vs the numpy reference** `tools/glm_model_q4k_ref.py` (`make model-q4k`, ALL 1155 tests: logits+argmax+h_state; `make model-q4k-acthw` same golden through the ACT_HW=1 datapath) — plus spec==greedy self-consistency | the **full 467 GB UD-Q4_K_XL checkpoint** producing the real model's tokens **at full depth** end-to-end (real-checkpoint validation — the assembled golden is our own numpy reimpl, not llama.cpp/GGUF) |
+| Format coverage | **Mixed-type DONE**: Q6_K/Q8_0/F16 dequant primitives (`src/q4k_mixed.vh`), per-column `w_type` routing in `glm_matmul_q4k`, `desc_wtype` in `weight_loader_q4k` — `make mixedtype` (`q6k_prim`, `q8_0_prim`, `glm_matmul_mixed` 32/32, `weight_loader_q4k_mixed` 192/192 incl. a 24-tile mixed sequence), bit-exact vs `q4k_ref.py` — the chip CAN now consume a real UD-Q4_K_XL type mix | bit-verify the mixed-type path **vs the real GGUF bytes** (still unchecked against llama.cpp arithmetic) |
 | Scale | small faithful slice (128/6/8); the **full 753 B UD-Q4_K_XL config elaborates clean** (`test/full_config_elab_wrap.v`, verilator 0 errors; `make synth-glm` yosys `check -assert` exit 0) — **structure only, not a sim** | full config *functionally simulated/run* (6144, 78 layers, 256 experts, vocab 154880, 1 M ctx) — currently intractable (LM-head GEMV alone ~2.4e8 K-beats/token) |
 | Batching/KV | per-row position/extent/sequence (`PER_ROW_POS/SLEN/SEQ`) threaded model→decoder→mla; `kv_cache_pager` `NSEQ` independent ring windows; multi-sequence batched attention (`PER_ROW_SEQ`) end-to-end through `glm_model_q4k`; batched multi-seq top `glm_q4k_soc_ms` with a top-owned per-layer KV store (`kv_mem`) + `N_STEPS` continuous-batching decode loop; expert-union-skip MoE batching **folded inline into `glm_decoder_block_q4k`** (standalone `batched_moe.v` removed); `spec_chain_top` MTP-chain draft — **all validated as per-row / spec==greedy self-consistency (DUT-vs-DUT vs a standalone PE_M=1 `glm_model_q4k`), not a numeric golden**; byte-identical at `PER_ROW_SEQ=0` | a resident dense DRAFT model (K_eff↑, needs a trained draft's weights); real-checkpoint validation on a GPU/large host |
 | Memory | DDR5/NVMe/USB-C **PHYs stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (7 controllers + 1 ECC-ring) + 5 lifted to unbounded k-induction (`make formal`/`formal-ind`); directed TBs at slice; verilator line/toggle/branch coverage (`make coverage`) | coverage *closure*, constrained-random regression, gate-level sim, production-width formal |
 | Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`) — but `mbist_ctrl`/`icg_cell` **not yet instantiated** in `glm_q4k_system*` | full ECC/recovery, CDC sign-off, reset/init hardening, DFT/scan closed |
-| Physical | slice-scale yosys estimates; the six memory controllers alone sum to ~71,475 LUT4 (~85% of an ECP5-85), so the full system needs a larger FPGA; **prior-FP8 sky130 realizability** on branch `fp8` (see below) | full synth + **FPGA** P&R + timing closure via the vendor flow → **bitstream** (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
+| Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 141,710 LUT (87.1%), 99.6K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over three bit-exact repipeline rounds, campaign ongoing (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | Fmax timing-closure campaign completed → **bitstream** on a board (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
 | Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend being retargeted from the prior `glm_model_fp8` path to `glm_model_q4k`) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
@@ -87,19 +89,29 @@ scale, robustly, and ship it.*
 
 **Real-checkpoint full-model fidelity.** Until the actual GLM-5.2 Q4_K weights produce the actual model's
 next tokens through our datapath, there is no product. On the Q4_K track that gate is **not one step but a
-short chain of OPEN items** (per the evidence ledger — none of these is done):
+short chain** (per the evidence ledger — steps 1–2 are now **DONE**, step 3 remains **OPEN**):
 
-1. **Assembled-Q4_K numeric golden** *(new, top priority — `NEXT_STEPS_PLAN.md` B9)*. Today the assembled
-   `glm_model_q4k` (including the `mla_attn_q4k` `1/sqrt(d_head)` softmax scale) is checked **only** as
+1. **Assembled-Q4_K numeric golden** *(`NEXT_STEPS_PLAN.md` B9)*. Previously the assembled
+   `glm_model_q4k` (including the `mla_attn_q4k` `1/sqrt(d_head)` softmax scale) was checked **only** as
    spec==greedy self-consistency — a real lossless-speculation safety property, but **DUT-vs-DUT**, whose
-   reference is itself a `glm_model_q4k`. Nothing asserts the assembled Q4_K forward pass matches a ggml /
+   reference is itself a `glm_model_q4k`. Nothing asserted the assembled Q4_K forward pass matches a ggml /
    reference numeric golden. **Build a TB that compares a 1-token `glm_model_q4k` forward against an
    independent assembled ggml-Q4_K reference** (an extension of `tools/q4k_ref.py` beyond the GEMM core).
-2. **Mixed-type Q6_K/Q8_0/F16 consumer** *(new — B10)*. The RTL is Q4_K-only, so it **cannot consume a real
+   **(DONE — `make model-q4k`: `glm_model_q4k` full forward — embed → L×(MLA+DSA+MoE) → final norm → LM
+   head → argmax — vs the numpy reference `tools/glm_model_q4k_ref.py`, ALL 1155 tests bit-exact on
+   logits+argmax+h_state; plus `make model-q4k-acthw`, the same golden through the ACT_HW=1
+   serialized-activation datapath, also 1155. The golden is still our own numpy reimpl, NOT
+   llama.cpp/GGUF — that gap is step 3.)**
+2. **Mixed-type Q6_K/Q8_0/F16 consumer** *(B10)*. The RTL was Q4_K-only, so it **could not consume a real
    UD-Q4_K_XL checkpoint as-is** — the dynamic mix keeps sensitive tensors at Q6_K/Q8_0/F16, for which
-   `q4k_ref.py` has Python goldens with no RTL consumer. Add an RTL dequant path (per-tensor `w_type`
+   `q4k_ref.py` had Python goldens with no RTL consumer. Add an RTL dequant path (per-tensor `w_type`
    routing) so those tensors are consumed at their real precision (not re-quantized to Q4_K, which would
    void the fidelity of the moat).
+   **(DONE — `make mixedtype`: Q6_K/Q8_0/F16 dequant primitives in `src/q4k_mixed.vh`, per-column
+   `w_type` routing in `src/glm_matmul_q4k.v`, `desc_wtype` in `src/weight_loader_q4k.v`; `q6k_prim` /
+   `q8_0_prim`, `glm_matmul_mixed` 32/32, `weight_loader_q4k_mixed` 192/192 incl. a 24-tile mixed
+   sequence — all bit-exact to the same `tools/q4k_ref.py` golden. The chip CAN now consume a real
+   UD-Q4_K_XL checkpoint's type mix; still not bit-verified vs the real GGUF bytes — step 3.)**
 3. **Real-checkpoint validation** *(the standing OPEN #1 fidelity gate — `NEXT_STEPS_PLAN.md` D1)*. On a
    GPU / large-memory host: run the real 753 B GLM (llama.cpp / the real GGUF) on a prompt → golden
    next-token argmax; run our datapath (assembled-Q4_K golden from step 1, mixed-type from step 2) on the
@@ -116,10 +128,11 @@ thing the slice and the spec==greedy self-consistency cannot.
 
 ### P1 — Full-scale + real-model correctness  *(gates everything)*
 - **P1.1 The Q4_K fidelity chain (above). Blocking.**
-  - P1.1a Assembled-Q4_K numeric golden (B9) — **OPEN**, top priority.
-  - P1.1b Mixed-type Q6_K/Q8_0/F16 consumer (B10) — **OPEN**.
-  - P1.1c Real-checkpoint validation vs llama.cpp / the real GGUF (D1) — **OPEN**, needs a GPU/large host
-    and depends on P1.1a+P1.1b.
+  - P1.1a Assembled-Q4_K numeric golden (B9) — **DONE** (`make model-q4k` + `model-q4k-acthw`: 1155
+    bit-exact vs `tools/glm_model_q4k_ref.py`).
+  - P1.1b Mixed-type Q6_K/Q8_0/F16 consumer (B10) — **DONE** (`make mixedtype`, bit-exact vs `q4k_ref.py`).
+  - P1.1c Real-checkpoint validation vs llama.cpp / the real GGUF (D1) — **OPEN**, needs a GPU/large host;
+    its prerequisites P1.1a+P1.1b are now done.
 - **P1.2 Scale the RTL/params to the full config.** **ELABORATED (done — structure only, not a sim):** the
   full 753 B UD-Q4_K_XL shape (DIM 6144 / L=78 / 256-expert top-8 / VOCAB 154880 / Q_LORA 2048 / KV_LORA
   512 **[PENDING safetensors]**) elaborates clean via `test/full_config_elab_wrap.v` (verilator, 0 errors —
@@ -194,9 +207,14 @@ thing the slice and the spec==greedy self-consistency cannot.
   data-center-class FPGA + on-board DDR + NVMe (M.2/PCIe) runs the real model streamed; bitstream via the
   vendor flow. This is a **staged ladder**: rung ① (low-end FPGA, Kintex US+ KU3P-class + DDR4, ~5–8 tok/s
   [EST]) proves it cheap, rung ② (custom mid-FPGA board, DDR5/HBM, ~15–40 tok/s [EST]) is the funded
-  interactive product. **The routed FPGA fit (LUT/DSP/BSRAM/Fmax) is [PENDING]** — no PnR/Fmax result is
-  in-repo; the [`fpga/`](../fpga/README.md) vendor-flow scaffold + [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)
-  exist to close it (needs Gowin/Vivado + a board, a user step).
+  interactive product. **The routed FPGA fit is MEASURED** — Vivado ML 2026.1 real synth + full
+  place&route of `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): 141,710 LUT (87.1%),
+  99.6K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz through three BIT-EXACT fmax
+  repipeline rounds (`rope_interleave_unit` 10-stage; `glm_act` 20-stage + rmsnorm reduce/rsqrt;
+  `glm_matmul_q4k` dequant+MAC 5-stage), campaign ongoing — see [`fpga/`](../fpga/README.md) +
+  `fpga/results/` and [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md). (The old Gowin GW5AT-138 / Tang Mega /
+  nextpnr scaffold was removed, superseded by the Vivado flow. ACT_HW is a new result-invariant resource
+  knob — `glm_act` HW_LANES serialization.)
   - **Why FPGA first, ASIC at volume:** the workload is **memory-bandwidth-bound** — performance is set by
     memory bandwidth, which is set by the chip's IO pins + hard PHYs, which is set by budget. The FPGA rungs
     prove the RTL on real silicon and reach product-market fit *without* a multi-million NRE bet. An **ASIC
@@ -212,9 +230,9 @@ thing the slice and the spec==greedy self-consistency cannot.
 
 ### P4 — System, software, manufacturing
 - P4.1 PCB: multi-layer controlled-impedance board (FPGA + DDR5/HBM + NVMe via M.2/PCIe + USB-C), BOM,
-  assembly. (This is the **rung ② custom product board**; the Tang Mega 138K Pro dev board — 32 MB onboard
-  Flash + 1 GB soldered DDR3 — is bring-up/reduced-demo only, not the shipping hardware —
-  [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md).)
+  assembly. (This is the **rung ② custom product board**; the rung-① KU3P-class dev board is
+  bring-up/reduced-demo only, not the shipping hardware — the prior Gowin Tang Mega 138K Pro target was
+  removed, superseded by the Vivado/XCKU3P flow — [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md).)
 - P4.2 Software stack: USB-C host driver, tokenizer, the checkpoint→NVMe quant-layout pipeline
   (productionize `ckpt_pack_q4k.py`/`flash_layout.py`), inference runtime + continuous-batch scheduler.
 - P4.3 Qualification: reliability (temp/voltage/aging), compliance (USB-C, EMI), yield/binning.
@@ -250,16 +268,20 @@ thing the slice and the spec==greedy self-consistency cannot.
 
 ## Immediate next step (product)
 
-**Start the P1.1 Q4_K fidelity chain** — the standing gate:
-1. **P1.1a Assembled-Q4_K numeric golden** (`NEXT_STEPS_PLAN.md` B9) — the top OPEN item; move the
+**Finish the P1.1 Q4_K fidelity chain** — the standing gate (1, 2, and 4 below are now closed; 3 remains):
+1. **P1.1a Assembled-Q4_K numeric golden** (`NEXT_STEPS_PLAN.md` B9) — was the top OPEN item: move the
    assembled `glm_model_q4k` from spec==greedy self-consistency to an actual numeric match vs an assembled
    ggml-Q4_K reference (including the MLA `1/sqrt(d_head)` scale). This is the one thing the slice and the
-   spec loops cannot do.
+   spec loops cannot do. **(DONE — `make model-q4k` / `model-q4k-acthw`: full forward vs
+   `tools/glm_model_q4k_ref.py`, 1155 tests bit-exact.)**
 2. **P1.1b Mixed-type Q6_K/Q8_0/F16 consumer** (B10) — so the chip can ingest a real UD-Q4_K_XL checkpoint
-   as-is.
-3. **P1.1c Real-checkpoint validation** (D1, needs a GPU host) — the #1 fidelity gate, gated on 1+2.
-4. **FPGA fit** (P3.2 / [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md), needs Gowin/Vivado + a board) — the
-   routed LUT/DSP/BSRAM/Fmax that sets device size / thermal / BOM / price.
+   as-is. **(DONE — `make mixedtype`, bit-exact vs `q4k_ref.py`.)**
+3. **P1.1c Real-checkpoint validation** (D1, needs a GPU host) — the #1 fidelity gate, gated on 1+2
+   (both now done).
+4. **FPGA fit** (P3.2 / [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)) — the routed LUT/DSP/Fmax that sets
+   device size / thermal / BOM / price. **(MEASURED — Vivado ML 2026.1 full P&R of `glm_q4k_system_cdc`
+   on XCKU3P: 141,710 LUT (87.1%), 421 DSP, 0 BRAM, routed Fmax 46.5 MHz after three bit-exact repipeline
+   rounds, campaign ongoing; see [`fpga/`](../fpga/README.md).)**
 
 The per-position causal-KV / batched-decode gap (the prototype's PE_M shared-pos limitation) is **largely
 closed** on `main` — per-row position/extent/sequence (`PER_ROW_SEQ`) and the multi-step

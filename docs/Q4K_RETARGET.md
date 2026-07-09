@@ -18,21 +18,27 @@ full-frontier + turnkey per-seat**, not GGUF bit-exactness.
 
 ## The numerics (leaf GEMM core + dequant — bit-exact to the ggml reference `q4k_ref.py`)
 *Scope: the **leaf** Q4_K dequant + GEMM core is bit-exact to our own ggml reimpl
-`tools/q4k_ref.py`. An end-to-end numeric golden for the **assembled** `glm_model_q4k`
-DOES NOT EXIST (NOT-YET; the assembled path is exercised only inside the spec loops,
-DUT-vs-DUT — see README's NOT-YET rows).*
+`tools/q4k_ref.py`. The end-to-end numeric golden for the **assembled** `glm_model_q4k`
+is DONE: `make model-q4k` runs the full forward (embed → Lx(MLA+DSA+MoE) → final norm →
+LM head → argmax) vs the numpy reference `tools/glm_model_q4k_ref.py` — **all 1155 tests
+bit-exact** (logits+argmax+h_state); `make model-q4k-acthw` repeats the same golden through
+the ACT_HW=1 serialized-activation datapath (also 1155). The golden is still our own numpy
+reimpl, NOT llama.cpp/GGUF.*
 
 UD-Q4_K_XL is a **dynamic mix**: most tensors Q4_K, sensitive ones kept at higher precision
-(Q6_K / Q8_0 / F16). In the *reference* every type dequantizes exactly per ggml; **in RTL the
-datapath is Q4_K-only today** (Q6_K/Q8_0/F16 have Python-only goldens in `q4k_ref.py` with
-**no RTL consumer** — the mixed-type path is NOT-YET; see `Q4K_SYSTEM_PLAN.md §2.5`).
+(Q6_K / Q8_0 / F16). Every type dequantizes exactly per ggml in the reference **and in RTL**:
+`src/q4k_mixed.vh` dequant primitives + per-column `w_type` routing in `src/glm_matmul_q4k.v`
++ `desc_wtype` in `src/weight_loader_q4k.v`. Gated by `make mixedtype` (q6k_prim, q8_0_prim,
+glm_matmul_mixed **32/32**, weight_loader_q4k_mixed **192/192** incl. a 24-tile mixed
+sequence), bit-exact to the same `q4k_ref.py` golden — the chip can now consume a real
+UD-Q4_K_XL checkpoint's type mix (still not bit-verified vs the real GGUF bytes).
 
 | Type | Block | Dequant | Golden | RTL consumer |
 |---|---|---|---|---|
 | **Q4_K** | 256 wt / 144 B: fp16 d,dmin + 12B 6-bit scales/mins + 128B 4-bit | `w=(d·sc)·q−(dmin·m)` | `q4k_ref.py` (ggml) | `q4k.vh` **18/18** + `glm_matmul_q4k.v` **160/160** (bit-exact vs ggml Q4_K) |
-| **Q6_K** | 256 wt / 210 B: fp16 d + ql/qh (6-bit signed) + int8 scales[16] | `w=d·sc·(q−32)` | `q4k_ref.py` (Python only) | *none — Q4_K-only datapath (NOT-YET)* |
-| **Q8_0** | 32 wt: fp16 d + 32 int8 | `w=d·q` | `q4k_ref.py` (Python only) | *none — Q4_K-only datapath (NOT-YET)* |
-| **F16** | passthrough | `w=fp16→fp32` | (exact) | `fp16_to_fp32` primitive only (no F16-tensor matmul path) |
+| **Q6_K** | 256 wt / 210 B: fp16 d + ql/qh (6-bit signed) + int8 scales[16] | `w=d·sc·(q−32)` | `q4k_ref.py` (ggml) | `q4k_mixed.vh` + per-column `w_type` routing in `glm_matmul_q4k.v` (`make mixedtype`) |
+| **Q8_0** | 32 wt: fp16 d + 32 int8 | `w=d·q` | `q4k_ref.py` (ggml) | `q4k_mixed.vh` + per-column `w_type` routing in `glm_matmul_q4k.v` (`make mixedtype`) |
+| **F16** | passthrough | `w=fp16→fp32` | (exact) | per-column `w_type` routing in `glm_matmul_q4k.v` (`make mixedtype`) |
 
 **GEMM contract** (`glm_matmul_q4k`, bit-exact to `tools/q4k_ref.py:matmul_q4k_col`):
 `out = bf16( Σ_k fp32(a_k) · w_deq_k )` — bf16 activations, per-weight ggml dequant, the
@@ -49,7 +55,8 @@ fp32 through the full MAC).
 
 ## Progress
 - ✅ **Numerics** (Q4_K dequant + `q4k.vh` primitives) — **bit-exact to the ggml reference**
-  (`q4k_prim` **18/18**). Q6_K/Q8_0 have Python-only goldens in `q4k_ref.py` (no RTL consumer).
+  (`q4k_prim` **18/18**). Q6_K/Q8_0/F16 now have RTL consumers too, via the mixed-type path
+  (`src/q4k_mixed.vh`, gated by `make mixedtype`).
 - ✅ **`glm_matmul_q4k`** — arbitrary-K, multi-super-block GEMM core, **160/160 bit-exact vs ggml Q4_K**.
 - ✅ **`swiglu_expert_q4k`** — first datapath operator (MoE expert: gate/up/down + silu + merge)
   on Q4_K, **240/240** functional vs golden. **Proves the retarget pattern end-to-end.**
@@ -73,16 +80,19 @@ All three GLM compute operators now run on the Q4_K core:
 
 *(Orchestration is done: `glm_decoder_block_q4k`, `glm_model_q4k`, `mtp_head_q4k`
 **already exist and pass** — they elaborate clean and run inside the spec loops as
-DUT-vs-DUT self-consistency, per `Q4K_SYSTEM_PLAN.md §0`. The remaining OPEN item at this
-layer is an **end-to-end numeric golden for the assembled `glm_model_q4k` vs `q4k_ref.py`,
-which DOES NOT EXIST** — see README's NOT-YET rows. The phases below are the non-orchestration
+DUT-vs-DUT self-consistency, per `Q4K_SYSTEM_PLAN.md §0`. The end-to-end numeric golden for
+the assembled `glm_model_q4k` is DONE — `make model-q4k` / `model-q4k-acthw`, **1155/1155
+bit-exact** vs `tools/glm_model_q4k_ref.py`. The phases below are the non-orchestration
 work.)*
 
 1. **Weight path** — `weight_loader` / memory image / `expert_cache` / `ddr5_xbar` sizing move
    from the FP8 [128,128] block layout to the GGUF super-block layout (~half the bytes); the
    provisioning packer reads the real GGUF (per-tensor type map = the dynamic mix).
+   *(Loader DONE — `src/weight_loader_q4k.v` with per-tensor `desc_wtype`, gated in
+   `make mixedtype` (192/192).)*
 2. **Per-tensor type routing** — select Q4_K/Q6_K/Q8_0/F16 per tensor from the GGUF header
-   (NOT-YET — the RTL datapath is Q4_K-only today).
+   (DONE — per-column `w_type` routing + `desc_wtype`: `src/q4k_mixed.vh`,
+   `src/glm_matmul_q4k.v`, `src/weight_loader_q4k.v`; gate `make mixedtype`).
 3. **Remove FP8** from `main` (preserved on branch `fp8`); update the Makefile gate.
 4. **Docs/site** — footprint/BOM/tok/s and the §03 moat row to the GGUF basis.
 

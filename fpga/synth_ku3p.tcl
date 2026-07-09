@@ -27,6 +27,10 @@
 #   in fpga/constraints.xdc to your board.
 # ============================================================================
 
+# cap synth multithreading: 7 forked processes inflate peak memory past the
+# Docker VM during Technology Mapping (observed OOM-kill); 4 threads fits.
+set_param general.maxThreads 4
+
 set REPO [pwd]
 set SRC  $REPO/src
 set OUT  $REPO/fpga/out

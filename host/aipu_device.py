@@ -1,11 +1,11 @@
 """
 aipu_device.py -- host-side driver abstraction for the AIPU USB-C device.
 
-This mirrors the RTL host interface of `glm_fp8_system_cdc` (the production 2-clock
+This mirrors the RTL host interface of `glm_q4k_system_cdc` (the production 2-clock
 top) EXACTLY, so the same driver code that talks to a MockDevice today talks to the
 real USB-C device tomorrow -- only the backend changes.
 
-RTL host interface (host_clk domain, src/glm_fp8_system_cdc.v):
+RTL host interface (host_clk domain, src/glm_q4k_system_cdc.v):
     in :  start, prompt_tok[TOKW], start_pos[POSW], s_len[IDXW+1]
     out:  busy, done, next_tok[TOKW], tok_valid
 Boot: inference is released by `boot_loader.done` (the ~28 GB resident set is DMA'd
@@ -107,7 +107,7 @@ class AIPUDevice(abc.ABC):
     #: vocabulary size the device decodes over (real GLM-5.2: 154880; scaffold: 256).
     vocab_size: int = 256
     #: model identifier surfaced to OpenAI clients.
-    model_id: str = "aipu-glm-5.2-fp8"
+    model_id: str = "aipu-glm-5.2-q4k"
 
     def __init__(self) -> None:
         self.state = DeviceState.OFF
@@ -210,7 +210,7 @@ class MockDevice(AIPUDevice):
        real GLM BPE) and the mock replays those ids -- so it proves the end-to-end
        plumbing (HTTP -> tokenize -> device protocol -> detokenize -> HTTP streaming)
        for BOTH vocabularies WITHOUT pretending to be the model. A real device would
-       run glm_fp8_system_cdc and emit real next-token ids here."""
+       run glm_q4k_system_cdc and emit real next-token ids here."""
 
     def __init__(self, boot_seconds: float = 0.4, eos_token: int = 256,
                  vocab_size: int = 256) -> None:
@@ -239,7 +239,7 @@ class MockDevice(AIPUDevice):
     def prefill(self, prompt_ids, start_pos: int) -> int:
         # Mock: the prompt builds no real KV and does NOT consume the reply; the first
         # decode token is reply[0]. (A real device streams the prompt through
-        # glm_fp8_system_cdc to build its DDR5 KV.)
+        # glm_q4k_system_cdc to build its DDR5 KV.)
         self._cursor = 0
         out = self._reply_ids[0] if self._reply_ids else self.eos_token
         self._cursor = 1

@@ -12,11 +12,12 @@ box** — the published GGUF k-quant of GLM-5.2,
 datapath is assembled in Q4_K and **elaborates clean at the true 753B shape**, and the whole thing is
 wrapped by the single-module memory system (multi-channel DDR5 + NVMe expert cache + weight/boot
 loaders + multi-clock CDC) that streams the real model — with the memory controllers **bounded-model-
-checked and unbounded-k-induction-proven**. What is **not** yet done is honest and stated up front:
-there is **no end-to-end numeric golden** for the assembled model (it is exercised only as
-speculative-decode == greedy self-consistency), the goldens are our **own** ggml reimplementation
-(never the real GGUF bytes or llama.cpp), and the datapath is **Q4_K-only** (no Q6_K/Q8_0/F16 mixed-type
-path). See [*What's proven*](#whats-proven--against-an-independent-ggml-q4k-reference-scoped-honestly)
+checked and unbounded-k-induction-proven**. The assembled model has an **end-to-end numeric golden**
+(`make model-q4k`: full forward vs our numpy reference, 1155 tests bit-exact), and the datapath
+consumes the full **Q6_K/Q8_0/F16 mixed-type** checkpoint mix (`make mixedtype`). What is **not** yet
+done is honest and stated up front: every golden is our **own** ggml reimplementation
+(never the real GGUF bytes or the llama.cpp runtime).
+See [*What's proven*](#whats-proven--against-an-independent-ggml-q4k-reference-scoped-honestly)
 below for the exact status of every claim.
 
 > **The product is a LOCAL, single-user box that runs with the ethernet unplugged.** One box, one
@@ -57,9 +58,9 @@ below for the exact status of every claim.
 > ~proportionally, and the BOM is memory-dominated), and Q4_K is the format local inference (llama.cpp)
 > actually runs. The moat is stated **scoped**: the Q4_K GEMM core is **bit-exact to `tools/q4k_ref.py`,
 > our own faithful reimplementation of ggml's `dequantize_row_q4_K`** — **not** to the real downloaded
-> GGUF bytes or to llama.cpp's runtime arithmetic, and **not** to the *full* UD-Q4_K_XL mix (the dynamic
-> mix keeps sensitive tensors at Q6_K/Q8_0/F16, for which the RTL has **no consumer** — see the gaps
-> below). tok/s stays **[EST]**. See [`docs/Q4K_RETARGET.md`](docs/Q4K_RETARGET.md) and
+> GGUF bytes or to llama.cpp's runtime arithmetic. The **full UD-Q4_K_XL mix is now consumable**: the
+> dynamic mix's Q6_K/Q8_0/F16 tensors have RTL consumers, bit-exact to the same reimpl golden (see the
+> mixed-type row below). tok/s stays **[EST]**. See [`docs/Q4K_RETARGET.md`](docs/Q4K_RETARGET.md) and
 > [`docs/Q4K_SYSTEM_PLAN.md`](docs/Q4K_SYSTEM_PLAN.md).
 
 ---
@@ -85,22 +86,28 @@ here means **bit-exact to our ggml-Q4_K reference `tools/q4k_ref.py`**, not to t
 | **Selected controllers** (`boot_loader`, `kv_cache_pager`, `spec_decode_seq`, `ddr5_xbar`, `flash_xbar`) | **FORMAL — unbounded k-induction** (all reachable states; documented residual BOUNDED gaps in `docs/FORMAL.md`) | `make formal-ind` |
 | **Whole 2-clock Q4_K product top** (`glm_q4k_system_cdc` + every Q4_K compute/memory/CDC leaf) | **ELABORATED** — yosys `hierarchy -check` + `check -assert` exit 0 (no unresolved hierarchy / comb loop / multiple driver / inferred latch); structural sign-off, **not a sim** | `make synth-glm` |
 | **Full 753B UD-Q4_K_XL-shape elaboration** (`glm_model_q4k` at DIM 6144 / L=78 / 256-expert / VOCAB 154880) | **ELABORATED** — type/width check only, *"no stimulus, no golden, no run"* | `test/full_config_elab_wrap.v` ([`FULL_CONFIG_ELAB.md`](docs/FULL_CONFIG_ELAB.md)) |
-| **End-to-end numeric golden for the assembled Q4_K model** | **NOT-YET** — the assembled Q4_K path is exercised **only** inside the spec loops (DUT-vs-DUT); nothing asserts the assembled forward pass matches ggml/llama.cpp numerically | — |
+| **End-to-end numeric golden for the assembled Q4_K model** (`glm_model_q4k` full forward: embed → L×(MLA+DSA+MoE) → final-norm → LM head → argmax) | **PROVEN — bit-exact vs our assembled numpy reference** (`tools/glm_model_q4k_ref.py`, which imports the same `q4k_ref.py` dequant) — logits + argmax + h_state all byte-identical. *Still our own reimpl, not llama.cpp — see the next row.* | `make model-q4k` **1155/1155** (+ `model-q4k-acthw` **1155/1155** proving the ACT_HW resource knob result-invariant) |
 | **Bit-exactness to the real UD-Q4_K_XL GGUF / llama.cpp** | **NOT-YET** — all goldens are our own ggml reimpl (`tools/q4k_ref.py`), never the real GGUF bytes or llama.cpp runtime | — |
-| **Mixed-type path** (Q6_K / Q8_0 / F16 tensors the dynamic UD-Q4_K_XL mix keeps at higher precision) | **NOT-YET** — RTL is **Q4_K-only** (`grep -ril q6_k\|q8_0 src/` = 0); those types have Python-only goldens in `q4k_ref.py` with **no RTL consumer**, so the chip cannot consume a real UD-Q4_K_XL checkpoint as-is | — |
-| **Throughput / energy / FPGA-fit / BOM / TCO / LOI** | **NOT-YET [EST]/[PENDING]** — every tok/s is roofline-modeled; no PnR/Fmax/LUT result in-repo (Vivado/Gowin-blocked); BOM/TCO and the target LOI are planning docs, not evidence | — |
+| **Mixed-type path** (Q6_K / Q8_0 / F16 tensors the dynamic UD-Q4_K_XL mix keeps at higher precision) | **PROVEN — bit-exact vs ggml-reimpl goldens** — `q4k_mixed.vh` dequant primitives + per-column `w_type` routing in `glm_matmul_q4k` + `desc_wtype` in the weight loader; the loader→GEMM path is bit-exact for **all four types** incl. a 24-tile mixed sequence | `make mixedtype` · `q6k_prim` + `q8_0_prim` + `glm_matmul_mixed` **32/32** + `weight_loader_q4k_mixed` **192/192** |
+| **FPGA fit — real Vivado synth + place & route on XCKU3P** | **MEASURED** — compact config + `ACT_HW=1`: **141.7K LUT (87.1%)**, 99.6K FF, 421 DSP, fits and routes; routed Fmax **10.2 → 17.2 → 46.5 MHz** across the (bit-exact) fmax-repipeline rounds (rope / glm_act+rmsnorm / matmul), campaign ongoing — see [`fpga/README.md`](fpga/README.md) | `bash fpga/run_fit.sh` · `fpga/results/` |
+| **Throughput / energy / BOM / TCO / LOI** | **NOT-YET [EST]** — every tok/s is roofline-modeled (now with **measured-proxy h/U inputs** — [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)); BOM/TCO and the target LOI are planning docs, not evidence | — |
 
-**Honest moat statement.** A **Q4_K-native GLM-5.2 RTL datapath** whose Q4_K GEMM core is **bit-exact to
-an independent ggml-Q4_K reference** (`tools/q4k_ref.py`), verified at a small-but-faithful slice,
-**elaboration-clean at the real 753B UD-Q4_K_XL shape**, and wrapped by memory-system controllers with
-**BMC + unbounded k-induction** safety proofs — **not yet** bit-verified against the real GGUF /
-llama.cpp, exercised end-to-end only as **spec==greedy self-consistency** (no assembled-model numeric
-golden), and **Q4_K-only** (no Q6_K/Q8_0/F16 mixed-type path). Every tok/s, FPGA-fit, cost, and LOI
-claim is **[EST]/[PENDING]**, not measured.
+**Honest moat statement.** A **UD-Q4_K_XL-native GLM-5.2 RTL datapath** whose GEMM core is **bit-exact
+to an independent ggml reimplementation** (`tools/q4k_ref.py`) for **all four checkpoint types**
+(Q4_K/Q6_K/Q8_0/F16), whose **assembled full forward pass is bit-exact to a numpy reference of the
+whole model** (`make model-q4k`, 1155 tests: logits+argmax+h_state), verified at a small-but-faithful
+slice, **elaboration-clean at the real 753B UD-Q4_K_XL shape**, wrapped by memory-system controllers
+with **BMC + unbounded k-induction** safety proofs, and **placed & routed on a real XCKU3P**
+(87.1% LUT, routed Fmax 46.5 MHz and climbing through bit-exact repipelining) — **not yet**
+bit-verified against the real GGUF bytes / llama.cpp runtime (all goldens are our own reimpls), and
+every tok/s, cost, and LOI claim is **[EST]**, not measured on hardware.
 
 **Modeled, not silicon — flagged [EST].** All throughput/energy figures come from a
-bandwidth-roofline model (`tokens/s ≈ NVMe_BW / [(1−h)·footprint] · K`), **not** from a routed
-netlist or silicon. The tok/s is **rung-dependent** — bandwidth is set by the chip's IO pins + PHYs,
+bandwidth-roofline model (`tokens/s ≈ NVMe_BW / [(1−h)·footprint] · K`), **not** from silicon —
+though the roofline's two model-side multipliers now have **measured (proxy) inputs**: expert-reuse
+h-curves and the MTP union factor U(K), traced from a real MoE checkpoint
+([`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)), and the compute die now has a **real routed
+netlist** ([`fpga/README.md`](fpga/README.md)). The tok/s is **rung-dependent** — bandwidth is set by the chip's IO pins + PHYs,
 which is set by budget ([`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)): **~5–8 tok/s on the
 prove-it FPGA (rung ①), ~15–40 on the funded custom board (rung ②), ~40+ at volume (rung ③)** [EST],
 with **~9 → ~3 J/token** [EST] after stacking the NVMe-bandwidth levers. Read them as an optimistic
@@ -110,11 +117,12 @@ exactly `3·FLASH_LAT + 9`, faithful `cyc_per_tok` grows with storage-read laten
 stays [EST] ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)).
 
 **Out of scope** (vendor IP / hardware / resource-gated): DDR5/NVMe (PCIe)/USB-C **PHYs** (TB-stubbed),
-**full-chip FPGA P&R + board bring-up** (needs Gowin/Vivado + a board; the near-term product is an
-FPGA card, with ASIC/tapeout **sequenced later as the rung ③ volume endgame** — see
+**board bring-up** (the FPGA P&R itself is now done in-repo — [`fpga/README.md`](fpga/README.md) —
+but running on a physical dev board needs the board + its pin XDC + a MIG bridge; the near-term
+product is an FPGA card, with ASIC/tapeout **sequenced later as the rung ③ volume endgame** — see
 [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)), and a **full-model multi-GPU numeric validation** of the
-assembled Q4_K forward pass. *(The tokenizer + host software scaffold exist — see
-[`host/`](host/README.md).)*
+assembled Q4_K forward pass at the real 753B shape. *(The tokenizer + host software scaffold exist —
+see [`host/`](host/README.md).)*
 
 ---
 
@@ -122,15 +130,17 @@ assembled Q4_K forward pass. *(The tokenizer + host software scaffold exist — 
 
 UD-Q4_K_XL is a **dynamic k-quant mix**: most tensors are Q4_K; sensitive ones are kept at higher
 precision (Q6_K / Q8_0 / F16). Each type dequantizes exactly per ggml, then the **same** GEMM contract
-runs (dequant → fp32 MAC → bf16). The **RTL consumes Q4_K only** — the higher-precision types have
-bit-exact goldens in `tools/q4k_ref.py` but **no RTL consumer** yet (see the gap in the table above).
+runs (dequant → fp32 MAC → bf16). **All four types now have RTL consumers**: `glm_matmul_q4k` selects
+the dequant front-end per column via `w_type` (latched per tile, off the per-beat path) and
+`weight_loader_q4k` carries the type in its descriptor (`desc_wtype`) — the loader→GEMM path is
+bit-exact for every type, including a 24-tile mixed sequence (`make mixedtype`).
 
 | Type | Block layout | Dequant | Golden (`q4k_ref.py`) | RTL consumer |
 |---|---|---|---|---|
-| **Q4_K** | 256 wt / 144 B: fp16 `d`,`dmin` + 12 B of 6-bit scales/mins + 128 B of 4-bit quants | `w = (d·sc)·q − (dmin·m)` | ✅ bit-exact | ✅ `q4k.vh` + `glm_matmul_q4k.v` |
-| **Q6_K** | 256 wt / 210 B | `w = d·sc·(q−32)` | ✅ (Python-only) | ❌ none — **NOT-YET** |
-| **Q8_0** | 32 wt: fp16 `d` + 32 int8 | `w = d·q` | ✅ (Python-only) | ❌ none — **NOT-YET** |
-| **F16** | passthrough | `w = fp16→fp32` | ✅ (exact) | primitive only (`q4k.vh`) |
+| **Q4_K** | 256 wt / 144 B: fp16 `d`,`dmin` + 12 B of 6-bit scales/mins + 128 B of 4-bit quants | `w = (d·sc)·q − (dmin·m)` | ✅ bit-exact | ✅ `q4k.vh` + `glm_matmul_q4k.v` (**160/160**) |
+| **Q6_K** | 256 wt / 210 B: fp16 `d` + 16 int8 scales + 6-bit quants | `w = (d·sc)·(q−32)` | ✅ bit-exact | ✅ `q4k_mixed.vh` + `w_type` arm (**`q6k_prim` + mixed 32/32 + loader-mixed 192/192**) |
+| **Q8_0** | 32 wt: fp16 `d` + 32 int8 | `w = d·q` | ✅ bit-exact | ✅ `q4k_mixed.vh` + `w_type` arm (same gates) |
+| **F16** | passthrough | `w = fp16→fp32` | ✅ (exact) | ✅ `w_type` passthrough arm (same gates) |
 
 **GEMM contract** (`glm_matmul_q4k`, bit-exact to `tools/q4k_ref.py:matmul_q4k_col`):
 `out = bf16( Σ_k fp32(a_k) · w_deq_k )` — bf16 activations, per-weight ggml Q4_K dequant, the proven
@@ -190,11 +200,12 @@ safety only.
 
 ### Q4_K datapath
 
-The Q4_K numeric proof lives at the **GEMM-core** level (bit-exact vs ggml) and the **assembled
-spec-loop** level (spec==greedy, DUT-vs-DUT). The standalone per-unit numeric TBs
-(`glm_model_tb` / `mla_attn_tb` / `glm_decoder_block_tb` / `mtp_head_tb`) build against the **generic
-bf16/fp32 twins** (`src/glm_model.v` / `mla_attn.v` / …, **zero Q4_K**), so the assembled Q4_K path
-(`glm_model_q4k` …) has **no standalone numeric golden** — see the NOT-YET rows above.
+The Q4_K numeric proof lives at three levels: the **GEMM core** (bit-exact vs ggml, all four
+checkpoint types), the **assembled full forward** (`make model-q4k`: `glm_model_q4k` vs the numpy
+reference `tools/glm_model_q4k_ref.py`, 1155 tests bit-exact on logits+argmax+h_state), and the
+**assembled spec-loop** level (spec==greedy, DUT-vs-DUT). The standalone per-unit numeric TBs
+(`glm_model_tb` / `mla_attn_tb` / …) still build against the **generic bf16/fp32 twins**; the
+assembled Q4_K path's numeric golden is the `model-q4k` gate.
 
 | Unit | What is Q4_K | Verification status |
 |---|---|---|
@@ -202,9 +213,9 @@ bf16/fp32 twins** (`src/glm_model.v` / `mla_attn.v` / …, **zero Q4_K**), so th
 | `glm_matmul_q4k.v` | Q4_K-native block-scaled GEMM (dequant → fp32 MAC → bf16) | **bit-exact vs ggml Q4_K** (160/160) — the one true bit-exact datapath result |
 | `swiglu_expert_q4k.v` | gate/up/down GEMMs on the Q4_K core + bf16 silu tail | **functional** vs Q4_K golden (240/240) |
 | `moe_router_q4k.v` | gate GEMV Q4_K, bf16 sigmoid/topk/renorm | **structural/functional invariants** (40/40) |
-| `mla_attn_q4k.v` | weight projections Q4_K, bf16 attn/rope/norm/softmax/dsa | exercised **only** in the assembled spec loops (no standalone Q4_K numeric golden) |
-| `glm_decoder_block_q4k.v` | one full Q4_K decoder layer | exercised **only** in the assembled spec loops |
-| `glm_model_q4k.v` | full Q4_K forward pass | **spec==greedy** in the spec loops (DUT-vs-DUT); **no** numeric golden |
+| `mla_attn_q4k.v` | weight projections Q4_K, bf16 attn/rope/norm/softmax/dsa | exercised in the assembled `model-q4k` numeric golden + the spec loops (no *standalone* unit golden) |
+| `glm_decoder_block_q4k.v` | one full Q4_K decoder layer | exercised in the assembled `model-q4k` numeric golden + the spec loops |
+| `glm_model_q4k.v` | full Q4_K forward pass | **bit-exact vs the assembled numpy golden** (`make model-q4k`, 1155/1155) + **spec==greedy** in the spec loops (DUT-vs-DUT) |
 | `mtp_head_q4k.v` | Q4_K multi-token-prediction (t+2) head | exercised in the spec loops |
 
 The Q4_K wrappers carry the same `PE_M` decode-batching machinery as the prior FP8 track, and the
@@ -271,7 +282,7 @@ track** (branch `fp8`) — see the appendix. On an NVMe-bound die they improve a
 - **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction (RTL/silicon track): the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the **FPGA-card** product path (ASIC = the rung ③ volume endgame, sequenced after FPGA proves PMF).
 - **[`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md)** — productization plan for the **USB-C external device** (the appliance track): form factor, power, thermal, host software, BOM/pricing (**[EST]**, planning-doc — not validated), phased D0–D5 gates. The heavy traffic stays internal → USB-C carries only tokens.
 - **[`host/`](host/README.md)** — the **host software scaffold**: a local **OpenAI-compatible server** (`python3 host/aipu_server.py`, stdlib only) mirroring the RTL host interface, the **real GLM-5.2 BPE tokenizer** (+ byte fallback), the **GLM chat template**, OpenAI **sampling params**, and 3 backends — `MockDevice`, a **simulator backend** (drives the RTL model slice via `vvp`), and USB (later). `make host-test` (18 tests). *(Note: the simulator backend still points at the prior `glm_model_fp8` build path and is being retargeted to `glm_model_q4k`.)*
-- **[`fpga/`](fpga/README.md)** — the **FPGA-fit vendor-flow scaffold** (Gowin GW5AT-138 / Tang Mega 138K): `gw_sh` synth+P&R script + SDC (host/core async clocks) + compact-config wrapper + nextpnr fallback. Run it (needs Gowin, a user step) for the real LUT/DSP/BSRAM/Fmax — **NOT-YET** in-repo, the unknown that gates device size/thermal/BOM/price.
+- **[`fpga/`](fpga/README.md)** — the **FPGA fit, MEASURED**: Vivado batch synth + full place&route of the product top on **XCKU3P** (compact config + `ACT_HW=1`): **141.7K LUT / 87.1%, fits and routes**, routed Fmax **46.5 MHz** after three bit-exact repipeline rounds (campaign ongoing); includes the routable bring-up harness, the Docker/license bring-up notes, and the measured reports in `fpga/results/`.
 - **[`docs/OPERATION_FLOW.md`](docs/OPERATION_FLOW.md)** — the end-to-end operational flow: boot (NVMe→DDR5), per-token decode through every block, weight streaming, batching + union-skip MoE + speculative decode, CDC, and the per-token bottleneck. **Start here for "how it all runs."**
 - **[`docs/ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)** — accelerator architecture: exact config, MLA + DSA + MoE detail, the fp64-golden methodology, memory/streaming, RTL build order.
 - **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (Q4_K die + DDR working cache + 1 TB NVMe SSD): tiering, expert caching, the bottleneck/perf/cost model.
@@ -317,11 +328,12 @@ MODEL_DIM=128, 6 layers (3 dense + 3 MoE), 4 heads, MLA nope16/rope16/v32, q_lor
 8-expert top-2 + 1 shared, INTER_MOE=64, INTER_DENSE=256, VOCAB=256, S_MAX=8. Running the real
 753B model adds the memory/streaming system + array scaling ([`ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)).
 
-**FPGA fit is NOT-YET measured.** No PnR/Fmax/LUT result for the Q4_K compute die is in-repo — that is
-the unknown the [`fpga/`](fpga/README.md) vendor-flow scaffold exists to close (needs Gowin/Vivado, a
-user step). What *is* known structurally: a partitioned `synth_ecp5` of the six memory-system
-controllers already sums to **~71,475 LUT4 — ~85% of an ECP5-85 on the controllers alone** — so the
-full system does **not** fit an ECP5-85 and needs a larger FPGA. Because the workload is
+**FPGA fit is MEASURED** ([`fpga/README.md`](fpga/README.md)): the whole 2-clock product top
+synthesizes AND places-and-routes on a **Kintex UltraScale+ XCKU3P** at the compact config with the
+`ACT_HW=1` result-invariant knob — **141,710 LUT (87.1%), 99.6K FF (30.6%), 421 DSP (30.8%)**, hold
+met, routed Fmax **46.5 MHz** after three bit-exact fmax-repipeline rounds (rope, glm_act+rmsnorm,
+matmul — campaign ongoing). Historical note: a partitioned `synth_ecp5` of just the six memory-system
+controllers already summed to ~85% of an ECP5-85, which is why the target moved up to the KU3P class. Because the workload is
 NVMe/PCIe-bandwidth-bound (the die sits ~75–80% idle behind the NVMe storage), an FPGA card is the
 committed **near-term** product — at this rung an ASIC's faster *compute* would be largely wasted. The
 real ceiling is **memory bandwidth (IO pins + PHY)**, which is what an ASIC breaks (HBM stacks +
