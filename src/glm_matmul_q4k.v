@@ -103,19 +103,74 @@ module glm_matmul_q4k #(
     // ---- accumulators (fp32) ----
     reg [31:0] acc [0:PE_M*PE_N-1];
 
+    //========================================================================
+    // PER-BEAT PIPELINE  (REPIPELINED FOR FMAX -- bit-exact)
+    //
+    //   The correct-first core evaluated the whole per-beat chain -- header
+    //   muls, code mul, min subtract, activation mul, accumulate -- in ONE
+    //   cycle (5 serial fp32 ops, the chip's worst cone after the act/norm
+    //   fixes).  It is now PLAT=4 register stages + the accumulate:
+    //
+    //     P1  header selects for THIS beat's k (sb/sub/sidx/blk) + the header
+    //         multiplies: Q4_K d1 = d*sc_b and m1 = dmin*m_b (parallel pair),
+    //         Q6_K d1 = d*sc16[sidx]; Q8_0/F16 forward their raw halves.
+    //     P2  the code multiply: Q4_K t = d1*u7(q), Q6_K wdeq = d1*s8(code-32),
+    //         Q8_0 wdeq = f32(d)*s8(qs), F16 wdeq = widen(raw16).
+    //     P3  Q4_K wdeq = t - m1 (add with sign-flipped m1); others forward.
+    //     P4  aprod[pi] = f32(a[pi]) * wdeq   (PE_M parallel multiplies).
+    //     ACC acc += aprod on the final tap -- ONE registered fp32 add: the
+    //         loop-carried accumulate stays single-cycle, everything feeding
+    //         it is pipelined.
+    //
+    //   Beats enter in K order and the pipe is in-order, so the sequential
+    //   fp32-accumulate ORDER -- the bit-exactness contract -- is unchanged;
+    //   every op is the same glm_fp.vh/q4k.vh call in the same grouping.
+    //   out_valid now fires once the pipe DRAINS after the last beat (busy
+    //   stays high); every consumer waits on out_valid, not a beat count.
+    //========================================================================
+    localparam integer PLAT = 4;
+    reg [PLAT-1:0]        vp;
+    reg                   draining;
+
+    // P1 registers (per column): selected/multiplied header values
+    reg [31:0] p1_d1  [0:PE_N-1];   // Q4_K d*sc | Q6_K d*sc16
+    reg [31:0] p1_m1  [0:PE_N-1];   // Q4_K dmin*m
+    reg [15:0] p1_h16 [0:PE_N-1];   // raw w_hp half (Q6 code / Q8 qs / F16 raw)
+    reg [3:0]  p1_q4  [0:PE_N-1];   // raw Q4_K code
+    reg [15:0] p1_q8d [0:PE_N-1];   // selected Q8_0 fp16 d for this beat
+    // P2 / P3 registers
+    reg [31:0] p2_t   [0:PE_N-1];   // Q4_K d1*q | others: final wdeq
+    reg [31:0] p2_m1  [0:PE_N-1];
+    reg [31:0] p3_w   [0:PE_N-1];   // final wdeq (all types)
+    // activation delay line (raw bf16; widen at P4 -- a pure function)
+    reg [16*PE_M-1:0] a_d1, a_d2, a_d3;
+    // P4 products
+    reg [31:0] p4_p   [0:PE_M*PE_N-1];
+
     integer pi, pj, idx, col, blk;
     reg [KW-1:0] sb;                // super-block = k / 256
-    reg [2:0]  sub;                 // sub-block within super-block = (k%256)/32 (0..7)
-    reg [3:0]  sidx;                // Q6_K scale index within super-block = (k%256)/16 (0..15)
+    reg [2:0]  sub;                 // sub-block within super-block = (k%256)/32
+    reg [3:0]  sidx;                // Q6_K scale index = (k%256)/16
     reg [11:0] sm;                  // {min6, scale6}
-    reg [31:0] d1, m1, wdeq, aprod;
+
+    wire accept = busy && !draining && in_valid;
 
     always @(posedge clk) begin
         if (rst) begin
             busy <= 1'b0; out_valid <= 1'b0; k_cnt <= 0; k_len_r <= 0;
-            for (idx = 0; idx < PE_M*PE_N; idx = idx + 1) acc[idx] <= 32'd0;
+            vp <= {PLAT{1'b0}}; draining <= 1'b0;
+            a_d1 <= 0; a_d2 <= 0; a_d3 <= 0;
+            for (idx = 0; idx < PE_M*PE_N; idx = idx + 1) begin
+                acc[idx] <= 32'd0; p4_p[idx] <= 32'd0;
+            end
+            for (pj = 0; pj < PE_N; pj = pj + 1) begin
+                p1_d1[pj] <= 32'd0; p1_m1[pj] <= 32'd0; p1_h16[pj] <= 16'd0;
+                p1_q4[pj] <= 4'd0;  p1_q8d[pj] <= 16'd0;
+                p2_t[pj] <= 32'd0;  p2_m1[pj] <= 32'd0; p3_w[pj] <= 32'd0;
+            end
         end else begin
             out_valid <= 1'b0;
+            vp <= {vp[PLAT-2:0], accept};
 
             if (start) begin
                 busy    <= 1'b1;
@@ -127,62 +182,97 @@ module glm_matmul_q4k #(
                 wtype_r <= w_type;     // per-tile type select (off the per-beat path)
                 q6sc_r  <= w_q6_sc;    // Q6_K scales (unread when the tile is Q4_K)
                 q8d_r   <= w_q8_d;     // Q8_0 d      (unread when the tile is Q4_K)
+                vp      <= {PLAT{1'b0}};
+                draining<= 1'b0;
                 for (idx = 0; idx < PE_M*PE_N; idx = idx + 1) acc[idx] <= 32'd0;
-            end else if (busy && in_valid) begin
-                sb  = k_cnt >> 8;                          // k / 256 (super-block)
-                // sub-block within super-block = (k%256)/32.  Use a SHIFT (not the
-                //   part-select k_cnt[7:5]) so it is correct for a NARROW k_cnt too:
-                //   when KMAX<128, KW=$clog2(KMAX+1)<8 makes k_cnt fewer than 8 bits,
-                //   and k_cnt[7:5] would read OUT-OF-RANGE bits (-> x / wrong scale).
-                //   `k_cnt>>5` truncated into sub[2:0] yields (k/32) mod 8 == (k%256)/32
-                //   for any width, and is bit-identical to k_cnt[7:5] when KW>=8.
-                sub = k_cnt >> 5;                          // (k%256) / 32 (sub-block)
-                // per-column w_type-selected dequant + per-cell fp32 MAC (sequential
-                // accumulate).  Each type produces ONE fp32 wdeq that feeds the SAME
-                // MAC below; the w_type case is the ONLY per-column front-end change.
-                for (pj = 0; pj < PE_N; pj = pj + 1) begin
-                    col  = pj*NSB + sb;                    // (col, super-block) index
-                    case (wtype_r[2*pj +: 2])
-                        // ---- Q6_K : w = (d * f32(int8 sc[p>>4])) * f32(int8(code-32)) ----
-                        //   grouped (d*sc)*q to match numpy's left-assoc d*f32(sc)*f32(q);
-                        //   identical numerics to q4k_mixed.vh q6k_deq (inlined leaf prims).
-                        WT_Q6K: begin
-                            sidx = k_cnt >> 4;             // (k%256)/16 within super-block; SHIFT (see `sub`) for narrow k_cnt
-                            d1   = fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),
-                                            s8_to_fp32(q6sc_r[128*col + 8*sidx +: 8]));
-                            wdeq = fp32_mul(d1, s8_to_fp32({2'b00, w_hp[16*pj +: 6]} - 8'd32));
-                        end
-                        // ---- Q8_0 : w = d * f32(int8 qs)  (d per 32-weight block) ----
-                        WT_Q80: begin
-                            blk  = pj*NB8 + (k_cnt >> 5);  // 32-weight block index
-                            wdeq = fp32_mul(fp16_to_fp32(q8d_r[16*blk +: 16]),
-                                            s8_to_fp32(w_hp[16*pj +: 8]));
-                        end
-                        // ---- F16 : w = fp16_to_fp32(raw16)  (passthrough) ----
-                        WT_F16: begin
-                            wdeq = fp16_to_fp32(w_hp[16*pj +: 16]);
-                        end
-                        // ---- Q4_K (DEFAULT: 2'b00 and any undriven x/z) -- UNCHANGED ----
-                        //   w = (d*sc_b)*q - (dmin*m_b) : byte-identical to the proven path.
-                        default: begin
-                            sm   = q4k_scale_min({1'b0, sub}, scales_r[96*col +: 96]);
-                            d1   = fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),    u7_to_fp32({1'b0, sm[5:0]}));
-                            m1   = fp32_mul(fp16_to_fp32(dmin_r[16*col +: 16]), u7_to_fp32({1'b0, sm[11:6]}));
-                            // w = d1*q - m1   (subtract = add with m1 sign flipped)
-                            wdeq = fp32_add(fp32_mul(d1, u7_to_fp32({3'd0, w_q[4*pj +: 4]})),
-                                            {~m1[31], m1[30:0]});
-                        end
-                    endcase
-                    // ---- shared fp32 MAC (UNCHANGED, all types) ----
-                    for (pi = 0; pi < PE_M; pi = pi + 1) begin
-                        aprod = fp32_mul(bf16_to_fp32(a_col[16*pi +: 16]), wdeq);
-                        acc[pi*PE_N + pj] <= fp32_add(acc[pi*PE_N + pj], aprod);
+            end else begin
+                // ---- P1: header select + header multiplies (on accept) ----
+                if (accept) begin
+                    sb  = k_cnt >> 8;                      // k / 256 (super-block)
+                    // SHIFT forms (not part-selects) stay in-range for narrow
+                    // k_cnt (KMAX<128) -- see the original narrow-K note.
+                    sub = k_cnt >> 5;                      // (k%256) / 32
+                    for (pj = 0; pj < PE_N; pj = pj + 1) begin
+                        col = pj*NSB + sb;
+                        case (wtype_r[2*pj +: 2])
+                            WT_Q6K: begin
+                                sidx = k_cnt >> 4;         // (k%256)/16
+                                p1_d1[pj] <= fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),
+                                                      s8_to_fp32(q6sc_r[128*col + 8*sidx +: 8]));
+                                p1_m1[pj] <= 32'd0;
+                            end
+                            WT_Q80: begin
+                                blk = pj*NB8 + (k_cnt >> 5);
+                                p1_q8d[pj] <= q8d_r[16*blk +: 16];
+                                p1_d1[pj]  <= 32'd0;
+                                p1_m1[pj]  <= 32'd0;
+                            end
+                            WT_F16: begin
+                                p1_d1[pj] <= 32'd0;
+                                p1_m1[pj] <= 32'd0;
+                            end
+                            default: begin                 // Q4_K (and undriven)
+                                sm = q4k_scale_min({1'b0, sub}, scales_r[96*col +: 96]);
+                                p1_d1[pj] <= fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),
+                                                      u7_to_fp32({1'b0, sm[5:0]}));
+                                p1_m1[pj] <= fp32_mul(fp16_to_fp32(dmin_r[16*col +: 16]),
+                                                      u7_to_fp32({1'b0, sm[11:6]}));
+                            end
+                        endcase
+                        p1_h16[pj] <= w_hp[16*pj +: 16];
+                        p1_q4[pj]  <= w_q[4*pj +: 4];
                     end
+                    a_d1  <= a_col;
+                    k_cnt <= k_cnt + 1'b1;
+                    if (k_cnt + 1'b1 == k_len_r) draining <= 1'b1;
                 end
-                k_cnt <= k_cnt + 1'b1;
-                if (k_cnt + 1'b1 == k_len_r) begin
+                // ---- P2: the code multiply ----
+                if (vp[0]) begin
+                    for (pj = 0; pj < PE_N; pj = pj + 1) begin
+                        case (wtype_r[2*pj +: 2])
+                            WT_Q6K: p2_t[pj] <= fp32_mul(p1_d1[pj],
+                                        s8_to_fp32({2'b00, p1_h16[pj][5:0]} - 8'd32));
+                            WT_Q80: p2_t[pj] <= fp32_mul(fp16_to_fp32(p1_q8d[pj]),
+                                        s8_to_fp32(p1_h16[pj][7:0]));
+                            WT_F16: p2_t[pj] <= fp16_to_fp32(p1_h16[pj]);
+                            default: p2_t[pj] <= fp32_mul(p1_d1[pj],
+                                        u7_to_fp32({3'd0, p1_q4[pj]}));
+                        endcase
+                        p2_m1[pj] <= p1_m1[pj];
+                    end
+                    a_d2 <= a_d1;
+                end
+                // ---- P3: Q4_K min subtract; others forward ----
+                if (vp[1]) begin
+                    for (pj = 0; pj < PE_N; pj = pj + 1) begin
+                        // case-with-default so an UNDRIVEN (x/z) w_type still
+                        // takes the Q4_K arm -- the original decode's exact
+                        // semantics (an `if (== WT_Q4K)` would evaluate x as
+                        // false and silently skip the min subtract).
+                        case (wtype_r[2*pj +: 2])
+                            WT_Q6K, WT_Q80, WT_F16: p3_w[pj] <= p2_t[pj];
+                            default: p3_w[pj] <= fp32_add(p2_t[pj],
+                                         {~p2_m1[pj][31], p2_m1[pj][30:0]});
+                        endcase
+                    end
+                    a_d3 <= a_d2;
+                end
+                // ---- P4: activation multiplies (PE_M x PE_N parallel) ----
+                if (vp[2]) begin
+                    for (pj = 0; pj < PE_N; pj = pj + 1)
+                        for (pi = 0; pi < PE_M; pi = pi + 1)
+                            p4_p[pi*PE_N + pj] <= fp32_mul(
+                                bf16_to_fp32(a_d3[16*pi +: 16]), p3_w[pj]);
+                end
+                // ---- ACC: the (single-cycle) sequential fp32 accumulate ----
+                if (vp[3])
+                    for (idx = 0; idx < PE_M*PE_N; idx = idx + 1)
+                        acc[idx] <= fp32_add(acc[idx], p4_p[idx]);
+                // ---- drain complete -> the tile result is final ----
+                if (draining && vp == {PLAT{1'b0}}) begin
                     busy      <= 1'b0;
-                    out_valid <= 1'b1;                     // acc is final NEXT cycle...
+                    draining  <= 1'b0;
+                    out_valid <= 1'b1;
                 end
             end
         end

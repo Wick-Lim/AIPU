@@ -137,7 +137,7 @@ module glm_matmul_mixed_tb;
             // out_valid pulses at the last beat's posedge -> already high at this
             // (loop-exit) negedge; poll a few cycles for robustness, then compare.
             k = 0;
-            while (out_valid !== 1'b1 && k < 5) begin @(negedge clk); k = k + 1; end
+            while (out_valid !== 1'b1 && k < 40) begin @(negedge clk); k = k + 1; end
             if (out_valid !== 1'b1) begin
                 $display("FAIL tile %0d: out_valid never asserted", t); errors = errors + 1;
             end
