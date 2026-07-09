@@ -217,40 +217,13 @@ module glm_act_core #(
     endfunction
 
     //------------------------------------------------------------------------
-    // exp(r) for r in [-ln2/2, ln2/2] via degree-5 Horner (all fp32):
+    // exp(r) for r in [-ln2/2, ln2/2]: degree-5 Taylor-Horner, all fp32.
     //   p = 1 + r*(1 + r*(1/2 + r*(1/6 + r*(1/24 + r*(1/120)))))
-    //
-    // REPIPELINED FOR FMAX: the 5 dependent fp32 mul+add Horner levels form the
-    // deepest single-stage combinational cone in the unit (5 serial 24x24 fp
-    // multiplies).  The evaluation is split across TWO registered pipeline
-    // stages so neither carries more than 3 serial multiplies:
-    //   exp_poly_lo : the inner 3 Horner levels (coeffs 1/120,1/24,1/6,1/2),
-    //                 producing the partial accumulator p_lo.
-    //   exp_poly_hi : the outer 2 Horner levels (coeffs 1,1), finishing exp(r).
-    // This is a LATENCY-ONLY change: the arithmetic sequence is byte-for-byte
-    // identical to the old single-call Horner, so exp(r) -- and every bf16
-    // output -- is bit-exact to before (only a pipeline register is inserted
-    // between the 3rd and 4th Horner level).
+    // The five Horner levels are evaluated ONE PER PIPELINE STAGE below (E1-E5)
+    // -- the same fp32_add/fp32_mul calls in the same grouping/order as the old
+    // exp_poly_lo/exp_poly_hi split, so exp(r) is bit-identical; only registers
+    // moved.  (Truncation error < 2^-18, far under a bf16 ULP -- see header.)
     //------------------------------------------------------------------------
-    // inner 3 Horner levels: p_lo = 1/2 + r*(1/6 + r*(1/24 + r*(1/120)))
-    function automatic [31:0] exp_poly_lo(input [31:0] r);
-        reg [31:0] p;
-        begin
-            p = fp32_add(FP_1_24,  fp32_mul(r, FP_1_120));
-            p = fp32_add(FP_1_6,   fp32_mul(r, p));
-            p = fp32_add(FP_1_2,   fp32_mul(r, p));
-            exp_poly_lo = p;
-        end
-    endfunction
-    // outer 2 Horner levels: exp(r) = 1 + r*(1 + r*p_lo)
-    function automatic [31:0] exp_poly_hi(input [31:0] r, input [31:0] p_lo);
-        reg [31:0] p;
-        begin
-            p = fp32_add(FP_ONE,   fp32_mul(r, p_lo));
-            p = fp32_add(FP_ONE,   fp32_mul(r, p));
-            exp_poly_hi = p;
-        end
-    endfunction
 
     //------------------------------------------------------------------------
     // 2^k * v by adding k to the biased exponent of v (k pre-clamped to
@@ -276,15 +249,13 @@ module glm_act_core #(
     endfunction
 
     //------------------------------------------------------------------------
-    // fp32 reciprocal of d (d > 0) via rsqrt^2 :  1/d = rsqrt(d)*rsqrt(d).
+    // fp32 reciprocal of d (d > 0):  1/d = rsqrt(d)^2.  The Quake-seed +
+    // 2-Newton-iteration rsqrt is UNROLLED one fp32 op per pipeline stage below
+    // (R1-R10) -- identical call sequence to glm_fp.vh fp32_rsqrt followed by
+    // the squaring multiply, so the result is bit-identical.  The special-case
+    // branch (nan / x<=0 / inf) is carried alongside and muxed at R10, exactly
+    // as the function's early returns.
     //------------------------------------------------------------------------
-    function automatic [31:0] fp32_recip_pos(input [31:0] d);
-        reg [31:0] t;
-        begin
-            t = fp32_rsqrt(d);
-            fp32_recip_pos = fp32_mul(t, t);
-        end
-    endfunction
 
     //------------------------------------------------------------------------
     // sanitize_x : replace inf/nan with a finite +/-X_SAT (sign from input; nan
@@ -315,220 +286,302 @@ module glm_act_core #(
     endfunction
 
     // ===================================================================
-    //  PER-LANE COMBINATIONAL STAGE FUNCTIONS (registered between stages)
+    //  PER-LANE PIPELINE  (REPIPELINED FOR FMAX -- bit-exact)
+    //
+    //  The old 6-stage pipe put the WHOLE Quake-rsqrt reciprocal (7 serial
+    //  multiplies) in one stage -- measured on XCKU3P as the chip's worst
+    //  cone after the rope fix (58.5 ns / 236 levels, S3->S4).  The pipe is
+    //  now LAT = 21 stages with at most ONE serial fp32 mul (or add) each:
+    //
+    //    A1  sanitize/clamp, z = -x, kf = z*log2e                [mul]
+    //    A2  k = round(kf) clamp, klt = int->fp32, m = klt*ln2   [mul]
+    //    A3  r = z - m                                           [add]
+    //    E1..E5  the five exp(r) Horner levels                   [mul+add each]
+    //    D1  ex = 2^k*exp(r) (exponent add), d = 1 + ex          [add]
+    //    R1  xhalf = 0.5*d, y = quake-seed(d), special flags     [mul]
+    //    R2  yy = y*y            R3  xyy = xhalf*yy              [mul]
+    //    R4  t = 1.5 - xyy [add] R5  y = y*t                     [mul]
+    //    R6..R9  the second Newton iteration (same four ops)
+    //    R10 s = y*y (reciprocal), special mux                   [mul]
+    //    F1  SILU ? s*x : s ; round fp32->bf16 -> y_out          [mul]
+    //
+    //  Every operation is the SAME glm_fp.vh call in the SAME order as the
+    //  old code (register insertion only) -> outputs byte-identical.  Each
+    //  stage's registers are ENABLED by the valid tap, so idle cycles freeze
+    //  operands (operand-isolation, as before).  d = 1 + exp(z) with the
+    //  X_SAT/K_MAX clamps is always a positive normal, so the rsqrt special
+    //  branch is unreachable here -- the flags are carried anyway so the mux
+    //  replicates fp32_rsqrt's early returns verbatim.
     // ===================================================================
-    // S1 outputs: clamped x (xf), reduced r, integer k.
-    // S2 outputs: pr = exp(r).
-    // S3 outputs: d = 1 + 2^k*exp(r), and forwarded xf.
-    // S4 outputs: s = sigmoid = 1/d, and forwarded xf.
-    // S5 outputs: y = bf16( MODE_SILU ? s*xf : s ).
+    localparam integer LAT = 20;   // 19 stage banks (A1..R10) + the y_out bank
+    reg [LAT-1:0] vp;
 
-    // ---- pipeline registers (per lane) ----
-    // NOTE: the RAW-x forward chain (formerly s1_xf..s4_xf) now lives inside the
-    // `generate if (IS_SILU)` block near STAGE 5 -- it exists ONLY to carry x to
-    // the SiLU multiply, so it is gated out entirely in SIGMOID builds.
-    reg [31:0] s1_r   [0:LANES-1];   // reduced r
-    // k is the range-reduction exponent, clamped to [-K_MAX,K_MAX]=+/-64 and
-    // only k[10:0] is ever read by scale_pow2; a signed 9-bit reg (-256..255)
-    // holds it exactly -- the upper 23 bits were pure sign-extension.
-    reg signed [8:0] s1_k [0:LANES-1];
+    // ---- stage registers (per lane) ----
+    reg [31:0]       a1_z   [0:LANES-1];   // z = -clamp(x)
+    reg [31:0]       a1_kf  [0:LANES-1];   // z * log2e
+    reg signed [8:0] a2_k   [0:LANES-1];   // round(kf), clamped +/-64
+    reg [31:0]       a2_z   [0:LANES-1];
+    reg [31:0]       a2_m   [0:LANES-1];   // k * ln2
+    reg [31:0]       a3_r   [0:LANES-1];   // reduced r
+    reg signed [8:0] a3_k   [0:LANES-1];
+    reg [31:0]       e_p    [1:5][0:LANES-1];  // Horner accumulator per level
+    reg [31:0]       e_r    [1:5][0:LANES-1];  // forwarded r
+    reg signed [8:0] e_k    [1:5][0:LANES-1];  // forwarded k
+    reg [31:0]       d1_d   [0:LANES-1];   // 1 + 2^k * exp(r)
+    reg [31:0]       r1_xh  [0:LANES-1];   // 0.5*d
+    reg [31:0]       r1_y   [0:LANES-1];   // quake seed
+    reg [1:0]        r1_sp  [0:LANES-1];   // special: 0 none, 1 nan-out, 2 zero-out
+    reg [31:0]       r2_yy  [0:LANES-1];
+    reg [31:0]       r2_xh  [0:LANES-1], r2_y [0:LANES-1];
+    reg [1:0]        r2_sp  [0:LANES-1];
+    reg [31:0]       r3_xyy [0:LANES-1];
+    reg [31:0]       r3_xh  [0:LANES-1], r3_y [0:LANES-1];
+    reg [1:0]        r3_sp  [0:LANES-1];
+    reg [31:0]       r4_t   [0:LANES-1];
+    reg [31:0]       r4_xh  [0:LANES-1], r4_y [0:LANES-1];
+    reg [1:0]        r4_sp  [0:LANES-1];
+    reg [31:0]       r5_y   [0:LANES-1];
+    reg [31:0]       r5_xh  [0:LANES-1];
+    reg [1:0]        r5_sp  [0:LANES-1];
+    reg [31:0]       r6_yy  [0:LANES-1];
+    reg [31:0]       r6_xh  [0:LANES-1], r6_y [0:LANES-1];
+    reg [1:0]        r6_sp  [0:LANES-1];
+    reg [31:0]       r7_xyy [0:LANES-1];
+    reg [31:0]       r7_xh  [0:LANES-1], r7_y [0:LANES-1];
+    reg [1:0]        r7_sp  [0:LANES-1];
+    reg [31:0]       r8_t   [0:LANES-1];
+    reg [31:0]       r8_xh  [0:LANES-1], r8_y [0:LANES-1];
+    reg [1:0]        r8_sp  [0:LANES-1];
+    reg [31:0]       r9_y   [0:LANES-1];
+    reg [1:0]        r9_sp  [0:LANES-1];
+    reg [31:0]       r10_s  [0:LANES-1];   // sigmoid (post special mux)
 
-    // ---- S2a: inner half of the repipelined exp poly ----
-    // exp(r) is now evaluated across TWO stages (S2a -> S2b) so the 5-level
-    // Horner cone is split 3+2.  S2a holds the partial accumulator p_lo plus the
-    // forwarded r and k that the outer half (S2b) still needs.
-    reg [31:0] s2a_r  [0:LANES-1];   // forwarded r (outer Horner half consumes it)
-    reg [31:0] s2a_p  [0:LANES-1];   // partial exp poly (inner 3 Horner levels)
-    reg signed [8:0] s2a_k [0:LANES-1]; // forwarded k
-
-    reg signed [8:0] s2_k [0:LANES-1];
-    reg [31:0] s2_pr  [0:LANES-1];   // exp(r)
-
-    reg [31:0] s3_d   [0:LANES-1];   // 1 + exp(z)
-
-    reg [31:0] s4_s   [0:LANES-1];   // sigmoid
-
-    // ---- valid pipeline (deterministic LAT) ----
-    // Data takes LAT=5 registered stages (S1,S2,S3,S4 then y_out).  out_valid
-    // must land on the SAME cycle as y_out, so it is the 5th tap of a shift
-    // register seeded by in_valid: vpipe[0]<=in_valid (aligned with s1), and
-    // out_valid<=vpipe[LAT-2] (aligned with y_out, the 5th stage).
-    // LAT is now 6: the exp poly was split into S2a/S2b for fmax, inserting one
-    // extra registered stage (S1,S2a,S2b,S3,S4 then y_out).  out_valid is still
-    // the final tap of the valid shift register, so the handshake stays exact.
-    localparam integer LAT = 6;
-    reg [LAT-2:0] vpipe;          // LAT-1 internal taps; out_valid is the last
-
-    // ===================================================================
-    //  COMBINATIONAL "next-state" of each stage (always @*), then a single
-    //  clocked block registers them.  This keeps every stage's math in a
-    //  purely combinational context (no blocking-in-clocked warnings) and
-    //  every reg gets a value on every path (no latch): the @* blocks fully
-    //  assign their n_* targets each evaluation.
-    // ===================================================================
     integer j;
+    genvar  gl;
 
-    // ---- STAGE 1 next ----
-    reg [31:0]        n1_r  [0:LANES-1];
-    reg signed [8:0]  n1_k  [0:LANES-1];   // clamped to +/-64 -> 9 bits suffice
-    reg [31:0] c1_xraw, c1_xcl, c1_z, c1_kf, c1_klt;
-    reg signed [31:0] c1_k;
+    // ---- per-stage next-value combinationals ----
+    reg [31:0] cA_xraw, cA_xcl;
+    reg [31:0] nA1_z [0:LANES-1], nA1_kf [0:LANES-1];
     always @* begin
-        for (j = 0; j < LANES; j = j + 1) begin : ST1
-            // RAW x feeds the SiLU multiply; CLAMPED x feeds the sigmoid exp so
-            // the transcendental never overflows.  For SiLU's far tails the
-            // multiply uses the true x: silu(+big)~x (NOT clamped to X_SAT), and
-            // silu(-big)~0 because sigmoid(-big)~0 dominates the product anyway.
-            // Inf/nan inputs are sanitized to a finite x for the multiply too.
-            c1_xraw = sanitize_x(bf16_to_fp32(x_in[16*j +: 16]));
-            c1_xcl  = clamp_xsat(c1_xraw);
-            // z = -x  (sigmoid(x) = 1/(1+exp(-x)))
-            c1_z  = {~c1_xcl[31], c1_xcl[30:0]};
-            // k = round(z * log2e), clamped to [-K_MAX, K_MAX]
-            c1_kf = fp32_mul(c1_z, FP_LOG2E);
-            c1_k  = fp32_round_to_int(c1_kf);
-            if (c1_k >  K_MAX) c1_k =  K_MAX;
-            if (c1_k < -K_MAX) c1_k = -K_MAX;
-            // r = z - k*ln2  (subtract == add negated); build k as fp32 first.
-            c1_klt   = int_to_fp32(c1_k);
-            // (RAW x for the SiLU multiply is re-derived in the g_silu block.)
-            n1_r[j]  = fp32_add(c1_z, neg_fp32(fp32_mul(c1_klt, FP_LN2)));
-            n1_k[j]  = c1_k[8:0];                // |c1_k|<=64 -> low 9 bits exact
+        for (j = 0; j < LANES; j = j + 1) begin : NA1
+            cA_xraw   = sanitize_x(bf16_to_fp32(x_in[16*j +: 16]));
+            cA_xcl    = clamp_xsat(cA_xraw);
+            nA1_z[j]  = {~cA_xcl[31], cA_xcl[30:0]};             // z = -x
+            nA1_kf[j] = fp32_mul(nA1_z[j], FP_LOG2E);
+        end
+    end
+    reg signed [31:0] cA2_k;
+    reg [31:0]        cA2_klt;
+    reg signed [8:0]  nA2_k [0:LANES-1];
+    reg [31:0]        nA2_m [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NA2
+            cA2_k = fp32_round_to_int(a1_kf[j]);
+            if (cA2_k >  K_MAX) cA2_k =  K_MAX;
+            if (cA2_k < -K_MAX) cA2_k = -K_MAX;
+            nA2_k[j]  = cA2_k[8:0];
+            cA2_klt   = int_to_fp32(cA2_k);
+            nA2_m[j]  = fp32_mul(cA2_klt, FP_LN2);
+        end
+    end
+    reg [31:0] nA3_r [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NA3
+            nA3_r[j] = fp32_add(a2_z[j], neg_fp32(a2_m[j]));
+        end
+    end
+    // exp(r) Horner levels (E1..E5) -- same grouping as the old lo(3)+hi(2).
+    reg [31:0] nE_p [1:5][0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NE
+            nE_p[1][j] = fp32_add(FP_1_24, fp32_mul(a3_r[j],  FP_1_120));
+            nE_p[2][j] = fp32_add(FP_1_6,  fp32_mul(e_r[1][j], e_p[1][j]));
+            nE_p[3][j] = fp32_add(FP_1_2,  fp32_mul(e_r[2][j], e_p[2][j]));
+            nE_p[4][j] = fp32_add(FP_ONE,  fp32_mul(e_r[3][j], e_p[3][j]));
+            nE_p[5][j] = fp32_add(FP_ONE,  fp32_mul(e_r[4][j], e_p[4][j]));
+        end
+    end
+    reg [31:0] cD_ex;
+    reg [31:0] nD1_d [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : ND1
+            cD_ex    = scale_pow2(e_p[5][j], {{23{e_k[5][j][8]}}, e_k[5][j]});
+            nD1_d[j] = fp32_add(FP_ONE, cD_ex);
+        end
+    end
+    // rsqrt stages -- fp32_rsqrt(x) unrolled: specials at R1, Newton R2..R9,
+    // square + special mux at R10.
+    localparam [31:0] FP_HALF = 32'h3F000000, FP_3HALF = 32'h3FC00000;
+    reg [31:0] nR1_xh [0:LANES-1], nR1_y [0:LANES-1];
+    reg [1:0]  nR1_sp [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NR1
+            // exact fp32_rsqrt special tests on the SAME input d:
+            if ((d1_d[j][30:23] == 8'hFF && d1_d[j][22:0] != 23'b0) ||  // nan
+                d1_d[j][31] == 1'b1 ||                                  // x < 0
+                d1_d[j][30:23] == 8'b0)                                 // zero/denorm
+                 nR1_sp[j] = 2'd1;                                      // -> nan out
+            else if (d1_d[j][30:23] == 8'hFF)                           // +inf
+                 nR1_sp[j] = 2'd2;                                      // -> +0 out
+            else nR1_sp[j] = 2'd0;
+            nR1_xh[j] = fp32_mul(FP_HALF, d1_d[j]);
+            nR1_y[j]  = 32'h5F3759DF - (d1_d[j] >> 1);
+        end
+    end
+    reg [31:0] nR2_yy [0:LANES-1], nR3_xyy [0:LANES-1], nR4_t [0:LANES-1];
+    reg [31:0] nR5_y  [0:LANES-1];
+    reg [31:0] nR6_yy [0:LANES-1], nR7_xyy [0:LANES-1], nR8_t [0:LANES-1];
+    reg [31:0] nR9_y  [0:LANES-1], nR10_s [0:LANES-1];
+    always @* begin
+        for (j = 0; j < LANES; j = j + 1) begin : NRN
+            nR2_yy[j]  = fp32_mul(r1_y[j],  r1_y[j]);
+            nR3_xyy[j] = fp32_mul(r2_xh[j], r2_yy[j]);
+            nR4_t[j]   = fp32_add(FP_3HALF, {r3_xyy[j][31]^1'b1, r3_xyy[j][30:0]});
+            nR5_y[j]   = fp32_mul(r4_y[j],  r4_t[j]);
+            nR6_yy[j]  = fp32_mul(r5_y[j],  r5_y[j]);
+            nR7_xyy[j] = fp32_mul(r6_xh[j], r6_yy[j]);
+            nR8_t[j]   = fp32_add(FP_3HALF, {r7_xyy[j][31]^1'b1, r7_xyy[j][30:0]});
+            nR9_y[j]   = fp32_mul(r8_y[j],  r8_t[j]);
+            // R10: sigmoid = rsqrt(d)^2, with fp32_rsqrt's special returns:
+            case (r9_sp[j])
+                2'd1:    nR10_s[j] = fp32_mul(32'h7FC00000, 32'h7FC00000);
+                2'd2:    nR10_s[j] = fp32_mul(32'h00000000, 32'h00000000);
+                default: nR10_s[j] = fp32_mul(r9_y[j], r9_y[j]);
+            endcase
         end
     end
 
-    // ---- STAGE 2a next : inner 3 Horner levels of exp(r) ----
-    reg [31:0]        n2a_p [0:LANES-1];
-    always @* begin
-        for (j = 0; j < LANES; j = j + 1) begin : ST2A
-            n2a_p[j] = exp_poly_lo(s1_r[j]);
-        end
-    end
-
-    // ---- STAGE 2b next : outer 2 Horner levels -> exp(r) ----
-    reg [31:0]        n2_pr [0:LANES-1];
-    always @* begin
-        for (j = 0; j < LANES; j = j + 1) begin : ST2B
-            n2_pr[j] = exp_poly_hi(s2a_r[j], s2a_p[j]);
-        end
-    end
-
-    // ---- STAGE 3 next : 2^k scale + denominator ----
-    reg [31:0] n3_d [0:LANES-1];
-    reg [31:0] c3_ex;
-    always @* begin
-        for (j = 0; j < LANES; j = j + 1) begin : ST3
-            // s2_k is a 9-bit signed k; sign-extend to the 32-bit arg width
-            // (value-identical to the old 32-bit k that scale_pow2 expects).
-            c3_ex   = scale_pow2(s2_pr[j], {{23{s2_k[j][8]}}, s2_k[j]});
-
-            n3_d[j] = fp32_add(FP_ONE, c3_ex);          // 1 + exp(z)
-        end
-    end
-
-    // ---- STAGE 4 next : reciprocal -> sigmoid ----
-    reg [31:0] n4_s [0:LANES-1];
-    always @* begin
-        for (j = 0; j < LANES; j = j + 1) begin : ST4
-            n4_s[j] = fp32_recip_pos(s3_d[j]);          // 1/(1+exp(z))
-        end
-    end
-
-    // ---- STAGE 5 next : SiLU multiply + narrow to bf16 ----
-    // The RAW-x forward chain (xf: stages 1..4) is needed ONLY to carry x to the
-    // SiLU multiply; in SIGMOID mode it is pure dead-code.  Gate the whole chain
-    // under `generate if (IS_SILU)` so the intent is structural/explicit (the
-    // optimizer already prunes it in SIGMOID builds -- this makes it so by design).
-    reg [LANES*16-1:0] n5_y;
-    reg [31:0] c5_val;
+    // ---- F1: SiLU multiply + narrow to bf16 (x carried IS_SILU-only) ----
+    reg [LANES*16-1:0] n_y;
+    reg [31:0] cF_val;
     generate
     if (IS_SILU) begin : g_silu
-        // RAW (sanitized) x forward pipeline, aligned 1:1 with the sigmoid
-        // stages so x5 reaches the final stage on the same beat as the sigmoid
-        // result.  The exp poly split (S2a/S2b) added one stage, so the chain is
-        // now 5 deep (x1..x5) instead of 4 -- still pure register insertion.
-        reg [31:0] x1  [0:LANES-1];
-        reg [31:0] x2  [0:LANES-1];
-        reg [31:0] x3  [0:LANES-1];
-        reg [31:0] x4  [0:LANES-1];
-        reg [31:0] x5  [0:LANES-1];   // x reaching the final stage (x * sigmoid)
-        reg [31:0] nx1 [0:LANES-1];   // stage-1 next (sanitized raw x)
-        integer    jx;
-        always @* begin
-            for (jx = 0; jx < LANES; jx = jx + 1)
-                nx1[jx] = sanitize_x(bf16_to_fp32(x_in[16*jx +: 16]));
-        end
+        // raw-x delay line, one tap per stage, aligned with the sigmoid pipe.
+        reg [31:0] xfw [1:LAT-1][0:LANES-1];
+        integer jx, ks;
         always @(posedge clk) begin
             if (rst) begin
-                for (jx = 0; jx < LANES; jx = jx + 1) begin
-                    x1[jx] <= 32'b0; x2[jx] <= 32'b0;
-                    x3[jx] <= 32'b0; x4[jx] <= 32'b0; x5[jx] <= 32'b0;
-                end
+                for (ks = 1; ks <= LAT-1; ks = ks + 1)
+                    for (jx = 0; jx < LANES; jx = jx + 1) xfw[ks][jx] <= 32'b0;
             end else begin
                 for (jx = 0; jx < LANES; jx = jx + 1) begin
-                    x1[jx] <= nx1[jx];
-                    x2[jx] <= x1[jx];
-                    x3[jx] <= x2[jx];
-                    x4[jx] <= x3[jx];
-                    x5[jx] <= x4[jx];
+                    if (in_valid) xfw[1][jx] <= sanitize_x(bf16_to_fp32(x_in[16*jx +: 16]));
+                    for (ks = 2; ks <= LAT-1; ks = ks + 1)
+                        if (vp[ks-2]) xfw[ks][jx] <= xfw[ks-1][jx];
                 end
             end
         end
         always @* begin
-            n5_y = {LANES*16{1'b0}};
+            n_y = {LANES*16{1'b0}};
             for (jx = 0; jx < LANES; jx = jx + 1) begin
-                c5_val = fp32_mul(s4_s[jx], x5[jx]);          // x * sigmoid(x)
-                n5_y[16*jx +: 16] = fp32_to_bf16(c5_val);
+                cF_val = fp32_mul(r10_s[jx], xfw[LAT-1][jx]);    // x * sigmoid(x)
+                n_y[16*jx +: 16] = fp32_to_bf16(cF_val);
             end
         end
     end else begin : g_sigmoid
         integer jx;
         always @* begin
-            n5_y = {LANES*16{1'b0}};
+            n_y = {LANES*16{1'b0}};
             for (jx = 0; jx < LANES; jx = jx + 1) begin
-                c5_val = s4_s[jx];                            // sigmoid(x)
-                n5_y[16*jx +: 16] = fp32_to_bf16(c5_val);
+                cF_val = r10_s[jx];
+                n_y[16*jx +: 16] = fp32_to_bf16(cF_val);
             end
         end
     end
     endgenerate
 
-    // ---- single clocked block: register every stage's next-state ----
+    // ---- pipeline registers: stage k enabled by its valid tap ----
+    integer L2;
     always @(posedge clk) begin
         if (rst) begin
             out_valid <= 1'b0;
             y_out     <= {LANES*16{1'b0}};
-            vpipe     <= {(LAT-1){1'b0}};
+            vp        <= {LAT{1'b0}};
             for (j = 0; j < LANES; j = j + 1) begin
-                s1_r[j]  <= 32'b0; s1_k[j]  <= 9'sb0;
-                s2a_r[j] <= 32'b0; s2a_p[j] <= 32'b0; s2a_k[j] <= 9'sb0;
-                s2_k[j]  <= 9'sb0; s2_pr[j] <= 32'b0;
-                s3_d[j]  <= 32'b0;
-                s4_s[j]  <= 32'b0;
+                a1_z[j] <= 32'b0; a1_kf[j] <= 32'b0;
+                a2_k[j] <= 9'sb0; a2_z[j] <= 32'b0; a2_m[j] <= 32'b0;
+                a3_r[j] <= 32'b0; a3_k[j] <= 9'sb0;
+                for (L2 = 1; L2 <= 5; L2 = L2 + 1) begin
+                    e_p[L2][j] <= 32'b0; e_r[L2][j] <= 32'b0; e_k[L2][j] <= 9'sb0;
+                end
+                d1_d[j] <= 32'b0;
+                r1_xh[j] <= 32'b0; r1_y[j] <= 32'b0; r1_sp[j] <= 2'b0;
+                r2_yy[j] <= 32'b0; r2_xh[j] <= 32'b0; r2_y[j] <= 32'b0; r2_sp[j] <= 2'b0;
+                r3_xyy[j] <= 32'b0; r3_xh[j] <= 32'b0; r3_y[j] <= 32'b0; r3_sp[j] <= 2'b0;
+                r4_t[j] <= 32'b0; r4_xh[j] <= 32'b0; r4_y[j] <= 32'b0; r4_sp[j] <= 2'b0;
+                r5_y[j] <= 32'b0; r5_xh[j] <= 32'b0; r5_sp[j] <= 2'b0;
+                r6_yy[j] <= 32'b0; r6_xh[j] <= 32'b0; r6_y[j] <= 32'b0; r6_sp[j] <= 2'b0;
+                r7_xyy[j] <= 32'b0; r7_xh[j] <= 32'b0; r7_y[j] <= 32'b0; r7_sp[j] <= 2'b0;
+                r8_t[j] <= 32'b0; r8_xh[j] <= 32'b0; r8_y[j] <= 32'b0; r8_sp[j] <= 2'b0;
+                r9_y[j] <= 32'b0; r9_sp[j] <= 2'b0;
+                r10_s[j] <= 32'b0;
             end
         end else begin
-            // valid shift register (feed-forward, deterministic LAT); out_valid
-            // is the final tap, aligned with the y_out register update.
-            vpipe     <= {vpipe[LAT-3:0], in_valid};
-            out_valid <= vpipe[LAT-2];
+            vp        <= {vp[LAT-2:0], in_valid};
+            out_valid <= vp[LAT-2];
+            if (vp[LAT-2]) y_out <= n_y;
             for (j = 0; j < LANES; j = j + 1) begin
-                // S1
-                s1_r[j]  <= n1_r[j];
-                s1_k[j]  <= n1_k[j];
-                // S2a (inner exp poly half ; forward r and k)
-                s2a_r[j] <= s1_r[j];
-                s2a_p[j] <= n2a_p[j];
-                s2a_k[j] <= s1_k[j];
-                // S2b (forward k ; finish exp poly -> pr)
-                s2_k[j]  <= s2a_k[j];
-                s2_pr[j] <= n2_pr[j];
-                // S3 (compute d)
-                s3_d[j]  <= n3_d[j];
-                // S4 (compute sigmoid)
-                s4_s[j]  <= n4_s[j];
+                if (in_valid) begin
+                    a1_z[j] <= nA1_z[j]; a1_kf[j] <= nA1_kf[j];
+                end
+                if (vp[0]) begin
+                    a2_k[j] <= nA2_k[j]; a2_z[j] <= a1_z[j]; a2_m[j] <= nA2_m[j];
+                end
+                if (vp[1]) begin
+                    a3_r[j] <= nA3_r[j]; a3_k[j] <= a2_k[j];
+                end
+                if (vp[2]) begin
+                    e_p[1][j] <= nE_p[1][j]; e_r[1][j] <= a3_r[j]; e_k[1][j] <= a3_k[j];
+                end
+                if (vp[3]) begin
+                    e_p[2][j] <= nE_p[2][j]; e_r[2][j] <= e_r[1][j]; e_k[2][j] <= e_k[1][j];
+                end
+                if (vp[4]) begin
+                    e_p[3][j] <= nE_p[3][j]; e_r[3][j] <= e_r[2][j]; e_k[3][j] <= e_k[2][j];
+                end
+                if (vp[5]) begin
+                    e_p[4][j] <= nE_p[4][j]; e_r[4][j] <= e_r[3][j]; e_k[4][j] <= e_k[3][j];
+                end
+                if (vp[6]) begin
+                    e_p[5][j] <= nE_p[5][j]; e_r[5][j] <= e_r[4][j]; e_k[5][j] <= e_k[4][j];
+                end
+                if (vp[7])  d1_d[j] <= nD1_d[j];
+                if (vp[8])  begin
+                    r1_xh[j] <= nR1_xh[j]; r1_y[j] <= nR1_y[j]; r1_sp[j] <= nR1_sp[j];
+                end
+                if (vp[9])  begin
+                    r2_yy[j] <= nR2_yy[j];
+                    r2_xh[j] <= r1_xh[j]; r2_y[j] <= r1_y[j]; r2_sp[j] <= r1_sp[j];
+                end
+                if (vp[10]) begin
+                    r3_xyy[j] <= nR3_xyy[j];
+                    r3_xh[j] <= r2_xh[j]; r3_y[j] <= r2_y[j]; r3_sp[j] <= r2_sp[j];
+                end
+                if (vp[11]) begin
+                    r4_t[j] <= nR4_t[j];
+                    r4_xh[j] <= r3_xh[j]; r4_y[j] <= r3_y[j]; r4_sp[j] <= r3_sp[j];
+                end
+                if (vp[12]) begin
+                    r5_y[j] <= nR5_y[j];
+                    r5_xh[j] <= r4_xh[j]; r5_sp[j] <= r4_sp[j];
+                end
+                if (vp[13]) begin
+                    r6_yy[j] <= nR6_yy[j];
+                    r6_xh[j] <= r5_xh[j]; r6_y[j] <= r5_y[j]; r6_sp[j] <= r5_sp[j];
+                end
+                if (vp[14]) begin
+                    r7_xyy[j] <= nR7_xyy[j];
+                    r7_xh[j] <= r6_xh[j]; r7_y[j] <= r6_y[j]; r7_sp[j] <= r6_sp[j];
+                end
+                if (vp[15]) begin
+                    r8_t[j] <= nR8_t[j];
+                    r8_xh[j] <= r7_xh[j]; r8_y[j] <= r7_y[j]; r8_sp[j] <= r7_sp[j];
+                end
+                if (vp[16]) begin
+                    r9_y[j] <= nR9_y[j]; r9_sp[j] <= r8_sp[j];
+                end
+                if (vp[17]) r10_s[j] <= nR10_s[j];
             end
-            // S5 output
-            y_out <= n5_y;
         end
     end
 

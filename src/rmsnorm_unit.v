@@ -112,28 +112,65 @@ module rmsnorm_unit #(
     reg [LANES*16-1:0] buf_mem [0:NBEATS-1];
 
     // ---- FSM ----
-    localparam [2:0] S_IDLE=3'd0, S_REDUCE=3'd1, S_RS0=3'd2, S_RS1=3'd3,
-                     S_NORM=3'd4, S_DONE=3'd5;
+    localparam [2:0] S_IDLE=3'd0, S_REDUCE=3'd1, S_RWAIT=3'd6, S_RS0=3'd2,
+                     S_RS0B=3'd7, S_RS1=3'd3, S_NORM=3'd4, S_DONE=3'd5;
     reg [2:0]        state;
     reg [BAW:0]      beat;          // beat counter (one extra bit for == NBEATS)
     reg [31:0]       sumsq;         // fp32 running Σx^2
     reg [31:0]       inv;           // fp32 rsqrt result (scale)
-    reg [31:0]       meps;          // fp32 mean+eps
+    reg [31:0]       mean;          // fp32 sumsq/LEN      (S_RS0)
+    reg [31:0]       meps;          // fp32 mean+eps       (S_RS0B)
+    // rsqrt sequencer scratch (S_RS1 runs fp32_rsqrt one op per cycle)
+    reg [3:0]        rs_step;
+    reg [31:0]       rs_xh, rs_y, rs_yy, rs_xyy, rs_t;
+    localparam [31:0] FP_HALF = 32'h3F000000, FP_3HALF = 32'h3FC00000;
 
-    // ---- combinational LANES-wide square + adder tree (1 cycle) ----
-    // tree_sum = Σ_j (x_lane_j)^2  in fp32, for the current x_in beat.
+    // ---- REDUCE PIPE (repipelined for fmax -- bit-exact) ----
+    // The old single-cycle cone did LANES squares + a LANES-1-deep LEFT-CHAIN of
+    // fp32 adds + the accumulate, all between two edges.  Now: one mul stage
+    // (all lanes parallel), then ONE chain-add per stage -- the SAME left-assoc
+    // grouping sq[0]+sq[1])+sq[2])+... as before, so sumsq is bit-identical --
+    // then the accumulate add on the final tap.  RLAT = 1 + (LANES-1).
     integer k;
     reg [31:0] sq [0:LANES-1];
-    reg [31:0] tree_sum;
     always @* begin
         for (k = 0; k < LANES; k = k + 1) begin : LANE_SQ
             sq[k] = fp32_mul(bf16_to_fp32(x_in[16*k +: 16]),
                              bf16_to_fp32(x_in[16*k +: 16]));
         end
-        tree_sum = sq[0];
-        for (k = 1; k < LANES; k = k + 1)
-            tree_sum = fp32_add(tree_sum, sq[k]);
     end
+    localparam integer RLAT = 1 + (LANES - 1);
+    reg [RLAT-1:0] rvp;                                  // reduce valid taps
+    reg [31:0] red_sq  [0:LANES-1];                      // P0: squares
+    generate
+    if (LANES > 1) begin : g_redchain
+        reg [31:0] red_acc [1:LANES-1];                  // acc after adding lane i
+        reg [31:0] red_fwd [1:LANES-1][0:LANES-1];       // sq lanes still pending
+        integer ki;
+        always @(posedge clk) begin
+            if (rst) begin
+                for (ki = 1; ki <= LANES-1; ki = ki + 1) red_acc[ki] <= 32'b0;
+            end else begin
+                if (rvp[0]) begin
+                    red_acc[1] <= fp32_add(red_sq[0], red_sq[1]);
+                    for (ki = 2; ki < LANES; ki = ki + 1)
+                        red_fwd[1][ki] <= red_sq[ki];
+                end
+                for (ki = 2; ki <= LANES-1; ki = ki + 1)
+                    if (rvp[ki-1]) begin : CHAIN
+                        integer km;
+                        red_acc[ki] <= fp32_add(red_acc[ki-1], red_fwd[ki-1][ki]);
+                        for (km = ki+1; km < LANES; km = km + 1)
+                            red_fwd[ki][km] <= red_fwd[ki-1][km];
+                    end
+            end
+        end
+        // final chain value, consumed by the accumulate below
+        wire [31:0] red_final = red_acc[LANES-1];
+    end else begin : g_redchain
+        wire [31:0] red_final = red_sq[0];
+    end
+    endgenerate
 
     // ---- combinational normalize of the current buffered beat ----
     // y_lane = bf16( (x_lane * inv) * gamma_lane )
@@ -163,13 +200,27 @@ module rmsnorm_unit #(
             beat    <= {(BAW+1){1'b0}};
             sumsq   <= 32'b0;
             inv     <= 32'b0;
+            mean    <= 32'b0;
             meps    <= 32'b0;
+            rvp     <= {RLAT{1'b0}};
+            rs_step <= 4'd0;
+            rs_xh <= 32'b0; rs_y <= 32'b0; rs_yy <= 32'b0;
+            rs_xyy <= 32'b0; rs_t <= 32'b0;
+            for (k = 0; k < LANES; k = k + 1) red_sq[k] <= 32'b0;
         end else begin
             // defaults (every reg gets a value every cycle -> no latch)
             done    <= 1'b0;
             y_valid <= 1'b0;
             in_req  <= 1'b0;
             g_req   <= 1'b0;
+
+            // ---- reduce pipe front + accumulate (state-independent taps) ----
+            // shift-left form (no part-select) so RLAT==1 (LANES==1) elaborates
+            rvp <= (rvp << 1) | {{(RLAT-1){1'b0}}, (state == S_REDUCE) && x_valid};
+            if ((state == S_REDUCE) && x_valid)
+                for (k = 0; k < LANES; k = k + 1) red_sq[k] <= sq[k];
+            if (rvp[RLAT-1])
+                sumsq <= fp32_add(sumsq, g_redchain.red_final);
 
             case (state)
                 // -------------------------------------------------------
@@ -184,31 +235,72 @@ module rmsnorm_unit #(
                     end
                 end
                 // -------------------------- REDUCE ---------------------
+                //   beats stream through the reduce pipe (1/cycle); the
+                //   accumulate happens on the pipe's final tap above, so the
+                //   FSM only counts accepted beats then waits for the drain.
                 S_REDUCE: begin
                     in_req <= 1'b1;              // keep asking until accepted
                     if (x_valid) begin
-                        sumsq <= fp32_add(sumsq, tree_sum);
                         buf_mem[beat[BAW-1:0]] <= x_in;
                         if (beat == LAST_BEAT) begin
                             in_req <= 1'b0;
                             beat   <= {(BAW+1){1'b0}};
-                            state  <= S_RS0;
+                            state  <= S_RWAIT;
                         end else begin
                             beat <= beat + 1'b1;
                         end
                     end
                 end
+                S_RWAIT:                          // drain: last accumulate is
+                    if (rvp == {RLAT{1'b0}}) state <= S_RS0;   // one edge after
                 // -------------------------- RSQRT ----------------------
-                // mean = sumsq * (1/LEN); meps = mean + eps
+                //   mean = sumsq/LEN and meps = mean+eps, one fp op per state
+                //   (the old S_RS0 chained mul+add in one cycle), then the
+                //   Quake rsqrt runs ONE op per cycle (rs_step 0..9) -- the
+                //   exact fp32_rsqrt call sequence incl. its special-case
+                //   early returns, so `inv` is bit-identical.
                 S_RS0: begin
-                    meps  <= fp32_add(fp32_mul(sumsq, INV_LEN), EPS);
-                    state <= S_RS1;
+                    mean  <= fp32_mul(sumsq, INV_LEN);
+                    state <= S_RS0B;
                 end
-                // inv = rsqrt(meps)
+                S_RS0B: begin
+                    meps    <= fp32_add(mean, EPS);
+                    rs_step <= 4'd0;
+                    state   <= S_RS1;
+                end
                 S_RS1: begin
-                    inv    <= fp32_rsqrt(meps);
-                    g_req  <= 1'b1;              // request first gamma beat
-                    state  <= S_NORM;
+                    rs_step <= rs_step + 4'd1;
+                    case (rs_step)
+                        4'd0: begin
+                            // fp32_rsqrt specials, tested on the same input:
+                            if ((meps[30:23] == 8'hFF && meps[22:0] != 23'b0) ||
+                                meps[31] == 1'b1 || meps[30:23] == 8'b0) begin
+                                inv   <= 32'h7FC00000;       // nan (x<=0/nan)
+                                g_req <= 1'b1;
+                                state <= S_NORM;
+                            end else if (meps[30:23] == 8'hFF) begin
+                                inv   <= 32'h00000000;       // 1/sqrt(inf)=+0
+                                g_req <= 1'b1;
+                                state <= S_NORM;
+                            end else begin
+                                rs_xh <= fp32_mul(FP_HALF, meps);
+                                rs_y  <= 32'h5F3759DF - (meps >> 1);
+                            end
+                        end
+                        4'd1: rs_yy  <= fp32_mul(rs_y, rs_y);
+                        4'd2: rs_xyy <= fp32_mul(rs_xh, rs_yy);
+                        4'd3: rs_t   <= fp32_add(FP_3HALF, {rs_xyy[31]^1'b1, rs_xyy[30:0]});
+                        4'd4: rs_y   <= fp32_mul(rs_y, rs_t);
+                        4'd5: rs_yy  <= fp32_mul(rs_y, rs_y);
+                        4'd6: rs_xyy <= fp32_mul(rs_xh, rs_yy);
+                        4'd7: rs_t   <= fp32_add(FP_3HALF, {rs_xyy[31]^1'b1, rs_xyy[30:0]});
+                        4'd8: rs_y   <= fp32_mul(rs_y, rs_t);
+                        default: begin           // step 9: done
+                            inv   <= rs_y;
+                            g_req <= 1'b1;       // request first gamma beat
+                            state <= S_NORM;
+                        end
+                    endcase
                 end
                 // ------------------------- NORMALIZE -------------------
                 S_NORM: begin

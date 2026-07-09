@@ -100,7 +100,7 @@ module glm_act_tb;
     localparam integer LANES = 4;
     localparam [31:0]  X_SAT = 32'h41800000;   // 16.0 fp32 (the DUT default)
     localparam real    XSAT_R = 16.0;
-    localparam integer LAT   = 5;
+    localparam integer LAT   = 64;  // >= the DUT pipeline depth (repipelined core: 20); only the drain wait uses this
 
     // tolerances (see header)
     localparam real ABS_TOL = 1.0/128.0;       // 2^-7
