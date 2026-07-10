@@ -214,7 +214,7 @@
     <p class="lead reveal" style="animation-delay:.12s">A local, single-user appliance that runs the full <b>753-billion-parameter</b> GLM-5.2 model <b>fully offline — air-gapped, no internet, ever.</b> It finally puts a frontier model onto the work — and into the places — that the cloud shuts out, and you <b>own it outright.</b> Nothing leaves, because <b>there is no path out.</b></p>
     <div class="facts">
       <div class="fact reveal"><div class="n">753<span class="u">B</span></div><div class="k">params, run locally</div></div>
-      <div class="fact reveal"><div class="n">5–40<span class="u">tok/s</span></div><div class="k">single-user, staged [est]</div></div>
+      <div class="fact reveal"><div class="n">5–95<span class="u">tok/s</span></div><div class="k">single-user, staged [est]</div></div>
       <div class="fact reveal"><div class="n">467<span class="u">GB</span></div><div class="k">Q4_K GGUF · on the box</div></div>
       <div class="fact reveal"><div class="n">0<span class="u">net</span></div><div class="k">internet required · air-gapped</div></div>
     </div>
@@ -261,7 +261,7 @@
     <div class="spec" style="margin-top:18px">
       <div class="cell"><div class="lab">Rung ① prove-it (now)</div><div class="val">~5–8 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">budget FPGA + DDR4 · the demo</div></div>
       <div class="cell"><div class="lab">Rung ② product</div><div class="val">~15–40 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">custom board, DDR5/HBM</div></div>
-      <div class="cell"><div class="lab">Rung ③ ASIC (volume)</div><div class="val">~40+ <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">lower cost + power at scale</div></div>
+      <div class="cell"><div class="lab">Rung ③ ASIC (volume)</div><div class="val">~76–95 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">512GB memory-resident appliance — <a href="board.html">board concept</a></div></div>
     </div>
     <p class="note" style="margin-top:12px">Performance is set by <b>memory bandwidth = the chip's IO/PHY</b> (compute is cheap — the die idles behind the memory system). So it's staged honestly: <b>prove it cheap on an FPGA → custom board → ASIC at volume</b>. Same GGUF model on every rung; only the bandwidth the silicon feeds it changes. The tok/s figures are <b>bandwidth-roofline [EST]s</b>, gated on the FPGA demo below.</p>
   </div>
@@ -282,7 +282,7 @@
           <tr><td><span class="what">Whole-chip structural gate</span><div class="src">glm_q4k_system_cdc · yosys check-assert</div></td><td>two-clock product top</td><td class="num">0 unresolved</td><td><span class="chip e">elaborated</span></td></tr>
           <tr><td><span class="what">Assembled-model fidelity</span><div class="src">end-to-end Q4_K forward vs golden</div></td><td>whole-forward golden</td><td class="num">golden in build</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
           <tr><td><span class="what">Real UD-Q4_K_XL / mixed-type</span><div class="src">Q6_K / Q8_0 / F16 tensors + real file</div></td><td>published GGUF</td><td class="num">datapath: Q4_K first</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
-          <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~15–40 tok/s</td><td><span class="chip e">[est]</span></td></tr>
+          <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~76–95 tok/s</td><td><span class="chip e">[est]</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -301,7 +301,7 @@
       <div class="body">
         <div>
           <p>The FPGA fit sets the box's BOM, and the BOM sets the per-seat price the whole business rests on. The compute datapath <b>elaborates at full 753B scale</b> and the whole chip passes the structural sign-off (<span class="mono">yosys check-assert</span>, 0 unresolved) — the design is coherent end-to-end, not a sketch.</p>
-          <p style="margin-top:12px">The target part is named — a <b>Kintex UltraScale+ XCKU3P</b> (600 DSP48E2, DDR4 + PCIe) — and the buildable proof is <b>priced: a ~$958 dev board</b> (≈$500 used), not a research program. What remains is the one gate that needs the vendor tool: the <b>Q4_K datapath's routed fit + Fmax on Vivado</b>, which converts the roofline [EST]s into a measured tok/s. That run is the honest next milestone — not yet done.</p>
+          <p style="margin-top:12px">The target part is named — a <b>Kintex UltraScale+ XCKU3P</b> (1,368 DSP48E2, DDR4 + PCIe) — and the buildable proof is <b>priced: a ~$958 dev board</b> (≈$500 used), not a research program. The vendor-tool gate is <b>done</b>: the Q4_K product top <b>places and routes on the XCKU3P</b> (87.5% LUT, routed 46.5&nbsp;MHz after a bit-exact repipeline campaign). What remains is the board itself running real weights — that demo converts the roofline [EST]s into a measured tok/s.</p>
         </div>
         <div class="metrics">
           <div class="r"><span class="l">Target FPGA</span><span class="v ok">XCKU3P · 600 DSP</span></div>
@@ -356,7 +356,7 @@
       <div class="gate">
         <div class="n">STEP 2</div>
         <h3>Measured fit → a demo on silicon</h3>
-        <p>The target part is named (XCKU3P) and the proof is priced — a ~$958 dev board. Next: the Q4_K routed fit + Fmax (Vivado), then that board running real weights → a measured tok/s.</p>
+        <p>The target part is named (XCKU3P), the proof is priced — a ~$958 dev board — and the routed fit + Fmax are measured (87.5% LUT, 46.5&nbsp;MHz). Next: that board running real weights → a measured tok/s.</p>
         <div class="need">status · part named · Vivado routed fit next (§04)</div>
       </div>
       <div class="gate">
