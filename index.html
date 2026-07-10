@@ -270,7 +270,7 @@
 <section>
   <div class="wrap">
     <div class="sechead"><span class="idx">03</span><h2>Verified RTL — proven, elaborated, and the gaps named</h2><span class="chip m"><span class="tick"></span>verification-first</span></div>
-    <p class="lede">Most hardware pitches are slides. This one is <b>verified RTL</b>, gated in CI. The Q4_K math is <b>bit-exact to the GGML k-quant reference</b> and the memory controllers are <b>formally proven</b>. What is <b>not yet</b> proven is stated as plainly as what is — a whole-model golden and real-file validation are in build. For a box a <b>security team must sign off on</b>, an honest verification ledger is the close, not a blanket claim.</p>
+    <p class="lede">Most hardware pitches are slides. This one is <b>verified RTL</b>, gated in CI. The Q4_K math is <b>bit-exact to the GGML k-quant reference</b> and the memory controllers are <b>formally proven</b>. The <b>whole-model forward is bit-exact</b> to an assembled golden (1,155 tests) and the dequant layer is <b>bitwise-equal to llama.cpp's own code on a real published GGUF</b> (104.6M weights). What is <b>not yet</b> proven is stated as plainly as what is. For a box a <b>security team must sign off on</b>, an honest verification ledger is the close, not a blanket claim.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Evidence</th><th>Against</th><th>Result</th><th>Status</th></tr></thead>
@@ -280,13 +280,15 @@
           <tr><td><span class="what">Memory-system controllers</span><div class="src">formal BMC + k-induction, z3</div></td><td>bounded + unbounded</td><td class="num">7 controllers proven</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
           <tr><td><span class="what">Full 753B config</span><div class="src">6144 / 78L / 256-expert / 154880</div></td><td>elaboration, true dims</td><td class="num"><span class="c">0</span> errors</td><td><span class="chip e">elaborated</span></td></tr>
           <tr><td><span class="what">Whole-chip structural gate</span><div class="src">glm_q4k_system_cdc · yosys check-assert</div></td><td>two-clock product top</td><td class="num">0 unresolved</td><td><span class="chip e">elaborated</span></td></tr>
-          <tr><td><span class="what">Assembled-model fidelity</span><div class="src">end-to-end Q4_K forward vs golden</div></td><td>whole-forward golden</td><td class="num">golden in build</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
-          <tr><td><span class="what">Real UD-Q4_K_XL / mixed-type</span><div class="src">Q6_K / Q8_0 / F16 tensors + real file</div></td><td>published GGUF</td><td class="num">datapath: Q4_K first</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
+          <tr><td><span class="what">Assembled-model fidelity</span><div class="src">end-to-end Q4_K forward vs golden</div></td><td>whole-forward golden</td><td class="num"><span class="c">1,155/1,155</span> bit-exact</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
+          <tr><td><span class="what">Real-GGUF dequant crosscheck</span><div class="src">q4k_ref vs llama.cpp's own dequant code</div></td><td>published GGUF, raw bytes</td><td class="num"><span class="c">104.6M</span> weights bitwise-equal</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
+          <tr><td><span class="what">Residency-SKU configuration</span><div class="src">RESIDENT=1 · expert refills from LPDDR tier</div></td><td>two-DUT contrast sim + formal equiv of default</td><td class="num"><span class="c">19/19</span> + equiv proven</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
+          <tr><td><span class="what">llama.cpp full-runtime equality</span><div class="src">attention/accumulation order differs by design</div></td><td>whole-runtime numerics</td><td class="num">out-of-contract</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
           <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~76–95 tok/s</td><td><span class="chip e">[est]</span></td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">Every "proven" row is reproducible from the repo (<span class="mono">make q4k</span>, <span class="mono">make formal</span>). "Proven" here means <b>bit-exact to our own GGML k-quant reimplementation</b>; the mixed Q6_K/Q8_0/F16 tensors and the <b>assembled whole-model forward</b> are now in that proven set (<span class="mono">make mixedtype</span>, <span class="mono">make model-q4k</span> — 1,155 tests bit-exact); matching the <b>real published GGUF bytes / llama.cpp runtime</b> is the <b>open</b> item above — named, not buried.</p>
+    <p class="note">Every "proven" row is reproducible from the repo (<span class="mono">make q4k</span>, <span class="mono">make formal</span>, <span class="mono">make model-q4k</span>, <span class="mono">make resident</span>). The self-referential caveat is closed at the dequant layer: our reimplementation is <b>bitwise-equal to llama.cpp's own <span class="mono">dequantize_row_q4_K/_q6_K</span> on a real published GGUF's raw blocks</b> — so by transitivity the RTL dequant ≡ the real file's ggml dequant. What stays <b>open</b> is named, not buried: <b>whole-runtime numeric equality with llama.cpp</b> is out-of-contract by design (fp32 accumulation order differs; our contract is ggml-exact dequant + our own documented order), and the Q8_0 tensor class awaits a file that contains one.</p>
   </div>
 </section>
 
@@ -296,7 +298,7 @@
     <div class="flag">
       <div class="top">
         <div class="stamp">▍ Next gate</div>
-        <h3>The biggest hardware unknown — "does the die fit a real, affordable FPGA?" — now has a named target part, a priced board, and one bounded run left to close it.</h3>
+        <h3>The biggest hardware unknown — "does the die fit a real, affordable FPGA?" — is now <b>measured, not estimated</b>: the Q4_K product top places and routes on the named ~$958-board part. What's left is the physical board demo.</h3>
       </div>
       <div class="body">
         <div>
@@ -308,7 +310,7 @@
           <div class="r"><span class="l">Full-scale elaborate</span><span class="v ok">✓ 753B · 0 err</span></div>
           <div class="r"><span class="l">Whole-chip gate</span><span class="v ok">✓ check-assert</span></div>
           <div class="r"><span class="l">Buildable proof</span><span class="v">~$958 board</span></div>
-          <div class="r"><span class="l">Routed fit + Fmax</span><span class="v no">Vivado · next</span></div>
+          <div class="r"><span class="l">Routed fit + Fmax</span><span class="v ok">✓ 87.5% LUT · 46.5 MHz</span></div>
         </div>
       </div>
     </div>
