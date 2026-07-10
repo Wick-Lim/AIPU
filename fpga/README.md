@@ -102,33 +102,28 @@ Product top `glm_q4k_system_cdc`, `xcku3p-ffvb676-2-e`, synth-only utilization
 
 | Resource | Used | Avail (XCKU3P) | Util % |
 |---|---|---|---|
-| CLB LUT | **141,710** (138,242 logic + 3,468 LUTRAM) | 162,720 | **87.1%** |
-| CLB Register (FF) | 99,597 | 325,440 | 30.6% |
+| CLB LUT | **142,320** | 162,720 | **87.5%** |
+| CLB Register (FF) | ~100K+ (pipeline rounds added FFs) | 325,440 | ~33% |
 | Block RAM (36Kb) | 0 | 360 | 0% (all storage in LUTRAM/FF) |
 | DSP48E2 | 421 | 1,368 | 30.8% |
-| **Fits XCKU3P?** | **YES** — places and routes | | |
-| Routed WNS `core_clk` @5ns | **−93.1 ns** | | |
-| **Achieved Fmax `core_clk`** | **~10.2 MHz** (1/98.4ns) | 200 MHz target | |
-| Hold (WHS) | +0.010 ns (met) | | |
+| **Fits XCKU3P?** | **YES** — places and routes, hold met | | |
+| **Routed Fmax `core_clk`** | **46.5 MHz** (WNS −16.52ns @5ns target) | | |
 
-**Fit history (the iteration the README predicted):**
-1. Round 1–2: `mla_attn_q4k` static part-select bounds (Synth 8-524, fixed
-   result-invariantly) → Docker VM OOM at Technology Mapping (fixed: 32 GB VM).
-2. Round 3: synthesized **220.8K → 216.1K LUTs post-opt = 136% of KU3P**, DRC
-   UTLZ-1 at placement. Hierarchical report: the three `glm_act` instances were
-   **84.2K LUTs (38% of the chip)** — each lane replicates the full 6-stage fp32
-   exp/recip pipeline (router sigmoid alone 48.3K > all of attention 43.8K).
-3. Round 4: **`ACT_HW=1`** (lane-serialized `glm_act`, result-invariant — same
-   1155-test golden passes bit-exact) → **141.7K LUTs, fits at 87.1%**, full P&R.
+**The fmax repipeline campaign (every round bit-exact, re-proven on the same
+1155-test assembled golden + the full unit-TB battery):**
 
-**Honest read of the Fmax number.** The RTL was written bit-exact-first: fp32
-ops are combinational `glm_fp.vh` function chains, so single-cycle cones run
-deep — the critical path is `mla_attn_q4k → rope_interleave_unit y_out` with
-**382 logic levels** (9 serial DSP multiplies + 72 CARRY8), 98.4 ns; 34K
-endpoints fail the 5 ns target. ~10 MHz still decodes bit-exact tokens (fine
-for a first bring-up correctness demo), but reaching the 200 MHz-class clock
-the tok/s roofline assumes is a **pipelining campaign**: latency-only
-repipelining of the deep fp32 cones (rope, softmax, rmsnorm, dequant+MAC),
-stage by stage, re-proving bit-exactness with the same goldens each time — the
-`glm_act` S2a/S2b split and `glm_fp_pipe` are the in-repo pattern for exactly
-this transformation.
+| Round | Change | Critical cone | WNS @5ns | Fmax |
+|---|---|---|---|---|
+| 4 (baseline) | first routable fit (`ACT_HW=1`) | rope trig+rotate, 98.4ns / 382 levels | −93.1 | 10.2 MHz |
+| 5 | `rope_interleave_unit` → 10 stages | glm_act rsqrt, 58.5ns / 236 levels | −53.3 | 17.2 MHz |
+| 6 | `glm_act` → 20 stages + `rmsnorm` reduce/rsqrt | **route-dominated** wide-bus, 21.2ns (59% wire) | **−16.5** | **46.5 MHz** |
+| 7 | `glm_matmul_q4k` dequant+MAC → 5 stages | same route-dominated path (matmul was already sub-critical) | −16.5 | 46.5 MHz |
+
+**Campaign closed at 4.6×.** The wall is no longer arithmetic: the worst path is
+`u_moe/y_out → hbuf` — a wide expert-output bus crossing the die, 59% wire delay
+at 87% LUT utilization. Moving past it needs physical work (floorplanning,
+register duplication along the route, a bigger part at lower utilization), with
+steep effort per MHz. 46.5 MHz sits in the bring-up demo's target band (the
+compact die saturates the demo's NVMe-class stream), so the campaign stops here;
+the 200 MHz-class number the full-bandwidth product needs is rung-②/③ work, and
+the round-5/6/7 stage decompositions carry over to the ASIC unchanged.
