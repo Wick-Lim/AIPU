@@ -129,3 +129,16 @@ steep effort per MHz. 46.5 MHz sits in the bring-up demo's target band (the
 compact die saturates the demo's NVMe-class stream), so the campaign stops here;
 the 200 MHz-class number the full-bandwidth product needs is rung-②/③ work, and
 the round-5/6/7 stage decompositions carry over to the ASIC unchanged.
+
+**Which commit these numbers were measured at, and why they stay valid.** The
+final fit run synthesized the tree as of `05639bf` (pre-RESIDENT). RTL edits
+since then keep the fit-configuration netlist identical *by proof, not by
+promise*: the harness elaborates `glm_q4k_system` at default parameters
+(`RESIDENT=0`), and `make resident-equiv` formally proves (yosys sequential
+equivalence, `equiv_simple`+`equiv_induct`) that the default-parameter module
+equals the `05639bf` version; the CDC wrapper / harness diffs are parameter
+plumbing at value 0, and the other touched sources are comment-only. The rule
+going forward: an RTL change that alters the default-parameter netlist (like
+every fmax-repipeline round did) re-runs the fit; a change proven
+netlist-identical at the fit configuration carries the measured numbers, with
+the proof named here.
