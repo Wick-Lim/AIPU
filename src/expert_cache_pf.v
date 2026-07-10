@@ -1,4 +1,8 @@
 `timescale 1ns/1ps
+// SKU NOTE (2026-07): the h-cache. rung-1 demo + hybrid SKU: demand/prefetch
+// misses refill from the flash tier. Residency primary SKU (RESIDENT=1): the
+// SAME hit/miss machine, but refills complete from the DDR-tier fabric
+// (glm_q4k_system section 10) -- decisions and interfaces unchanged.
 /* verilator lint_off DECLFILENAME */
 //============================================================================
 // expert_cache_pf.v  --  GLM-5.2 Q4_K MoE EXPERT-WEIGHT HBM CACHE + PREFETCH

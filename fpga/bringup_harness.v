@@ -68,6 +68,7 @@ module bringup_harness #(
     parameter integer KV_CTX      = 1024,
     parameter integer KV_RESIDENT = 8,    // compact (default cfg: 16)
     parameter integer EFIFO_DEPTH = 8,    // compact (default cfg: 16)
+    parameter integer RESIDENT    = 0,    // 0 = OFF (default, byte-identical); 1 = expert refills via ddr5_xbar TAG_EFILL, no Flash for weights
     // ---- DDR5 fast-tier fabric (ddr5_xbar) config ----
     parameter integer DDR_NCH     = 2,    // compact (default cfg: 4)
     parameter integer DDR_ADDR_W  = 32,
@@ -243,7 +244,7 @@ module bringup_harness #(
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
         .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW), .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT),
-        .KV_CTX(KV_CTX), .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
+        .KV_CTX(KV_CTX), .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH), .RESIDENT(RESIDENT),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),
         .WL_KMAX(WL_KMAX), .WL_ADDR_W(WL_ADDR_W), .LOADER_KLEN(LOADER_KLEN),

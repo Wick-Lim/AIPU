@@ -182,6 +182,27 @@ module glm_q4k_system #(
     //       cache/FIFO/Flash-arbiter all keep running on the ungated clk so the
     //       fetch that clears the stall always completes (no deadlock).
     parameter integer EXPERT_STALL = 0,
+    // ---- RESIDENT weight tier (serve expert refills from the DDR-tier fabric) ----
+    //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-RESIDENT module.  An expert
+    //       cache refill (demand miss or prefetch) goes to the SINGLE FLASH
+    //       CHANNEL through the §6 demand-priority arbiter, exactly as before.
+    //   1 = ON: the FULL weight image (hot set + every routed expert) is DDR-tier
+    //       resident (the LPDDR5X stand-in behind ddr5_xbar), so RUNTIME DECODE
+    //       NEVER TOUCHES THE FLASH PATH FOR WEIGHTS: each expert_cache_pf refill
+    //       is served by a REAL banked ddr5_xbar read (TAG_EFILL) -- the §10 FSM
+    //       edge-detects the cache's held flash_req, presents ONE tagged read to
+    //       the §8 issuer, and pulses ec_flash_done on that read's tagged
+    //       response, so the refill wait becomes the DDR round-trip (ROW_LAT),
+    //       not FLASH_LAT.  The §6 Flash arbiter keeps ONLY the kv_cache_pager
+    //       client: the KV NVMe/Flash SPILL path stays available (a cold gather
+    //       beyond the KV_RESIDENT ring still fetches from Flash), and the
+    //       power-up Flash->DDR copy remains boot_loader's job (standalone,
+    //       unchanged).  The expert class can then never own the Flash channel
+    //       (flash_req && flash_is_expert never fires -- asserted in §10).
+    //       Only WHERE the refill handshake completes changes; the cache's
+    //       hit/miss decisions, the die's arithmetic and the token selection are
+    //       untouched.
+    parameter integer RESIDENT     = 0,
     // ---- DDR5 fast-tier fabric (ddr5_xbar) config ----
     parameter integer DDR_NCH     = 4,      // DDR5 channels (POWER OF TWO)
     parameter integer DDR_ADDR_W  = 32,     // block-address width into the fabric
@@ -431,6 +452,17 @@ module glm_q4k_system #(
     wire [DDR_ADDR_W-1:0]     lb_req_addr;
     wire                      lb_accept;
 
+    // ---- RESIDENT=1 expert-refill nets (driven in the §10 generate; tied off
+    //      when RESIDENT==0 -- the same idiom as the C8 loopback nets above) ----
+    //   ef_pending / ef_id  : one banked DDR read request into the §8 issuer.
+    //   ef_accept           : the issuer accepted it (clears ef_pending in §10).
+    //   ec_ddr_done         : the tagged ddr5_xbar response returned -> completes
+    //                         the expert cache's flash_done handshake in §6.
+    wire                      ef_pending;
+    wire [EIDXW-1:0]          ef_id;
+    wire                      ef_accept;
+    wire                      ec_ddr_done;
+
     glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
@@ -662,11 +694,21 @@ module glm_q4k_system #(
     reg fl_busy;
     reg fl_gnt;
 
+    // RESIDENT==0: the expert client reaches the Flash channel exactly as before
+    // (both ternaries below fold to the original wiring).  RESIDENT==1: the
+    // expert client is TIED OFF here -- arb_ec_req===1'b0 so ec_flash_req never
+    // reaches the arbiter (only kv_cache_pager can own flash_req: the KV
+    // NVMe-spill path stays available) and ec_flash_done is completed by the
+    // §10 DDR-tier read (ec_ddr_done) instead of the Flash channel.
+    wire arb_ec_req = (RESIDENT == 0) ? ec_flash_req : 1'b0;
+
     assign flash_req        = fl_busy;
     assign flash_is_expert  = (fl_gnt == G_EXP);
     assign flash_expert_id  = ec_flash_expert_id;
     assign flash_row_idx    = pg_flash_idx;
-    assign ec_flash_done    = flash_done && fl_busy && (fl_gnt == G_EXP);
+    assign ec_flash_done    = (RESIDENT == 0)
+                            ? (flash_done && fl_busy && (fl_gnt == G_EXP))
+                            : ec_ddr_done;
     assign pg_flash_done    = flash_done && fl_busy && (fl_gnt == G_PG);
 
     always @(posedge clk) begin
@@ -675,7 +717,7 @@ module glm_q4k_system #(
             fl_gnt  <= G_EXP;
         end else begin
             if (!fl_busy) begin
-                if (ec_flash_req) begin
+                if (arb_ec_req) begin
                     fl_busy <= 1'b1; fl_gnt <= G_EXP;
                 end else if (pg_flash_req) begin
                     fl_busy <= 1'b1; fl_gnt <= G_PG;
@@ -883,6 +925,7 @@ module glm_q4k_system #(
     localparam [DDR_TAG_W-1:0] TAG_SLOT = 8'h02;
     localparam [DDR_TAG_W-1:0] TAG_LOAD = 8'h03;
     localparam [DDR_TAG_W-1:0] TAG_LBAW = 8'h04;   // C8 loopback attention-weight read
+    localparam [DDR_TAG_W-1:0] TAG_EFILL= 8'h05;   // RESIDENT=1 expert refill read
 
     wire hot_pull = em_req | gn_req | aw_req | rw_req | fw_req | fn_req | lw_req;
 
@@ -893,11 +936,15 @@ module glm_q4k_system #(
 
     // §9 loopback read has TOP priority (the die is frozen waiting on it).  When
     // LOOPBACK==0, lb_pending===0 so every term below reduces to the original.
+    // The §10 RESIDENT expert-refill read is next (the expert cache -- and with
+    // EXPERT_STALL==1 the die itself -- is stalled on it); when RESIDENT==0,
+    // ef_pending===0 so every term folds back to the original as well.
     wire sel_lb     = lb_pending;
-    wire sel_load   = p_load & ~lb_pending;
-    wire sel_slot   = p_slot & ~p_load & ~lb_pending;
-    wire sel_hot    = p_hot  & ~p_load & ~p_slot & ~lb_pending;
-    wire any_pending = lb_pending | p_load | p_slot | p_hot;
+    wire sel_ef     = ef_pending & ~lb_pending;
+    wire sel_load   = p_load & ~ef_pending & ~lb_pending;
+    wire sel_slot   = p_slot & ~p_load & ~ef_pending & ~lb_pending;
+    wire sel_hot    = p_hot  & ~p_load & ~p_slot & ~ef_pending & ~lb_pending;
+    wire any_pending = lb_pending | ef_pending | p_load | p_slot | p_hot;
     /* verilator lint_off UNUSEDSIGNAL */
     wire _sel_hot_unused = sel_hot;
     /* verilator lint_on UNUSEDSIGNAL */
@@ -909,6 +956,9 @@ module glm_q4k_system #(
         if (sel_lb) begin
             xreq_tag  = TAG_LBAW;
             xreq_addr = lb_req_addr;
+        end else if (sel_ef) begin
+            xreq_tag  = TAG_EFILL;
+            xreq_addr = { {(DDR_ADDR_W-EIDXW-CH_IDX_W){1'b0}}, ef_id, bank_rot };
         end else if (sel_load) begin
             xreq_tag  = TAG_LOAD;
             xreq_addr = { {(DDR_ADDR_W-WL_ADDR_W-CH_IDX_W){1'b0}}, load_addr_q, bank_rot };
@@ -925,6 +975,7 @@ module glm_q4k_system #(
     wire xreq_ready;
     wire xreq_fire  = xreq_valid & xreq_ready;
     assign lb_accept = xreq_fire & sel_lb;   // §9 loopback read accepted by the xbar
+    assign ef_accept = xreq_fire & sel_ef;   // §10 refill read accepted by the xbar
 
     // issuer state: clears come FIRST, sets AFTER -> a same-cycle new event keeps
     // the source pending (never lost), bank_rot still advances on every accept.
@@ -943,6 +994,7 @@ module glm_q4k_system #(
                 bank_rot       <= bank_rot + 1'b1;
                 xbar_req_count <= xbar_req_count + 32'd1;
                 if (sel_lb)        begin /* loopback pending cleared in §9 FSM */ end
+                else if (sel_ef)   begin /* refill pending cleared in §10 FSM */ end
                 else if (sel_load) p_load <= 1'b0;
                 else if (sel_slot) p_slot <= 1'b0;
                 else               p_hot  <= 1'b0;
@@ -1096,6 +1148,73 @@ module glm_q4k_system #(
         if (rst) xbar_resp_count <= 32'd0;
         else if (xbar_resp_valid) xbar_resp_count <= xbar_resp_count + 32'd1;
     end
+
+    //========================================================================
+    // 10) RESIDENT=1 EXPERT REFILL -- complete expert_cache_pf's Flash-DMA
+    //     handshake from the DDR-tier fabric (ddr5_xbar, the LPDDR5X stand-in)
+    //     instead of the single Flash channel.
+    //     (RESIDENT==0 : this generate ties ef_*/ec_ddr_done off, the §6/§8
+    //      RESIDENT qualifiers fold to constants, and the module is
+    //      BYTE-IDENTICAL to the pre-RESIDENT design.)
+    //
+    //     expert_cache_pf HOLDS flash_req high until flash_done and is strictly
+    //     SERIAL (never a second refill before the first completes), so ONE
+    //     in-flight tagged read suffices: edge-detect the held request, latch
+    //     {pending, expert id}, present one banked DDR5 read (TAG_EFILL) to the
+    //     §8 issuer, and pulse ec_flash_done ( = ec_ddr_done, §6) on that read's
+    //     tagged response.  The refill wait the cache -- and, with
+    //     EXPERT_STALL==1, the frozen die -- pays is therefore the REAL
+    //     ddr5_xbar round-trip (issuer accept -> banked channel -> tagged
+    //     response), never FLASH_LAT.  The cache/issuer/xbar all run on the
+    //     ungated clk, so the response that clears the stall always completes
+    //     (no deadlock -- same argument as the EXPERT_STALL Flash path).
+    //========================================================================
+    generate
+    if (RESIDENT == 0) begin : g_res
+        assign ef_pending  = 1'b0;
+        assign ef_id       = {EIDXW{1'b0}};
+        assign ec_ddr_done = 1'b0;
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire _res_off_unused = &{1'b0, ef_accept};
+        /* verilator lint_on UNUSEDSIGNAL */
+    end else begin : g_res
+        reg              ef_pend_r;   // refill read presented to the §8 issuer
+        reg [EIDXW-1:0]  ef_id_r;     // expert id of the in-flight refill
+        reg              ec_req_d;    // ec_flash_req delayed (rising-edge detect)
+
+        assign ef_pending  = ef_pend_r;
+        assign ef_id       = ef_id_r;
+        assign ec_ddr_done = xbar_resp_valid & (xbar_resp_tag == TAG_EFILL);
+
+        always @(posedge clk) begin
+            if (rst) begin
+                ef_pend_r <= 1'b0;
+                ef_id_r   <= {EIDXW{1'b0}};
+                ec_req_d  <= 1'b0;
+            end else begin
+                ec_req_d <= ec_flash_req;
+                // a new refill request (held-high handshake) -> latch + present
+                if (ec_flash_req & ~ec_req_d) begin
+                    ef_pend_r <= 1'b1;
+                    ef_id_r   <= ec_flash_expert_id;
+                end
+                // the issuer accepted our read -> drop the request line
+                if (ef_accept) ef_pend_r <= 1'b0;
+            end
+        end
+
+`ifndef SYNTHESIS
+        // RESIDENT invariant (simulation check): the EXPERT class never owns the
+        // Flash channel -- any flash_req that fires is the kv_cache_pager
+        // NVMe-spill client (fl_gnt==G_PG).  With arb_ec_req tied 0 in §6 this
+        // holds by construction; the check locks it in for every future TB run.
+        always @(posedge clk) begin
+            if (!rst && flash_req && flash_is_expert)
+                $fatal(1, "glm_q4k_system(RESIDENT=1): expert-class flash_req fired");
+        end
+`endif
+    end
+    endgenerate
 
 endmodule
 /* verilator lint_on DECLFILENAME */

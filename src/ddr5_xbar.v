@@ -1,4 +1,8 @@
 `timescale 1ns/1ps
+// SKU NOTE (2026-07): tier-agnostic banked read crossbar. Fronts DDR4/5 on the
+// rung-1 FPGA demo and the LPDDR5X fabric on the rung-3 SKUs ("ddr5" in the
+// name is an era artifact). At RESIDENT=1 it additionally serves expert-cache
+// refills (TAG_EFILL) -- see glm_q4k_system section 10 / R3_APPLIANCE_SPEC 5a.
 /* verilator lint_off DECLFILENAME */
 //============================================================================
 // ddr5_xbar.v  --  N_CH-channel BANKED DDR5 READ fabric (channel-parallel BW)

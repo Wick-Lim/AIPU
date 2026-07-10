@@ -1,4 +1,8 @@
 `timescale 1ns/1ps
+// SKU NOTE (2026-07): the stream-tier fabric. rung-1 demo + hybrid SKU: expert
+// weight streaming from NVMe/flash. Residency primary SKU (RESIDENT=1): the
+// expert class never reaches this path (asserted); it carries ONLY the KV
+// NVMe-spill client and the boot copy. See R3_APPLIANCE_SPEC section 5a.
 /* verilator lint_off DECLFILENAME */
 //============================================================================
 // flash_xbar.v  --  N_CH-channel BANKED FLASH READ fabric with DEEP per-channel

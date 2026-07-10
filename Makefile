@@ -19,7 +19,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt formal formal-ind lint host-test synth-glm fit-harness cdc coverage clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt formal formal-ind lint host-test synth-glm fit-harness cdc coverage resident resident-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, and the memory-controller formal proofs.
@@ -451,6 +451,50 @@ GLM_Q4K_CDC_SRCS := src/glm_q4k_system_cdc.v src/glm_q4k_system.v src/cdc_async_
 	src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v \
 	src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v \
 	src/glm_fp_pipe.v
+
+# ---- RESIDENT=1 (LPDDR5X full-residency, rung-3) refill-path gate -----------
+# Proves the glm_q4k_system RESIDENT=1 mode behaviorally: expert-cache refills
+# are served by ddr5_xbar (TAG_EFILL) and the system flash_req NEVER fires (a
+# per-cycle monitor $fatal's on any leak), while the RESIDENT=0 twin in the same
+# TB routes the identical stimulus to the single Flash channel with ZERO xbar
+# reads (the byte-identical default).  Standalone (not in `unittests`): the
+# default-parameter product build is already gated by unittests+synth-glm.
+GLM_Q4K_SYS_SRCS := src/glm_q4k_system.v src/glm_model_q4k.v src/ddr5_xbar.v \
+	src/weight_loader_q4k.v src/expert_cache_pf.v src/expert_cache_ctrl.v \
+	src/kv_cache_pager.v src/glm_decoder_block_q4k.v src/mla_attn_q4k.v \
+	src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v \
+	src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v \
+	src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v \
+	src/sampler.v src/glm_fp_pipe.v src/weight_decomp.v src/ecc_secded.v
+resident:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_system_resident_sim \
+	    test/glm_q4k_system_resident_tb.v $(GLM_Q4K_SYS_SRCS)
+	@printf '[%s] ' "glm_q4k_system(RESIDENT)"; $(VVP) $(BUILD_DIR)/glm_q4k_system_resident_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_q4k_system_resident"; exit 1; }
+
+# RESIDENT=0 identity proof: the default-parameter glm_q4k_system is formally
+# equivalent (yosys equiv_simple + equiv_induct, sequential) to the version at
+# git rev RESIDENT_BASE (default: the pre-RESIDENT commit).  Submodules are
+# read -lib (interface blackboxes) so the proof is scoped to exactly the
+# edited module.
+RESIDENT_BASE ?= 05639bf
+RESIDENT_LIBS := src/glm_model_q4k.v src/ddr5_xbar.v src/weight_loader_q4k.v \
+	src/expert_cache_pf.v src/expert_cache_ctrl.v src/kv_cache_pager.v
+resident-equiv:
+	@mkdir -p $(BUILD_DIR)
+	@git show $(RESIDENT_BASE):src/glm_q4k_system.v > $(BUILD_DIR)/glm_q4k_system_base.v
+	@$(YOSYS) -q -p "read_verilog -lib -sv -I src $(RESIDENT_LIBS); \
+	    read_verilog -sv -I src $(BUILD_DIR)/glm_q4k_system_base.v; \
+	    prep -top glm_q4k_system; opt_clean -purge; rename glm_q4k_system gold; design -stash gdes; \
+	    read_verilog -lib -sv -I src $(RESIDENT_LIBS); \
+	    read_verilog -sv -I src src/glm_q4k_system.v; \
+	    prep -top glm_q4k_system; opt_clean -purge; rename glm_q4k_system gate; \
+	    design -copy-from gdes -as gold gold; \
+	    equiv_make gold gate equiv; prep -top equiv; \
+	    equiv_simple -undef; equiv_induct -undef; equiv_status -assert" \
+	    && echo "[resident-equiv] PROVEN: glm_q4k_system(default) == $(RESIDENT_BASE)" \
+	    || { echo "FAILED: resident-equiv"; exit 1; }
 
 # ---- Whole-chip structural gate for the GLM-5.2 (UD-Q4_K_XL) product top ----
 # Elaborates the ENTIRE product hierarchy -- the 2-clock chip top
