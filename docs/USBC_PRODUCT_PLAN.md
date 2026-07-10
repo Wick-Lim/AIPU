@@ -76,6 +76,32 @@ fails price/form-factor, and secured cloud fails the unplugged test.
 
 ---
 
+## UX 비전 (2026-07 확정 방향) — "꽂으면 뜬다", 전부 박스 안에서
+
+**타깃 사용자**: 인터넷이 차단된 고보안 조직([`ICP.md`](ICP.md) — 오프라인이
+*필수*인 구매자). 핵심 설계 원칙: **호스트에 아무것도 설치하지 않는다.**
+
+1. **USB-C = 네트워크 장치(CDC-NCM/RNDIS)** — 드라이버/설치 없이 잡히고, 박스가
+   자체 웹서버로 `http://aipu.local`에 **에이전트 UI를 서빙**. 윈도우/맥/리눅스
+   공통, 잠긴 환경의 소프트웨어 설치 승인 문제가 원천 소멸(보안 검토 대상이
+   "USB 장치 1개"). 같은 링크로 OpenAI-호환 API 병행 노출(IDE/도구 연동,
+   `host/` 스캐폴드가 씨앗).
+2. **대화 이력 → NVMe** (모델 467GB 제외 ~530GB 여유) — 수년치 로그+임베딩.
+3. **로컬 RAG**: 소형 임베딩 모델(~1–2GB)을 DRAM 여유(KV 예산 45GB 내)에 상주,
+   조직 문서+자기 이력 인덱스는 NVMe. **데이터가 박스 밖으로 0바이트.**
+4. **시각화**: 대화/문서 지식그래프·타임라인을 박스 UI가 렌더.
+5. **GUI 튜닝**: 샘플링·시스템 프롬프트·RAG 범위 + **적응형 스펙체인 텔레메트리**
+   (spec_decode_seq의 pass_acc/pass_dep 탭 → 수락률·깊이 실시간 그래프).
+6. **멀티컨텍스트**: 배치 디코드(PE_M 행 + kc_seq 시퀀스별 KV 라우팅, RTL 검증
+   완료)로 동시 에이전트 N개의 합산 처리량이 N과 함께 상승 (N=4 시 합산
+   ~68 tok/s [EST], naive 1/N 대비 +58%) — "개인 에이전트 팜". KV 총예산
+   ~45GB(≈50만 토큰 상주), 초과분은 NVMe 페이징.
+7. **보안 완결성**: 폰홈/텔레메트리 없음, 서명된 오프라인 업데이트 패키지,
+   단일 장치 감사 범위.
+
+**스코프**: 전부 호스트/SoC-소프트웨어 트랙(RTL 무관) — 임베디드 웹서버+UI,
+임베더 상주, RAG 스토어, 그래프 뷰가 신규 작업 항목.
+
 ## 1a. Power-on behavior (plug → ready → tokens)
 
 The user experience is close to *"plug in, use it,"* with **a short boot** — not instant-on, and
