@@ -19,6 +19,13 @@ knobs, and counting cycles.
 > is FP8-die-specific and will differ under Q4_K. **Every specific cycle count in this doc is a
 > prior-FP8 measurement, not a Q4_K number** — do not read them as the current product's cycles.
 
+> **Wall-clock update (2026-07 — routed Fmax now MEASURED).** The XCKU3P routed-Fmax campaign is
+> closed at **46.5 MHz** ([`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)), so the slice demo's wall clock
+> is now computable from the table below: `EFF_CYC` ≈ 8.0–11.0 K (FP8-era absolute number; the Q4_K
+> die is a similar ballpark plus a few hundred cycles from the Fmax-campaign repipeline latencies)
+> → **~170–240 µs/token ≈ ~4,200–5,800 *slice* tok/s**. That is the correctness-demo speed of the
+> tiny slice, **not** a GLM-5.2 product number — never conflate the two.
+
 > **Storage note (one-time).** The `flash_xbar` / `FLASH_LAT` storage-read fabric and its latency
 > model are **medium-agnostic** (address → weight bytes, with read-request issue and latency
 > hiding). In the product this fabric fronts an **NVMe/PCIe (M.2) backend** — the model store is
@@ -142,7 +149,11 @@ The slice has **miss = 3 per 3 tokens** (tiny weights → almost everything fits
 real config the per-token miss count is large: ~75 MoE layers × ~8 routed experts × `(1 − hit)`.
 With the GLM-trace hit rate `h ≈ 27%` (measured on the FP8 prior track, `make cache-study` [removed
 from `main` — see branch `fp8`] / [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md)), that is ~**hundreds
-of demand misses per token**. Using the **measured** per-miss cost (each miss exposes ≈ `FLASH_LAT`
+of demand misses per token**. (**Update — newer proxy measurement:** [`H_MEASUREMENT.md`](H_MEASUREMENT.md),
+OLMoE-1B-7B-Instruct trace, GLM rerun open — bandwidth-h is cache-size-dependent: **0.36–0.60** with
+a 20 % expert pool cached (~90 GB at GLM scale), **0.72–0.88** at 50 % (~225 GB), collapsing to ~0
+below 10 % under LRU; see also [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md). Read `h` from
+that measurement; the mechanism and formula here are unchanged.) Using the **measured** per-miss cost (each miss exposes ≈ `FLASH_LAT`
 cycles, from finding 1) and the **measured** hit rate:
 
 ```

@@ -136,9 +136,11 @@ self-referential `tools/q4k_ref.py`, **not** the real GGUF bytes / llama.cpp):
   structurally.
 
 So the ragged-super-block scale contract for full-config dims is **established** (the
-q4k matmul TB + §2 elaboration). What remains **OPEN** for B5:
+q4k matmul TB + §2 elaboration). What remained **OPEN** for B5 at the time (since
+**CLOSED** — see the update note after the quote):
 
-> **The assembled `glm_model_q4k` end-to-end functional golden DOES NOT EXIST.** The
+> **The assembled `glm_model_q4k` end-to-end functional golden DID NOT EXIST at the time
+> of this study** (since closed — see the update note below). The
 > Q4_K arithmetic is verified only at the **per-op** level (`q4k_prim` 18/18,
 > `glm_matmul_q4k` 160/160, `swiglu_expert_q4k` 240/240, `moe_router_q4k` 40/40 — see
 > `make q4k` and [`Q4K_RETARGET.md`](Q4K_RETARGET.md)). The **model-level** TB
@@ -149,14 +151,25 @@ q4k matmul TB + §2 elaboration). What remains **OPEN** for B5:
 > run is infeasible per §6); closing the assembled-Q4_K-vs-golden gap is tracked in
 > [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) / [`SCALE_FUNCTIONAL.md`](SCALE_FUNCTIONAL.md).
 
+> **UPDATE — this gap is CLOSED.** The assembled end-to-end golden now **EXISTS and is
+> gated**: `make model-q4k` runs the assembled `glm_model_q4k` full forward **bit-exact vs
+> the assembled numpy reference** `tools/glm_model_q4k_ref.py` — **1155/1155** on
+> logits + argmax + h_state (+ `make model-q4k-acthw` 1155/1155, proving the ACT_HW resource
+> knob result-invariant). Still the team's own reimplementation — bit-exactness to the real
+> GGUF bytes / llama.cpp remains OPEN (see [`../README.md`](../README.md)).
+
 ## 5. Batch-dimension scale-up — multi-sequence batched attention (B=4)
 
 > **Scope — this is the NON-TARGET datacenter/aggregate regime, not the product.**
 > The product is a **local, single-user box** that runs **B=1** (one user, one sequence);
 > single-user interactive throughput (rung-dependent per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md):
 > **~5–8 tok/s [EST]** on the near-term prove-it FPGA today, **~15–40 tok/s [EST]** on the funded
-> custom board, ~40+ at volume — all bandwidth-roofline projections, unmeasured until a Vivado
-> fit + a running board) is the only metric that matters for it. Batching B *different*
+> custom board, ~40+ at volume — all bandwidth-roofline projections **[EST]**; the **Vivado fit is
+> since MEASURED** — full place&route of `glm_q4k_system_cdc` on XCKU3P, routed Fmax 46.5 MHz,
+> bit-exact on the 1155-test assembled golden, see [`../fpga/README.md`](../fpga/README.md) —
+> while **board bring-up is still open**, and the measured-proxy h/U design points refine the rung
+> numbers ([`H_MEASUREMENT.md`](H_MEASUREMENT.md): 90 GB DRAM + 100 GB/s → 13–24 tok/s;
+> 225 GB + 200 GB/s → 54–127 tok/s, all [EST])) is the only metric that matters for it. Batching B *different*
 > sequences is the *aggregate-serving* (datacenter) use of the **same** silicon — a legitimate
 > analysis of what the RTL *could* do batched, kept here as a secondary result, but **never**
 > the product's headline speed. The "batching bandwidth win" below applies only when many
@@ -186,12 +199,15 @@ ratios are expected to reproduce, but a standalone Q4_K re-measurement is pendin
 
 Note the "golden" here is *itself* a `PE_M=1 glm_model_q4k`, so this is **DUT-vs-DUT
 self-consistency**, not validation against an external numeric golden (the assembled Q4_K
-model has none — §4).
+model's numeric golden — `make model-q4k`, since closed per the §4 update — gates the B=1
+forward, not these batched runs).
 
 The **current** Q4_K coverage of the batched/self-consistency invariants runs through the
 spec-decode tops (`make spec-slow`: `spec_batched_top` binds *committed == greedy* and the
-÷K speedup against an independent `PE_M=1 glm_model_q4k` reference; `spec_chain_top` the
-MTP-chain draft). See [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P1.3 for the rest of the
+÷K speedup against an independent `PE_M=1 glm_model_q4k` reference — a cycle-level TB
+invariant; the product-level spec-decode *bandwidth* amortization is measured at
+**A/U(K) ≈ 1.1–1.3× at K=4**, not ×K ([`H_MEASUREMENT.md`](H_MEASUREMENT.md));
+`spec_chain_top` the MTP-chain draft). See [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) P1.3 for the rest of the
 multi-seq stack (the `glm_q4k_soc_ms` batched top + host FSM, its `N_STEPS>1`
 continuous-batching decode loop, the real `kv_mem` KV store, `DSA_REAL_IDX=1` under
 multi-seq, `kv_cache_pager` `NSEQ` windows, and the expert-union-skip MoE batching now
@@ -207,7 +223,8 @@ removed).
   intermediate-size** contract (this doc + `configs/full_glm52.vh` + §2 elaboration),
   *not* "set the params and run the TB." Q4_K functional fidelity is proven **per-op** by
   the committed Q4_K TBs (`make q4k`); the assembled `glm_model_q4k` end-to-end numeric
-  path against a golden remains **OPEN** (§4).
+  path against a golden is since **CLOSED** at the committed slice (`make model-q4k`
+  1155/1155 — see the §4 update note).
 - **Attention scratch at 1M context (S_MAX).** `mla_attn_q4k` sizes its
   `scores`/`probs`/`vstore` scratch by `S_MAX`, so a full-context `S_MAX=2^20` would make
   the scratch (and elaboration) explode. Decoupling the attention window from the 1M

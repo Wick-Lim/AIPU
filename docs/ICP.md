@@ -5,8 +5,11 @@
 frontier open-weight model (GLM-5.2, a 753B-param MoE in ~4-bit **Q4_K** — the published
 [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF), ~467 GB) that
 **works fully offline / air-gapped — nothing leaves because there is no path out** — no per-token fees,
-**one box / one seat** (B=1), at a speed staged to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rungs:
-~5–8 tok/s [EST] on the prove-it FPGA today, ~15–40 tok/s [EST] interactive on the funded custom board.*
+**one box / one seat** (B=1), at a speed staged to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rungs.
+(Update — measured-proxy design points [EST] now bound the rung speeds: NVMe-only prove-it rung
+~0.5–1 tok/s; 90 GB DRAM @100 GB/s ~13–24; @200 GB/s ~25–47; 225 GB @200 GB/s ~54–127 — h/U measured on
+an OLMoE proxy trace, [`H_MEASUREMENT.md`](H_MEASUREMENT.md). The FPGA fit itself is **measured**:
+routed on XCKU3P at 46.5 MHz, [`../fpga/`](../fpga/README.md).)*
 
 ---
 
@@ -118,9 +121,10 @@ building").
   checkpoint. What it *isn't* is a **turnkey per-seat appliance**: it's a DIY box someone still specs,
   builds, patches, and babysits; CPU token rates are low; and it carries a workstation's
   power/thermal/form-factor, not a desk appliance's. Our edge over it is **appliance economics + form
-  factor + power/thermal per seat on purpose-built silicon** — and that edge is **[EST]/[PENDING]** until
-  the FPGA fit lands a real BOM and a running board shows real tok/s. We claim **no** numeric-fidelity or
-  bit-exactness advantage over llama.cpp.
+  factor + power/thermal per seat on purpose-built silicon** — and that edge stays **[EST]** until a
+  running board shows real tok/s (the FPGA fit is now **measured** — routed on XCKU3P at 46.5 MHz — so
+  the FPGA class behind the BOM is set; board bring-up is the open gate). We claim **no**
+  numeric-fidelity or bit-exactness advantage over llama.cpp.
 - **Self-host the real 753 B on GPUs:** **8×H100 ≈ $250–400 k capex** + kW-scale power + an MLOps team —
   absurd overkill for a handful of confidentiality-bound seats; it's a *datacenter build*, not a product.
 - **Do nothing:** they leave frontier AI on the table for exactly their **highest-value, most sensitive**
@@ -145,14 +149,16 @@ per-seat appliance* that gives this specific professional frontier-model leverag
 in the cloud, at a desk price / power / form-factor."** The buyer is paying for **access under a
 constraint, packaged as a box** — not for throughput, and not for bit-exactness. The sharpest competitor
 is the big-RAM llama.cpp box above: we beat it only on **form factor + per-seat turnkey + power/thermal**,
-an advantage that stays **[EST]** until the FPGA fit and a running board make it real.
+an advantage that stays **[EST]** until a running board makes it real (the FPGA fit is measured — done;
+board bring-up is not).
 
 > Honest gate: the box's BOM (FPGA + 1 TB NVMe SSD (M.2/PCIe) + DDR + board) must land at a
 > *per-seat-defensible* price — the FPGA class and DDR generation are **rung-dependent** (DDR4 on the
 > prove-it rung, 64 GB DDR5 / HBM on the funded board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
 > That number is exactly what the **FPGA-fit measurement**
-> ([`../fpga/`](../fpga/README.md), the parallel track) decides — it sets the FPGA class, which sets the
-> BOM. **The ICP is only real once that BOM lands in the low-$k's per seat.**
+> ([`../fpga/`](../fpga/README.md)) decides — it sets the FPGA class, which sets the BOM. (DONE — the
+> fit is measured: Vivado routed `glm_q4k_system_cdc` on XCKU3P, 142,320 LUT (87.5%), 421 DSP,
+> Fmax 46.5 MHz.) **The ICP is only real once that BOM lands in the low-$k's per seat.**
 
 ## The pilot (first engagement — aim for a signed design partner in ~90 days)
 
@@ -161,9 +167,10 @@ an advantage that stays **[EST]** until the FPGA fit and a running board make it
 2. **Their documents, their matters** — the whole point is the data never leaves; run it on a real
    matter they'd otherwise never touch with cloud AI.
 3. **Success metric = "would you pay per-seat for this?"** measured on *quality on confidential work +
-   the confidentiality guarantee*, not on tok/s. (Even the prove-it rung's ~5–8 tok/s [EST] is enough to
-   pilot — the funded box reaches ~15–40 tok/s [EST] — because speed is not the sale — *provable air-gap
-   / locality — it works unplugged* — is.)
+   the confidentiality guarantee*, not on tok/s. (Even the prove-it rung's speed is enough to pilot —
+   measured-proxy design points [EST] put the NVMe-only rung at ~0.5–1 tok/s and the funded box at
+   ~13–47, up to ~54–127 with a 225 GB cache ([`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — because speed
+   is not the sale — *provable air-gap / locality — it works unplugged* — is.)
 4. **Deliverable that unlocks the pilot:** a working box (or even the compact FPGA config) that (a) runs
    real GLM-5.2 weights locally and (b) passes the **literal unplugged-ethernet test** — it keeps working
    with the network cable pulled, so there is provably **no path out**. Security's checkbox is the close.
@@ -193,7 +200,7 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
 - **Anyone content to build and babysit a big-RAM llama.cpp workstation** — if a DIY server with enough
   RAM to hold the Q4_K GGUF, run CPU-side and self-maintained, clears their bar, they don't need a
   turnkey per-seat appliance. We win only where **form factor + per-seat turnkey + power/thermal** matter
-  — and that advantage is **[EST]** until an FPGA fit and a running board measure it.
+  — and that advantage is **[EST]** until a running board measures it (the FPGA fit is already measured).
 - **Multi-user / high-QPS serving** — that's the **non-target datacenter regime** (per-user ~0.14 tok/s
   batched; see [`ULTRA_PERF.md`](ULTRA_PERF.md) §4). The box is **one seat**. Selling it as a shared
   server breaks the whole value prop.
@@ -202,8 +209,10 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
 
 ## The two things that make this ICP investable (both in flight)
 
-1. **A measured FPGA fit → a real per-seat BOM** (the [`fpga/`](../fpga/README.md) D0.2 track). Without it,
-   "low-$k's per seat" is a hope, not a price.
+1. **A measured FPGA fit → a real per-seat BOM** (the [`fpga/`](../fpga/README.md) track). (DONE — the
+   fit is measured: Vivado routed on XCKU3P, 142,320 LUT / 87.5%, 421 DSP, 46.5 MHz.) What's left for
+   the price is distributor/PCB quotes and board bring-up; without those, "low-$k's per seat" is still
+   a target, not a price.
 2. **One signed design partner from a lead wedge** — a law firm innovation team, or a quant fund's
    research-eng lead, that says *"yes, we'd pay per seat for a provably-local frontier box."* One real
    LOI > any spec sheet. The copy-paste BD motions to land it — targeting, cold outreach, discovery

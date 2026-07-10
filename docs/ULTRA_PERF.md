@@ -66,7 +66,8 @@ a *different arithmetic contract*. Levers that change outputs are flagged **NOT 
 > performance number that matters is therefore **single-user interactive throughput**, and it is
 > **rung-dependent** — set by the memory bandwidth the silicon can feed, which is set by the rung you
 > build ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST] on the near-term prove-it FPGA
-> (rung ①), ~15–40 tok/s [EST] on the funded custom board (rung ②)** with the faithful levers stacked. Any
+> (rung ①), ~15–40 tok/s [EST] on the funded custom board (rung ②)** with the faithful levers stacked
+> *(measured-proxy design-point update in §4 — [`H_MEASUREMENT.md`](H_MEASUREMENT.md))*. Any
 > **aggregate-serving / datacenter-batch** figures below (B≈256, ~50 tok/s *aggregate*, **per-user
 > ~0.14 tok/s**) describe a **DIFFERENT, non-target deployment** kept here only as analysis of what the
 > same silicon *could* do batched — that per-user latency does **not** describe the box you plug in. When
@@ -75,7 +76,10 @@ a *different arithmetic contract*. Levers that change outputs are flagged **NOT 
 **The one equation.** The workload is NVMe/PCIe-bandwidth-bound:
 `tok/s ≈ NVMe_BW / [(1−h)·footprint] · K`. **`NVMe_BW`/`DDR_BW` are themselves set by the rung's IO pins +
 PHY** ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), so the absolute tok/s scales with the hardware rung; the
-levers below move the *other* terms. Only three classes of idea move this wall:
+levers below move the *other* terms. **Measured correction ([`H_MEASUREMENT.md`](H_MEASUREMENT.md),
+OLMoE proxy):** the spec multiplier `K` must be read as **A/U(K)** — the K-position expert *union* grows
+with K (U(2)=1.51–1.65, U(4)=2.25–2.64), so spec-chain amortization is ~**1.1–1.3× at K=4 (A≈3)**, not
+×K. Only three classes of idea move this wall:
 **(i) move fewer expert bytes** (sparsity / dedup / stronger decomp), **(ii) compute at the data** (near-storage),
 **(iii) raise speculative K** (better drafts + batched verify). Everything else is incremental — die-side
 fmax/area work does **not** move the wall (the die is already ~75% idle behind the NVMe/storage read).
@@ -156,7 +160,9 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   The self-draft MTP chain reaches K_eff ~1.7–2.2; #4 a resident dense draft (needs trained weights) would
   raise α (K_eff → 3–5); #8 exact-router-union dedups the K-token expert set. **All bit-exact** (target
   verifies every token). Honest cap: the MoE union penalty (#22 below) keeps K_eff_nvme well below the
-  dense-model ×K.
+  dense-model ×K — **now measured (proxy):** U(2)=1.51–1.65, U(4)=2.25–2.64 → realized NVMe amortization
+  **A/U(K) ≈ 1.1–1.3× at K=4, A≈3** ([`H_MEASUREMENT.md`](H_MEASUREMENT.md) /
+  [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).
 - **Activation sparsity (#6) + dynamic top-k (#7)** — shrink `footprint` directly (~1.5–3× and ~1.3–1.6×).
   Both **NOT bit-exact** (quality knobs; must be validated against the accuracy contract). #7 is the cheapest
   big lever (a comparator+mask in the router).
@@ -166,9 +172,8 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
 - **Long-context faithful set (#10 IndexShare, #11 parallel indexer, #12 MLA absorption)** — at 1M ctx the
   O(S) indexer and per-key up-projection, *not* NVMe/storage, become the wall (in-order indexer ≈ 0.05 tok/s). These
   restore the NVMe-bound ~6 tok/s at extreme context. All **model-faithful / bit-exact** (matmul reassoc).
-  *Honest caveat (ledger): `mla_attn_q4k` currently **omits the 1/√(qk_head_dim) softmax scale** — a silent
-  divergence from the reference softmax that both the DUT and its TB golden share; unrelated to these levers but
-  it means the attention numerics are not yet contract-checked against a scaled reference.*
+  *(Update: the 1/√(qk_head_dim) softmax scale is now **applied** in `mla_attn_q4k` — the earlier
+  missing-scale caveat is resolved.)*
 
 ### 2b. INCREMENTAL / CONDITIONAL — smaller or regime-specific
 
@@ -182,7 +187,11 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   bytes; not ceiling movers.
 - **PE-array scaling (wider PE_N), fmax tail fixes, output-stationary SRAM, pipeline MLA softmax** — **~0 on
   single-user decode** (compute already hidden 4× under the NVMe/storage read). Value is **prefill/TTFT** (linear in array
-  size) and energy/voltage headroom.
+  size) and energy/voltage headroom. *(Now grounded by the MEASURED KU3P fit: Vivado ML 2026.1, 142,320 LUT
+  / 87.5 %, routed Fmax **46.5 MHz** after the closed 4.6× repipeline campaign — worst path route-dominated,
+  i.e. physical, not arithmetic. Clock↔area trade: compute-side stream consumption = dequant lanes × clock —
+  at 46.5 MHz, 7 GB/s needs ~300 lanes and 100 GB/s ~4,300 (infeasible on KU3P); ~1,000 at 200 MHz-class;
+  ~200 at ASIC 1 GHz+. A higher clock buys a smaller/cheaper die, **not** more tok/s.)*
 - **Pipeline draft into NVMe/storage shadow / reuse accepted KV / deeper layer-pipeline** — latency-only on the
   already-idle die; **0% on the bandwidth ceiling**.
 
@@ -286,6 +295,14 @@ roofline: 1–2 NVMe (~7–14 GB/s) → **~0.5–1 tok/s**; 4 NVMe (~28) → **~
 (~3 TB/s) → ~120 but **467 GB won't fit HBM (≤192 GB) so aspirational**. Treat 100 GB/s as an upper-bound
 target, not a single-M.2 spec; the tok/s scales roughly linearly with the storage BW actually deployed (a
 single Gen5 x4 ~14 GB/s ≈ ~1 tok/s at ~14 GB routed/tok, before decomp/sparsity/spec-K multipliers).
+
+**Update — measured-proxy design-point menu ([`H_MEASUREMENT.md`](H_MEASUREMENT.md); h/U proxy-measured
+on an OLMoE trace, GLM rerun open; all tok/s still [EST]):** 1–2 NVMe, no multipliers → **~0.5–1 tok/s**;
+90 GB DRAM cached (~20 % of the expert pool, bandwidth-h 0.36–0.60) + 100 GB/s → **13–24**; 90 GB +
+200 GB/s (ONFI 64ch) → **25–47**; 225 GB (~50 % pool, h 0.72–0.88) + 200 GB/s → **54–127** (the
+"100 tok/s" design point). LRU collapses to ~0 below a 10 % cache. The roofline formula stands, but read
+the spec multiplier `K` as **A/U(K)** (measured U above). See also
+[`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).
 
 **Reading it.** The product — a **single-user local box** — stacking the faithful RTL levers projects
 **~15–40 tok/s [EST] on the funded custom board (rung ②) and ~5–8 tok/s [EST] on the near-term prove-it FPGA

@@ -1,7 +1,9 @@
 # NVMe/PCIe striping & placement strategy — turning N NVMe drives / PCIe lanes into N× bandwidth
 
 **The one fact that drives everything:** single-user decode throughput is **linear in
-NVMe read bandwidth** (`tok/s ≈ NVMe_BW / [(1−h)·footprint] · K`), and a 1–4 TB on-board
+NVMe read bandwidth** (`tok/s ≈ NVMe_BW / [(1−h)·footprint] · K` — read the spec multiplier `K` as
+**A/U(K) ≈ 1.1–1.3× at K=4** per the measured union factor U(K), not ~2×; `h` is now measured-proxy —
+see [`H_MEASUREMENT.md`](H_MEASUREMENT.md)), and a 1–4 TB on-board
 NVMe SSD is **not one fast lane — realized bandwidth scales with parallel NVMe drives / PCIe
 lanes**. Aggregate bandwidth is `N_CH × per-channel BW` (each channel = a striping endpoint
 backed by an NVMe drive / PCIe lane), but that N× is only *realized* if every token's reads
@@ -150,8 +152,8 @@ the *same* silicon could do batched. With `B` tokens
 processed per weight fetch (the **PE_M-batch path** — on the current Q4_K track the per-layer
 expert-*union* skip is folded inline into **`glm_decoder_block_q4k`** — a *structural* choice of
 *which* experts to fetch, so it is format-agnostic. The 4/4 PE_M bit-exact verification across
-swiglu/router/mla/mtp was on the **prior FP8 track (branch `fp8`)**; a Q4_K assembled-model
-bit-exact re-run is **PENDING** — no end-to-end Q4_K numeric golden exists yet), a layer's *union*
+swiglu/router/mla/mtp was on the **prior FP8 track (branch `fp8`)**; the assembled end-to-end Q4_K
+golden is now **DONE** — `make model-q4k` 1155 + `make model-q4k-acthw` 1155), a layer's *union*
 of active experts approaches all 256 as `B` grows
 (`E[distinct] = 256·(1−0.96875^B)`, where `0.96875 = 1−8/256`), so the
 fetch set is large and naturally spreads across channels — the pigeonhole tail shrinks and
@@ -180,11 +182,20 @@ in realized aggregate NVMe BW, striping the routed-expert stream across drives/l
 | ~100 GB/s (striped ~14 drives) × 0.55 balance | A (pigeonhole-capped) | ~3–4 |
 | ~100 GB/s (striped ~14 drives) × ~1.0 balance | B (sub-expert) | **~5–8 (rung ①)** |
 
+> **Update — measured-proxy design-point menu ([EST], MEASURED-PROXY h/U inputs;
+> [`H_MEASUREMENT.md`](H_MEASUREMENT.md), [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)):**
+> the table above is the cache-free striping floor. Adding a DRAM expert cache on top of the stream:
+> 90 GB cached + 100 GB/s → ~13–24 tok/s; 90 GB + 200 GB/s (ONFI 64ch) → ~25–47;
+> 225 GB + 200 GB/s → ~54–127 (the "100 tok/s" design point). Measured residency-only h (OLMoE
+> proxy): ~20% of pool cached → 0.36–0.60; ~50% → 0.72–0.88 (LRU collapses below ~10%). Any spec-chain
+> multiplier `K` on these rows is A/U(K) ≈ 1.1–1.3× at K=4, not ~2×.
+
 **Honest BW anchor [EST].** These are roofline numbers, not silicon: a single NVMe SSD is
 ~3.5 GB/s (PCIe Gen3 x4), ~7 GB/s (Gen4 x4), ~14 GB/s (Gen5 x4). The ~28 GB/s and ~100 GB/s rows are
 **aggregate across multiple NVMe drives / many PCIe lanes** — realizing them is the custom board's
-job (several M.2/PCIe endpoints), not a single-drive claim. The tok/s stay [EST] until a Vivado fit
-+ a running board (per the ledger, real systems land below the roofline). The `~0.55` vs `~1.0`
+job (several M.2/PCIe endpoints), not a single-drive claim. The Vivado fit + routed Fmax are now
+**MEASURED** (XCKU3P full PnR, 46.5 MHz — [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), but the tok/s
+stay [EST] until a running board (per the ledger, real systems land below the roofline). The `~0.55` vs `~1.0`
 column is exactly §2/§3's pigeonhole story: strategy A caps the delivered fraction of aggregate BW
 at ~55% @8ch, strategy B removes that cap.
 
@@ -195,8 +206,10 @@ funded-board **~15–40 tok/s [EST] (rung ②)** — that rung is a **memory-tie
 working set from **DDR5/HBM (~400 GB/s–1 TB/s)**, not from more NVMe. Two limits are why: (1) each
 NVMe channel adds a controller + PCIe I/O power/area/cost, so `N_CH` — and thus aggregate NVMe BW —
 is **bounded** well below the hundreds of GB/s rung ② needs; and (2) getting rung ②'s speed from a
-*cache* instead requires a high **expert-cache hit-rate** on the routed experts, which **routing
-entropy caps** (predictor-prefetch is a **MEASURED no-op** in this codebase) unless you accept
+*cache* instead requires a high **expert-cache hit-rate** on the routed experts — now **measured
+(proxy)**: residency-only h=0.36–0.60 at ~20% of the pool cached, 0.72–0.88 at ~50%
+([`H_MEASUREMENT.md`](H_MEASUREMENT.md)); predictor-prefetch is a **MEASURED no-op** in this
+codebase — unless you accept
 **non-bit-exact pruning**. So the honest framing is: **striping wins rung ①; rung ② is a
 fast-memory-tier + cache-hit-rate problem, not "just add NVMe."** What striping *does* keep true is
 that within its regime the commodity `$/GB` NVMe curve is far cheaper per GB/s than HBM's `$/GB/s`
@@ -232,8 +245,9 @@ placement strategy here rides the same curve.
   format-agnostic (address→bytes), so this whole doc holds under Q4_K unchanged. On the compute
   side, the Q4_K **GEMM core / primitives are bit-exact only to the team's own ggml-Q4_K reference**
   (`tools/q4k_ref.py`) — a **self-referential** check, **not** the real downloaded GGUF bytes or
-  llama.cpp's runtime arithmetic, and the **assembled end-to-end Q4_K model golden does not yet
-  exist**; see the honest proof scope in [`../README.md`](../README.md).
+  llama.cpp's runtime arithmetic; the **assembled end-to-end Q4_K model golden is DONE**
+  (`make model-q4k` 1155 + `make model-q4k-acthw` 1155); see the honest proof scope in
+  [`../README.md`](../README.md).
 
 ## 8. Files
 

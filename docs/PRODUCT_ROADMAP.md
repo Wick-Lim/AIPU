@@ -53,7 +53,13 @@ scale, robustly, and ship it.*
 > **rung-dependent** (set by the silicon's memory bandwidth — see
 > [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)): **~5–8 tok/s [EST] on the near-term prove-it FPGA (rung ①),
 > ~15–40 tok/s [EST] on the funded custom board (rung ②)**, and ~40+ at manufacturing volume (rung ③) —
-> the **same bit-exact Q4_K RTL** on every rung, only the memory interface changes. The design is
+> the **same bit-exact Q4_K RTL** on every rung, only the memory interface changes. *(Update — a
+> measured-roofline design-point menu now refines these [EST] ranges, using h/U measured on an OLMoE
+> proxy trace, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): 1–2 NVMe, no multipliers ~0.5–1 tok/s; 90 GB
+> DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64-ch) → 25–47; 225 GB + 200 GB/s → 54–127 — the
+> "100 tok/s" design point. Spec-decode amortization must be read as A/U(K) ≈ 1.1–1.3× at K=4
+> (measured U(4)=2.25–2.64), not ~2×. All still [EST]; h/U are proxy measurements — see also
+> [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).)* The design is
 > deliberately **NVMe/PCIe-bandwidth-bound to be cheap** (an NVMe SSD holds the whole model; **fast DDR** —
 > DDR4 on rung ①, DDR5 or HBM on rung ② — caches the hot working set). Any **aggregate / datacenter-batch**
 > numbers in these docs (B≈256, per-user ~0.14 tok/s) are a **secondary analysis of a different,
@@ -79,7 +85,7 @@ scale, robustly, and ship it.*
 | Memory | DDR5/NVMe/USB-C **PHYs stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (7 controllers + 1 ECC-ring) + 5 lifted to unbounded k-induction (`make formal`/`formal-ind`); directed TBs at slice; verilator line/toggle/branch coverage (`make coverage`) | coverage *closure*, constrained-random regression, gate-level sim, production-width formal |
 | Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`) — but `mbist_ctrl`/`icg_cell` **not yet instantiated** in `glm_q4k_system*` | full ECC/recovery, CDC sign-off, reset/init hardening, DFT/scan closed |
-| Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 141,710 LUT (87.1%), 99.6K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over three bit-exact repipeline rounds, campaign ongoing (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | Fmax timing-closure campaign completed → **bitstream** on a board (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
+| Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 142,320 LUT (87.5%), ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over bit-exact repipeline rounds, **campaign CLOSED at 4.6×** — the worst path is now route-dominated (wide-bus wiring at 87% utilization), physical work not arithmetic (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | **bitstream** on a board — the Fmax campaign is closed at 46.5 MHz (in the bring-up demo's target band; 200 MHz-class is rung-②/③ work) (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
 | Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend being retargeted from the prior `glm_model_fp8` path to `glm_model_q4k`) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
@@ -176,7 +182,10 @@ thing the slice and the spec==greedy self-consistency cannot.
     `h_mtp` to mint K drafts, then a PE_M=K+1 batched-verify commits the accepted prefix; committed==greedy
     (`make spec-slow`).
   - **Remains (beyond RTL):** a **RESIDENT DENSE DRAFT model** for higher accept rate (K_eff 3–5 vs
-    self-draft's ~1.7–2.2 — needs a trained small draft's weights); and the standing P1.1 fidelity chain.
+    self-draft's ~1.7–2.2 — needs a trained small draft's weights; measured caveat: the *bandwidth*
+    amortization of spec decode is A/U(K) ≈ 1.1–1.3× at K=4, A≈3 — the K+1 verify rows union their
+    experts, measured U(4)=2.25–2.64 — see [`H_MEASUREMENT.md`](H_MEASUREMENT.md)); and the standing
+    P1.1 fidelity chain.
 
 ### P2 — Productize the RTL (robustness)
 - P2.1 ECC on DDR5 + NVMe read path; error detection / correction / retry / recovery paths. *(Built:
@@ -208,11 +217,15 @@ thing the slice and the spec==greedy self-consistency cannot.
   vendor flow. This is a **staged ladder**: rung ① (low-end FPGA, Kintex US+ KU3P-class + DDR4, ~5–8 tok/s
   [EST]) proves it cheap, rung ② (custom mid-FPGA board, DDR5/HBM, ~15–40 tok/s [EST]) is the funded
   interactive product. **The routed FPGA fit is MEASURED** — Vivado ML 2026.1 real synth + full
-  place&route of `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): 141,710 LUT (87.1%),
-  99.6K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz through three BIT-EXACT fmax
-  repipeline rounds (`rope_interleave_unit` 10-stage; `glm_act` 20-stage + rmsnorm reduce/rsqrt;
-  `glm_matmul_q4k` dequant+MAC 5-stage), campaign ongoing — see [`fpga/`](../fpga/README.md) +
-  `fpga/results/` and [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md). (The old Gowin GW5AT-138 / Tang Mega /
+  place&route of `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): 142,320 LUT (87.5%),
+  ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz through BIT-EXACT fmax
+  repipeline rounds, every round re-proven on the 1155-test assembled golden (`rope_interleave_unit`
+  10-stage; `glm_act` 20-stage + rmsnorm reduce/rsqrt; `glm_matmul_q4k` dequant+MAC 5-stage) —
+  **campaign CLOSED at 4.6×**: the worst path is now ROUTE-dominated (a wide-bus route, ~59% wire
+  delay at 87% utilization) — physical work, not arithmetic; 46.5 MHz sits in the bring-up demo's
+  target band, 200 MHz-class is rung-②/③ work, and the stage decompositions carry to the ASIC
+  unchanged — see [`fpga/`](../fpga/README.md) + `fpga/results/` and
+  [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md). (The old Gowin GW5AT-138 / Tang Mega /
   nextpnr scaffold was removed, superseded by the Vivado flow. ACT_HW is a new result-invariant resource
   knob — `glm_act` HW_LANES serialization.)
   - **Why FPGA first, ASIC at volume:** the workload is **memory-bandwidth-bound** — performance is set by
@@ -279,9 +292,10 @@ thing the slice and the spec==greedy self-consistency cannot.
 3. **P1.1c Real-checkpoint validation** (D1, needs a GPU host) — the #1 fidelity gate, gated on 1+2
    (both now done).
 4. **FPGA fit** (P3.2 / [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)) — the routed LUT/DSP/Fmax that sets
-   device size / thermal / BOM / price. **(MEASURED — Vivado ML 2026.1 full P&R of `glm_q4k_system_cdc`
-   on XCKU3P: 141,710 LUT (87.1%), 421 DSP, 0 BRAM, routed Fmax 46.5 MHz after three bit-exact repipeline
-   rounds, campaign ongoing; see [`fpga/`](../fpga/README.md).)**
+   device size / thermal / BOM / price. **(MEASURED / DONE — Vivado ML 2026.1 full P&R of
+   `glm_q4k_system_cdc` on XCKU3P: 142,320 LUT (87.5%), 421 DSP, 0 BRAM, routed Fmax 46.5 MHz after
+   bit-exact repipeline rounds; the Fmax campaign is CLOSED at 4.6× — the worst path is now
+   route-dominated, physical not arithmetic; see [`fpga/`](../fpga/README.md).)**
 
 The per-position causal-KV / batched-decode gap (the prototype's PE_M shared-pos limitation) is **largely
 closed** on `main` — per-row position/extent/sequence (`PER_ROW_SEQ`) and the multi-step

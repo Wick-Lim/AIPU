@@ -18,10 +18,12 @@ llama.cpp). Push a **single box as low as possible** on that floor, and add **fi
 (§6) only if the output-preserving floor misses the target. This doc is the honest energy budget, the
 lever ladder, and what is built vs. staged.
 
-> **No assembled end-to-end numeric golden exists.** The output-preservation of every lever here is
-> checked as *self-consistency* (spec == greedy, DUT-vs-DUT) plus the GEMM-core bit-exactness vs
-> `q4k_ref.py` — **not** against a real GLM-5.2 golden (the full assembled Q4_K numeric path has no
-> external golden yet; see README *What's proven*). "Output-preserving" below always means *relative to
+> **The assembled end-to-end numeric golden is now DONE** (`make model-q4k` — 1155 tests bit-exact vs
+> the numpy reference `tools/glm_model_q4k_ref.py`, plus `make model-q4k-acthw` through the ACT_HW=1
+> datapath). The output-preservation of every lever here is checked as *self-consistency* (spec ==
+> greedy, DUT-vs-DUT) plus that golden and the GEMM-core bit-exactness vs `q4k_ref.py` — still **not**
+> against the real downloaded GGUF / llama.cpp (that external validation remains OPEN; see README
+> *What's proven*). "Output-preserving" below always means *relative to
 > the reference `glm_model_q4k`*, never "byte-identical to the file people download."
 
 ## 1. The one fact that governs power: it's mostly storage read (NVMe)
@@ -77,7 +79,9 @@ one weight-load across K tokens via spec decode — the single-user box's lever;
 batch variant is the non-target datacenter regime, kept for analysis, not this product), **(b) more of
 the hot working set resident** (bigger/faster DDR → higher hit-rate → fewer NVMe reads; a hardware-$
 lever — literally climbing the ladder: more DDR channels / HBM = a bigger chip = a higher rung,
-[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). Compute tricks cannot touch the floor.
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md); now proxy-MEASURED — [`H_MEASUREMENT.md`](H_MEASUREMENT.md),
+OLMoE trace: residency-only bandwidth-h ≈ 0.36–0.60 with ~20 % of the expert pool cached (~90 GB at GLM
+scale), 0.72–0.88 at ~50 % (~225 GB), LRU ~0 below a 10 % cache). Compute tricks cannot touch the floor.
 
 > **What about lossless weight compression?** On the **prior FP8 track** the trained E4M3 weight *bytes*
 > had entropy well under 8 bits/symbol (~5–6.5), so a streaming lossless decompressor (`weight_decomp`)
@@ -108,6 +112,12 @@ trick can touch.
 | **spec high-K verify** (÷(K+1) weight-loads) | verify K+1 draft positions in ONE model weight-load (PE_M=K+1 batch) → **÷(K+1) weight-loads on the ~14 GB term** | scales with K_eff | ✅ **HW built + output-preserving** (`spec_batched_top` / `spec_chain_top`, spec==greedy via `make spec-slow`; PE_M weight-share on `glm_model_q4k`) |
 | ↳ raise K_eff 1.7 → **3–5** | resident ~1–3 B dense draft (vs the chained MTP self-draft) proposes K=4–8 with higher acceptance | approaches the floor | ⏳ **draft-quality, not RTL** — needs a real 1–3 B draft-model artifact ([`ULTRA_PERF.md`](ULTRA_PERF.md) #4) |
 | ~~`weight_decomp` lossless~~ | ~~1.34× fewer NVMe bytes~~ | **prior-FP8 only** | 🅵 FP8 track (branch `fp8`); Q4_K is already 4-bit → little lossless headroom (§2) |
+
+> **Measured U(K) cap on the ÷K rows ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE proxy; GLM rerun
+> open):** the K spec positions' expert *union* grows with K — U(2)=1.51–1.65, U(4)=2.25–2.64 — so on
+> the routed-expert NVMe term the realized amortization is **A/U(K) ≈ 1.1–1.3× at K=4 (A≈3)**, not
+> ÷K_eff or ÷(K+1). Raising K_eff without beating U(K) buys less than the ideal division suggests
+> (see also [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).
 
 **Projected output-preserving floor [EST]: dominated by spec high-K amortization** — it divides the
 ~14 GB NVMe term, which no compute trick can. Its **hardware is already built and output-preserving**
@@ -199,7 +209,9 @@ verified tokens**, and its **Q4_K hardware exists and is output-preserving**:
 **So the ÷K amortization is done in RTL, in Q4_K.** The only thing between K_eff≈1.7 (built, self-draft
 chain — acceptance decays because GLM ships **one** MTP layer) and K_eff 3–5 (the low-J/token floor) is
 **draft acceptance α** — raised by a separate resident ~1–3 B dense draft model. That is a
-**model-quality / artifact** step, **not** an RTL one.
+**model-quality / artifact** step, **not** an RTL one. (And note the measured union cap: the realized
+NVMe amortization is **A/U(K) ≈ 1.1–1.3× at K=4** — [`H_MEASUREMENT.md`](H_MEASUREMENT.md) — so higher
+K_eff must also beat U(K).)
 
 ## 5. Already-built power wins (compute + idle)
 
@@ -237,13 +249,15 @@ then revisited as a separate fidelity decision:
 ## 7. Honest gaps
 
 - **Every J/token here is [EST]** — a `bytes × energy/bit` roofline, **not** a silicon/P&R wattmeter.
-- **No real watt number exists** — it needs the vendor P&R flow on the routed netlist (the FPGA fit +
-  Fmax are themselves [PENDING], [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) / README) plus a board with
-  a real NVMe drive.
+- **No real watt number exists** — it needs the vendor power flow on the routed netlist plus a board
+  with a real NVMe drive. (The FPGA fit + Fmax are now **MEASURED** — Vivado ML 2026.1 on XCKU3P,
+  142,320 LUT / 87.5 %, routed Fmax 46.5 MHz, campaign closed route-dominated — but board bring-up is
+  not done; [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) / README.)
 - **The ~73 % gating** is a measured *cycle* fraction, not a power meter.
-- **No assembled end-to-end Q4_K numeric golden** — every lever's output-preservation is checked as
-  spec==greedy self-consistency + the GEMM core's bit-exactness vs `q4k_ref.py`, **not** vs a real
-  GLM-5.2 golden (which does not exist; README *What's proven*).
+- **Assembled end-to-end Q4_K numeric golden: DONE** (`make model-q4k`, 1155 bit-exact vs our own
+  numpy reimpl `tools/glm_model_q4k_ref.py`) — but every lever's output-preservation is still checked
+  against our own references (spec==greedy self-consistency + that golden + `q4k_ref.py`), **not** vs
+  the real GGUF / llama.cpp (external validation OPEN; README *What's proven*).
 - **spec high-K:** the ÷K *hardware* is **built + output-preserving in Q4_K** (§4a); what is not built
   is the **resident ~1–3 B dense draft model** that raises K_eff 1.7→3–5 — a model artifact, not RTL.
 - **Prior-FP8 numbers** (compression 1.34×/1.4–1.5×, BFP −87.6 % cells, the `FLASH_LAT` stall table
@@ -257,9 +271,9 @@ Every output-preserving lever is a *result-invariant restructuring*: the system 
 DVFS, die-shrink, gating, MTP and batching all pass it today; spec high-K passes it via `make
 spec-slow`. Crucially this invariant is **self-consistency** (DUT-vs-DUT — the "greedy golden" is
 itself a `glm_model_q4k`), **not** a check against a real GLM-5.2 golden — the assembled Q4_K numeric
-path has no external golden (the GEMM *core* is bit-exact to `q4k_ref.py`; the *whole model* is not
-validated vs the GGUF or llama.cpp). Power is optimized **without ever moving the decoded token
-relative to the reference.**
+path is now golden-checked end-to-end vs our own numpy reimpl (`make model-q4k`, 1155 bit-exact), but
+the *whole model* is still not validated vs the real GGUF or llama.cpp. Power is optimized **without
+ever moving the decoded token relative to the reference.**
 
 ## Status
 - **Energy budget + DVFS budget: characterized** (this doc; DVFS mechanism carried from the prior-FP8

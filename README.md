@@ -34,7 +34,10 @@ below for the exact status of every claim.
 > interactive throughput**, and it's set by the hardware rung you build on: **~5–8 tok/s on the
 > prove-it FPGA today → ~15–40 on the funded custom board [EST]** (rung ③ silicon reaches ~40+ at volume)
 > after stacking the faithful levers — the old flat ~25–40 was the funded rung's number, not a
-> near-term-cheap one; see the 3-rung [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md). The design
+> near-term-cheap one; see the 3-rung [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md). (These
+> ranges now have a **measured-proxy design-point menu** [EST] behind them — up to 54–127 tok/s at
+> 225 GB cache + 200 GB/s — see [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md) and the update note
+> below.) The design
 > is deliberately NVMe/PCIe-bandwidth-bound to keep it cheap. Where these docs mention *aggregate /
 > datacenter batching* (per-user ~0.14 tok/s at B≈256), that is a **secondary analysis of a
 > different deployment**, not this appliance — see [`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md).
@@ -89,7 +92,7 @@ here means **bit-exact to our ggml-Q4_K reference `tools/q4k_ref.py`**, not to t
 | **End-to-end numeric golden for the assembled Q4_K model** (`glm_model_q4k` full forward: embed → L×(MLA+DSA+MoE) → final-norm → LM head → argmax) | **PROVEN — bit-exact vs our assembled numpy reference** (`tools/glm_model_q4k_ref.py`, which imports the same `q4k_ref.py` dequant) — logits + argmax + h_state all byte-identical. *Still our own reimpl, not llama.cpp — see the next row.* | `make model-q4k` **1155/1155** (+ `model-q4k-acthw` **1155/1155** proving the ACT_HW resource knob result-invariant) |
 | **Bit-exactness to the real UD-Q4_K_XL GGUF / llama.cpp** | **NOT-YET** — all goldens are our own ggml reimpl (`tools/q4k_ref.py`), never the real GGUF bytes or llama.cpp runtime | — |
 | **Mixed-type path** (Q6_K / Q8_0 / F16 tensors the dynamic UD-Q4_K_XL mix keeps at higher precision) | **PROVEN — bit-exact vs ggml-reimpl goldens** — `q4k_mixed.vh` dequant primitives + per-column `w_type` routing in `glm_matmul_q4k` + `desc_wtype` in the weight loader; the loader→GEMM path is bit-exact for **all four types** incl. a 24-tile mixed sequence | `make mixedtype` · `q6k_prim` + `q8_0_prim` + `glm_matmul_mixed` **32/32** + `weight_loader_q4k_mixed` **192/192** |
-| **FPGA fit — real Vivado synth + place & route on XCKU3P** | **MEASURED** — compact config + `ACT_HW=1`: **141.7K LUT (87.1%)**, 99.6K FF, 421 DSP, fits and routes; routed Fmax **10.2 → 17.2 → 46.5 MHz** across the (bit-exact) fmax-repipeline rounds (rope / glm_act+rmsnorm / matmul), campaign ongoing — see [`fpga/README.md`](fpga/README.md) | `bash fpga/run_fit.sh` · `fpga/results/` |
+| **FPGA fit — real Vivado synth + place & route on XCKU3P** | **MEASURED** — compact config + `ACT_HW=1`: **142.3K LUT (87.5%)**, ~100K FF, 421 DSP, 0 BRAM, fits and routes, hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** across the (bit-exact) fmax-repipeline rounds (rope / glm_act+rmsnorm / matmul), **campaign closed at 4.6×** — the worst path is now route-dominated (physical work, not arithmetic; 200 MHz-class is rung-②/③ work) — see [`fpga/README.md`](fpga/README.md) | `bash fpga/run_fit.sh` · `fpga/results/` |
 | **Throughput / energy / BOM / TCO / LOI** | **NOT-YET [EST]** — every tok/s is roofline-modeled (now with **measured-proxy h/U inputs** — [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)); BOM/TCO and the target LOI are planning docs, not evidence | — |
 
 **Honest moat statement.** A **UD-Q4_K_XL-native GLM-5.2 RTL datapath** whose GEMM core is **bit-exact
@@ -98,12 +101,15 @@ to an independent ggml reimplementation** (`tools/q4k_ref.py`) for **all four ch
 whole model** (`make model-q4k`, 1155 tests: logits+argmax+h_state), verified at a small-but-faithful
 slice, **elaboration-clean at the real 753B UD-Q4_K_XL shape**, wrapped by memory-system controllers
 with **BMC + unbounded k-induction** safety proofs, and **placed & routed on a real XCKU3P**
-(87.1% LUT, routed Fmax 46.5 MHz and climbing through bit-exact repipelining) — **not yet**
+(87.5% LUT, routed Fmax 46.5 MHz — the bit-exact fmax-repipeline campaign is closed at 4.6×, the
+remaining worst path being route-dominated) — **not yet**
 bit-verified against the real GGUF bytes / llama.cpp runtime (all goldens are our own reimpls), and
 every tok/s, cost, and LOI claim is **[EST]**, not measured on hardware.
 
 **Modeled, not silicon — flagged [EST].** All throughput/energy figures come from a
-bandwidth-roofline model (`tokens/s ≈ NVMe_BW / [(1−h)·footprint] · K`), **not** from silicon —
+bandwidth-roofline model (`tokens/s ≈ NVMe_BW / [(1−h)·footprint] · K`) — where the spec-decode
+multiplier `K` must be read as **A/U(K) ≈ 1.1–1.3× at K=4** with the **measured** union factor
+U(K) ([`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)), not a full ×K — **not** from silicon —
 though the roofline's two model-side multipliers now have **measured (proxy) inputs**: expert-reuse
 h-curves and the MTP union factor U(K), traced from a real MoE checkpoint
 ([`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)), and the compute die now has a **real routed
@@ -111,7 +117,12 @@ netlist** ([`fpga/README.md`](fpga/README.md)). The tok/s is **rung-dependent** 
 which is set by budget ([`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)): **~5–8 tok/s on the
 prove-it FPGA (rung ①), ~15–40 on the funded custom board (rung ②), ~40+ at volume (rung ③)** [EST],
 with **~9 → ~3 J/token** [EST] after stacking the NVMe-bandwidth levers. Read them as an optimistic
-ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md), [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)). What
+ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md), [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)).
+*Update — measured-proxy design-point menu [EST, h/U inputs MEASURED-PROXY from an OLMoE trace,
+GLM rerun open — [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md),
+[`docs/MOE_LOCALITY_RESEARCH.md`](docs/MOE_LOCALITY_RESEARCH.md)]: NVMe ×1–2, no multipliers
+~0.5–1 tok/s; 90 GB DRAM cache + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64ch) → 25–47;
+225 GB + 200 GB/s → 54–127 (the "100 tok/s" design point).* What
 *is* validated on real RTL cycles is the roofline's underlying **memory-stall mechanism** (exposed stall
 exactly `3·FLASH_LAT + 9`, faithful `cyc_per_tok` grows with storage-read latency); the absolute tok/s
 stays [EST] ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)).
@@ -282,7 +293,7 @@ track** (branch `fp8`) — see the appendix. On an NVMe-bound die they improve a
 - **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction (RTL/silicon track): the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the **FPGA-card** product path (ASIC = the rung ③ volume endgame, sequenced after FPGA proves PMF).
 - **[`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md)** — productization plan for the **USB-C external device** (the appliance track): form factor, power, thermal, host software, BOM/pricing (**[EST]**, planning-doc — not validated), phased D0–D5 gates. The heavy traffic stays internal → USB-C carries only tokens.
 - **[`host/`](host/README.md)** — the **host software scaffold**: a local **OpenAI-compatible server** (`python3 host/aipu_server.py`, stdlib only) mirroring the RTL host interface, the **real GLM-5.2 BPE tokenizer** (+ byte fallback), the **GLM chat template**, OpenAI **sampling params**, and 3 backends — `MockDevice`, a **simulator backend** (drives the RTL model slice via `vvp`), and USB (later). `make host-test` (18 tests). *(Note: the simulator backend still points at the prior `glm_model_fp8` build path and is being retargeted to `glm_model_q4k`.)*
-- **[`fpga/`](fpga/README.md)** — the **FPGA fit, MEASURED**: Vivado batch synth + full place&route of the product top on **XCKU3P** (compact config + `ACT_HW=1`): **141.7K LUT / 87.1%, fits and routes**, routed Fmax **46.5 MHz** after three bit-exact repipeline rounds (campaign ongoing); includes the routable bring-up harness, the Docker/license bring-up notes, and the measured reports in `fpga/results/`.
+- **[`fpga/`](fpga/README.md)** — the **FPGA fit, MEASURED**: Vivado batch synth + full place&route of the product top on **XCKU3P** (compact config + `ACT_HW=1`): **142.3K LUT / 87.5%, fits and routes**, routed Fmax **46.5 MHz** after three bit-exact repipeline rounds (**campaign closed at 4.6×** — the worst path is now route-dominated); includes the routable bring-up harness, the Docker/license bring-up notes, and the measured reports in `fpga/results/`.
 - **[`docs/OPERATION_FLOW.md`](docs/OPERATION_FLOW.md)** — the end-to-end operational flow: boot (NVMe→DDR5), per-token decode through every block, weight streaming, batching + union-skip MoE + speculative decode, CDC, and the per-token bottleneck. **Start here for "how it all runs."**
 - **[`docs/ACCEL_GLM52.md`](docs/ACCEL_GLM52.md)** — accelerator architecture: exact config, MLA + DSA + MoE detail, the fp64-golden methodology, memory/streaming, RTL build order.
 - **[`docs/SYSTEM_SINGLE_PACKAGE.md`](docs/SYSTEM_SINGLE_PACKAGE.md)** — single-module system (Q4_K die + DDR working cache + 1 TB NVMe SSD): tiering, expert caching, the bottleneck/perf/cost model.
@@ -330,9 +341,11 @@ MODEL_DIM=128, 6 layers (3 dense + 3 MoE), 4 heads, MLA nope16/rope16/v32, q_lor
 
 **FPGA fit is MEASURED** ([`fpga/README.md`](fpga/README.md)): the whole 2-clock product top
 synthesizes AND places-and-routes on a **Kintex UltraScale+ XCKU3P** at the compact config with the
-`ACT_HW=1` result-invariant knob — **141,710 LUT (87.1%), 99.6K FF (30.6%), 421 DSP (30.8%)**, hold
+`ACT_HW=1` result-invariant knob — **142,320 LUT (87.5%), ~100K FF, 421 DSP, 0 BRAM**, hold
 met, routed Fmax **46.5 MHz** after three bit-exact fmax-repipeline rounds (rope, glm_act+rmsnorm,
-matmul — campaign ongoing). Historical note: a partitioned `synth_ecp5` of just the six memory-system
+matmul — **campaign closed at 4.6×**: the remaining worst path is route-dominated, i.e. physical
+work, not arithmetic, and 46.5 MHz sits in the bring-up demo's target band; 200 MHz-class is
+rung-②/③ work). Historical note: a partitioned `synth_ecp5` of just the six memory-system
 controllers already summed to ~85% of an ECP5-85, which is why the target moved up to the KU3P class. Because the workload is
 NVMe/PCIe-bandwidth-bound (the die sits ~75–80% idle behind the NVMe storage), an FPGA card is the
 committed **near-term** product — at this rung an ASIC's faster *compute* would be largely wasted. The

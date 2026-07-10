@@ -8,17 +8,18 @@
 > `glm_decoder_block_q4k` / `mla_attn_q4k` / `moe_router_q4k` / `swiglu_expert_q4k` /
 > `glm_matmul_q4k` / `mtp_head_q4k` / `weight_loader_q4k` / `glm_q4k_soc_ms`.
 
-> **⚠️ Verification honesty (read before any "verified/bit-exact" below).** The **one** bit-exact
-> datapath result is **`glm_matmul_q4k` vs the team's own ggml reference `tools/q4k_ref.py`** — **not**
+> **⚠️ Verification honesty (read before any "verified/bit-exact" below).** All bit-exact results are
+> vs the team's **own** ggml references (`tools/q4k_ref.py` / `tools/glm_model_q4k_ref.py`) — **not**
 > the real downloaded GGUF bytes and **not** llama.cpp (a *different* arithmetic contract: llama.cpp
 > quantizes activations to Q8_K + integer dot; this RTL uses **bf16 activations + fp32 accumulate**).
-> There is **no end-to-end numeric golden** for the assembled `glm_model_q4k`: the model / MLA /
-> decoder / MTP-level TBs run against the generic **bf16 twin `glm_model.v` (zero Q4_K)**, and the only
-> whole-model check is **spec==greedy self-consistency** (DUT-vs-DUT — the "greedy golden" is *itself* a
-> `glm_model_q4k`). The RTL is **Q4_K-only** (no Q6_K/Q8_0/F16 mixed-type consumer), so it cannot
-> consume a real UD-Q4_K_XL checkpoint as-is. Every tok/s / J / FPGA-fit figure below is
-> **[EST]/[PENDING]**, roofline-modeled, not measured. See the [README](../README.md) for the full
-> honest ledger.
+> Within that scope: `glm_matmul_q4k` is bit-exact (`make q4k`), the **assembled `glm_model_q4k` now
+> has an end-to-end numeric golden** (`make model-q4k` / `model-q4k-acthw`: full forward vs the numpy
+> reference, ALL 1155 tests bit-exact on logits+argmax+h_state), and the RTL **consumes the mixed
+> Q6_K/Q8_0/F16 types** of a real UD-Q4_K_XL checkpoint (`make mixedtype`, bit-exact to the same
+> reference). Real-checkpoint validation vs GGUF/llama.cpp remains **OPEN**. Every tok/s / J figure
+> below is **[EST]**, roofline-modeled; the **FPGA fit is MEASURED** (Vivado ML 2026.1 full P&R on
+> XCKU3P, routed Fmax 46.5 MHz — see [`fpga/`](../fpga/README.md)). See the [README](../README.md)
+> for the full honest ledger.
 
 How the whole accelerator runs one real GLM-5.2 (Q4_K) token, from power-up through a decoded
 token, across every committed RTL block. Grounded in main @ current state (PE_M batching, grouped-MoE
@@ -29,7 +30,11 @@ now** (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). This is the *operational
 
 The one fact that shapes everything: **the workload is NVMe/PCIe-bandwidth-bound.** The ~467 GB Q4_K
 model lives on the NVMe SSD; each token streams its active experts through a DDR5 cache into a mostly-idle
-Q4_K die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K`.
+Q4_K die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K` — with the measured correction that **K (the
+spec multiplier) must be read as A/U(K)**: the K+1 verify rows fetch the *union* of their experts
+(measured U(4)=2.25–2.64), so the amortization is ~1.1–1.3× at K=4 (A≈3), not ~2×; measured-proxy h/U
+in [`H_MEASUREMENT.md`](H_MEASUREMENT.md) (see also
+[`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).
 
 ## 0. Physical / logical stack
 
@@ -145,9 +150,9 @@ projections are **Q4_K block-dequant GEMMs** (`glm_matmul_q4k`) — per-column s
 `d`,`dmin` + packed 6-bit block-scales/mins + 4-bit codes) dequantized to fp32, `bf16 activation ×
 fp32 weight` MAC, fp32-accumulated in K, rounded to bf16; scores/probs/softmax stay bf16.
 
-> **Honest divergence.** The MLA softmax **omits the `1/sqrt(qk_head_dim)` scale**. Both the DUT
-> and its TB golden omit it, so the self-consistent tests do **not** catch it — it is a **silent
-> divergence** from the reference attention contract, not a proven match. Open item.
+> **(RESOLVED)** The MLA softmax `1/sqrt(qk_head_dim)` scale — previously omitted by both the DUT
+> and its TB golden (a silent divergence) — is now **applied**, and the assembled forward is checked
+> against the independent numpy golden (`make model-q4k`, 1155 bit-exact).
 
 ### 2b. MoE FFN (step ⑤, layers ≥ 3) — `moe_router_q4k` + grouped experts
 1. **Router** (`moe_router_q4k`): Q4_K GEMV `x·W_g` → top-8 of 256 experts + renormalized gates
@@ -214,7 +219,10 @@ fp32 weight` MAC, fp32-accumulated in K, rounded to bf16; scores/probs/softmax s
   position/extent. *`N_STEPS=1` is byte-identical to the single-step top by construction; the step-k
   == standalone-PE_M=1 equivalence was a **prior-FP8** result, Q4_K re-run **PENDING**.*
 - **Speculative decode (`spec_batched_top`):** the MTP head drafts K tokens; the main model
-  **verifies all K+1 positions in ONE PE_M=K+1 weight-load** (NVMe traffic ÷ up to K+1), and the
+  **verifies all K+1 positions in ONE PE_M=K+1 weight-load** (NVMe traffic ÷ up to K+1 on the
+  shared-weight streams; measured caveat — the routed-expert amortization is only A/U(K) ≈ 1.1–1.3×
+  at K=4, since the verify rows union their experts, measured U(4)=2.25–2.64:
+  [`H_MEASUREMENT.md`](H_MEASUREMENT.md)), and the
   committed stream is proven **== greedy** (spec==greedy safety — a real lossless-speculation
   property, but **DUT-vs-DUT self-consistency**: the greedy reference is itself a `glm_model_q4k`,
   **not** a numeric golden vs ggml/llama.cpp). `spec_chain_top` chains the MTP steps.
@@ -241,14 +249,23 @@ the Q4_K analogue is a structural sign-off, not a sim — see §8.)*
   ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)). **Prior-FP8 caveat:** the *specific* counts in that
   doc (`cyc_per_tok` 7947→8607 @ `FLASH_LAT=256`) were measured on the **FP8** system perf TB
   (`glm_fp8_system_perf_tb`, still on the FP8 top — no Q4_K perf TB exists yet); the **formula /
-  mechanism is format-agnostic, the absolute Q4_K cycle counts are PENDING**.
+  mechanism is format-agnostic, the absolute Q4_K cycle counts are PENDING**. *(Update: with the
+  routed Fmax measured at 46.5 MHz, the demo wall-clock is now computable — slice `cyc_per_tok`
+  ~8.0–11.0K (FP8-era absolute; Q4_K similar ballpark plus a few hundred repipeline-latency cycles)
+  → ~170–240 µs/token ≈ **~4,200–5,800 slice tok/s** — the correctness-demo speed of the tiny slice,
+  NOT a GLM-5.2 product number.)*
 - **Projected (roofline, `[EST]`) — staged to the hardware ladder ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)):**
   single-user tok/s is set by memory bandwidth, which is set by the silicon the budget buys, so it is
   **rung-dependent** — **~5–8 tok/s on the near-term prove-it FPGA** (DDR4 ~4 ch, the buildable demo
   *now*), **~15–40 tok/s on the funded custom board** (DDR5 multi-ch / HBM, rung ②), **~40+ tok/s at
   ASIC volume** (rung ③, custom silicon w/ HBM stacks + near-memory compute — lower $/seat + power once
   the NRE amortizes over volume). All `[EST]`, ~3 J/token; the old flat "~25–40" is the **funded rung-②**
-  number, not the cheap near-term box. **This is the product: a fully offline / air-gapped local box** that
+  number, not the cheap near-term box. *(Update — measured-roofline design-point menu [EST, with
+  measured-proxy h/U inputs from [`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE trace]: 1–2 NVMe, no
+  multipliers ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64-ch) → 25–47;
+  225 GB + 200 GB/s → 54–127 — the "100 tok/s" design point. bandwidth-h: 20% pool cached (~90 GB
+  GLM-scale) → h=0.36–0.60; 50% (~225 GB) → 0.72–0.88; a GLM rerun is open.)* **This is the product: a
+  fully offline / air-gapped local box** that
   runs the whole 753B-param frontier model with the ethernet unplugged. The capability it unlocks is frontier AI where the cloud can't
   reach — SCIFs, isolated OT / critical-infra, field/edge, or anywhere a vendor connection is itself the
   liability; the proof is binary — **nothing leaves because there's no path out** (the host link carries
@@ -279,32 +296,33 @@ batching, striping) exists to shrink that second term.
 | chip top / CDC | `glm_q4k_system_cdc`, `cdc_async_fifo`, `reset_sync` | CDC structurally signed off (`make cdc`); 2-clock top elaborates clean (`make synth-glm`) |
 | system core | `glm_q4k_system` | ELABORATED — `hierarchy -check` + `check -assert` clean (`make synth-glm`); no Q4_K system-level numeric TB |
 | batched multi-seq SoC | `glm_q4k_soc_ms` (PE_M=B model + `NSEQ` pager + `kv_mem` + host FSM; `N_STEPS` decode loop) | mechanism present; per-row / decode-loop bit-exactness = prior-FP8 result, Q4_K re-run **PENDING** |
-| compute die | `glm_model_q4k` → `glm_decoder_block_q4k` | assembled Q4_K forward exercised **only** as spec==greedy (DUT-vs-DUT); **no end-to-end numeric golden** |
-| attention | `mla_attn_q4k`, `dsa_indexer`, `kv_cache_pager` | no independent Q4_K numeric golden (the MLA-level TB runs the bf16 twin `mla_attn`); omits `1/sqrt(d)` softmax scale; `kv_cache_pager` BMC + k-induction (+ ECC ring) |
+| compute die | `glm_model_q4k` → `glm_decoder_block_q4k` | assembled Q4_K forward **bit-exact vs the numpy golden** `tools/glm_model_q4k_ref.py` (`make model-q4k` + `model-q4k-acthw`, ALL 1155: logits+argmax+h_state) — still our own numpy reimpl, not llama.cpp/GGUF; plus spec==greedy self-consistency |
+| attention | `mla_attn_q4k`, `dsa_indexer`, `kv_cache_pager` | covered end-to-end within the assembled `make model-q4k` golden; `1/sqrt(d)` softmax scale now **applied**; `kv_cache_pager` BMC + k-induction (+ ECC ring) |
 | MoE | `moe_router_q4k`, `swiglu_expert_q4k`, inline union-skip | router 40/40 (renorm invariants, **not** numeric); swiglu 240/240 (functional, self-labeled, **not** bit-exact); union byte-identical **by construction** |
-| Q4_K GEMM | `glm_matmul_q4k` + `q4k.vh` primitives | **PROVEN — bit-exact vs ggml `tools/q4k_ref.py`**: `glm_matmul_q4k` 160/160, `q4k_prim` 18/18 (`make q4k`) — *the one true bit-exact datapath result* |
-| head | `mtp_head_q4k`, `sampler`, LM-head `glm_matmul_pipe` | exercised via spec==greedy (DUT-vs-DUT); no standalone Q4_K numeric golden |
+| Q4_K GEMM | `glm_matmul_q4k` + `q4k.vh` primitives | **PROVEN — bit-exact vs ggml `tools/q4k_ref.py`**: `glm_matmul_q4k` 160/160, `q4k_prim` 18/18 (`make q4k`); mixed-type Q6_K/Q8_0/F16 consumers bit-exact to the same reference (`make mixedtype`) |
+| head | `mtp_head_q4k`, `sampler`, LM-head `glm_matmul_pipe` | LM head + argmax covered within the assembled `make model-q4k` golden (1155); also exercised via spec==greedy |
 | memory | `flash_xbar`, `ddr5_xbar`, `expert_cache_pf`, `weight_loader_q4k`, `boot_loader`, `weight_decomp` | FORMAL — BMC + unbounded k-induction (7 controllers + ECC ring); `weight_loader_q4k` bit-exact vs `q4k_ref.py` |
 | spec decode | `spec_decode_top`, `spec_batched_top`, `spec_chain_top`, `spec_decode_seq` | spec==greedy (DUT-vs-DUT): `spec_decode_top` 19/19 (`make unittests`); K>1 loops via `make spec-slow`; `spec_decode_seq` BMC + k-induction |
 
 ## 9. Honest scope
 This is the flow of the **committed slice** (every operator + ratio faithful) plus the
 memory/streaming system that runs the real 753B-param model. What is *modeled* (not silicon): the PHYs,
-and all `[EST]` tok/s/J. **Fidelity, stated honestly:** the **one** bit-exact datapath result is
-`glm_matmul_q4k` (+ the `q4k.vh` primitives) vs the team's **own** ggml reference `tools/q4k_ref.py`
-— **not** the real GGUF bytes and **not** llama.cpp. The assembled `glm_model_q4k` has **no
-end-to-end numeric golden** (exercised only as spec==greedy self-consistency, DUT-vs-DUT); the model /
-MLA / decoder-level TBs run the **generic bf16 twin `glm_model.v` (zero Q4_K)**; the RTL is
-**Q4_K-only** (no Q6_K/Q8_0/F16 consumer, so it cannot ingest a real UD-Q4_K_XL mix as-is); and the
-MLA omits the `1/sqrt(qk_head_dim)` softmax scale. Still **OPEN**: bit-exactness vs the real downloaded
-GGUF / llama.cpp, a mixed-type path, a full-model numeric golden, and a real FPGA P&R + board run (see
+and all `[EST]` tok/s/J. **Fidelity, stated honestly:** all bit-exact results are vs the team's
+**own** ggml references — `glm_matmul_q4k` (+ the `q4k.vh` primitives) vs `tools/q4k_ref.py`
+(`make q4k`; mixed-type Q6_K/Q8_0/F16 via `make mixedtype`), and the assembled `glm_model_q4k` full
+forward vs the numpy golden `tools/glm_model_q4k_ref.py` (`make model-q4k` / `model-q4k-acthw`, ALL
+1155 bit-exact; the MLA `1/sqrt(qk_head_dim)` softmax scale is applied) — **not** the real GGUF bytes
+and **not** llama.cpp. The FPGA P&R fit is **MEASURED** (Vivado ML 2026.1 on XCKU3P, routed Fmax
+46.5 MHz, campaign closed — see [`fpga/`](../fpga/README.md)). Still **OPEN**: bit-exactness vs the
+real downloaded GGUF / llama.cpp, and the board bring-up/run (see
 [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md), [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md)). *(The prior-FP8
 real-checkpoint validation — operator-bit-exact vs the published `GLM-5.2-FP8` safetensors + a truncated
 real-weight token chain — lives on branch `fp8`; it is **not** a Q4_K result.)*
 
 ## 10. Compact config (FPGA miniaturization)
 
-Target: fit the chip on a **smaller FPGA** (Tang Mega 138K / GW5AT-138). Five parameters of
+Target: fit the chip on a **small FPGA** — measured target: **XCKU3P via the Vivado flow** (the old
+Gowin Tang Mega 138K / GW5AT-138 / nextpnr scaffold was removed, superseded). Five parameters of
 `glm_q4k_system` (and its 2-clock top `glm_q4k_system_cdc`) set **capacity / parallelism /
 bandwidth — never the math**. Shrinking them makes the elaborated logic smaller (fewer LUT/FF in
 the matmul PE array, the DDR5 crossbar, the KV ring, the expert-request FIFO, and the expert
@@ -348,8 +366,10 @@ The TB knobs are overridable header parameters (e.g. `iverilog -Pglm_q4k_system_
 
 **Measurement caveat (honest).** yosys cannot map the fp32/Q4_K dequant datapaths through ABC, so no
 LUT count is emitted here — `make synth-glm` elaborates + `check -assert`s + `stat`s the hierarchy.
-The **area reduction is by construction** (fewer PE columns / channels / ring+FIFO+cache entries); a
-real LUT/FF delta needs the vendor flow (Gowin / nextpnr) on the elaborated netlist.
+The **area reduction is by construction** (fewer PE columns / channels / ring+FIFO+cache entries).
+The vendor flow is now **Vivado** (the Gowin/nextpnr scaffold was removed), and the full-system
+compact-config fit is **measured** there — 142,320 LUT (87.5%) / 421 DSP on XCKU3P (see
+[`fpga/`](../fpga/README.md)); per-lever LUT/FF deltas still need per-config Vivado runs.
 
 ### 10a. Structural engine sharing (landed, byte-identical by construction)
 Beyond the *parametric* compact config above, the die also shrinks *structurally*: because
@@ -366,5 +386,6 @@ measurement. This is free in time (the NVMe-bound die has the slack) and keeps t
 > **Prior-FP8 measurement (branch `fp8`, not re-run for Q4_K).** The area of the merge was quantified
 > on the FP8 track: the freed matmul core was **~6186 LUT4** each (≈12K LUT4/block), per-expert
 > generic-cell delta **−1519**, decoded token byte-identical (FP8 slice). Those numbers are **FP8**;
-> a Q4_K re-measure is **PENDING** (needs the vendor flow — yosys can't map the datapath). Full lever
+> a Q4_K re-measure is **PENDING** (yosys can't map the datapath; the Vivado flow now exists, but the
+> per-lever per-config run has not been done). Full lever
 > catalog and status in [`MINIATURIZATION.md`](MINIATURIZATION.md).

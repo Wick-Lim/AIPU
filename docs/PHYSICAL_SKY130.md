@@ -187,13 +187,20 @@ synth artifact, not the real design.** It was independently disproven at the tim
 simulated and passed, and every in-die matmul had its `KMAX` **overridden** to `FF_KMAX_D/M`
 (= 256/128 at the slice → **NB ≤ 2**), never the module-default 16384 — so the die was small
 (NB ≤ 2), its ECP5-mapped size simply **unmeasured** (a yosys-0.66 `synth_ecp5` tooling limit),
-not a design over-provisioning. **For the current Q4_K product**, the compute die is
-`glm_model_q4k`; its ECP5-mapped fit is **likewise unobtained — [PENDING]** (and no assembled-Q4_K
-end-to-end functional golden exists yet, per [`../README.md`](../README.md)), so the "die is small"
-conclusion carries as a **design-soundness expectation**, not a measured Q4_K fit.
+not a design over-provisioning. **For the current Q4_K product this question is since ANSWERED
+by measurement, not expectation:** the whole Q4_K product top `glm_q4k_system_cdc` is now
+**placed & routed on a real XCKU3P** (Vivado ML 2026.1, compact config + ACT_HW=1: **142.3K LUT /
+87.5%**, ~100K FF, 421 DSP, hold met, routed Fmax **46.5 MHz** — see
+[`../fpga/README.md`](../fpga/README.md)), and the assembled-Q4_K end-to-end golden exists
+(`make model-q4k`, 1155/1155, per [`../README.md`](../README.md)); the ECP5 mapping specifically
+is superseded/moot.
 
 **Takeaway:** ECP5-85 is too small for the full system (memory-system controllers ~85% alone) →
-target a larger FPGA; the full-system ECP5 mapped fit (and the compute die's fit specifically)
-remains **unobtained / [PENDING]** — a real next-step item (a newer yosys / vendor flow, or the
-FPGA-prototype / Vivado-fit step of [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) and
-[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
+a larger FPGA was needed — and that larger-FPGA fit is since **DONE / MEASURED**: the Vivado-fit
+step of [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) / [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)
+ran for real — Vivado ML 2026.1 synth + full place&route of `glm_q4k_system_cdc` on **XCKU3P**
+(compact config + ACT_HW=1: 142.3K LUT / 87.5%, 0 BRAM, hold met, routed-Fmax campaign closed at
+**46.5 MHz**, every round re-proven bit-exact on the 1155-test assembled golden —
+[`../fpga/README.md`](../fpga/README.md)). The ECP5 rows above stand as the earlier
+partitioned-controller data point only; a full-system ECP5 map is moot. Board bring-up (a running
+board) is still not done.

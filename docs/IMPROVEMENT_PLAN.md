@@ -15,17 +15,20 @@ bytes_moved** (which helps both tok/s and J/token). The compute die is *not* the
 (~20–25 % utilized) — die-side optimization (accumulator area, fmax, formal) improved
 cost/thermals/correctness but does **not** move tok/s or J/token until the NVMe/storage tier is
 unblocked. This plan targets the real bottleneck. **All tok/s figures below are [EST]** (roofline-
-modeled) until a Vivado routed fit + Fmax and a running board exist — both **[PENDING]**.
+modeled) until a running board exists — board bring-up is still open, but the **Vivado routed fit +
+Fmax are now MEASURED** (Vivado ML 2026.1 on XCKU3P, compact config + ACT_HW=1: 142,320 LUT / 87.5 %,
+421 DSP, 0 BRAM; routed Fmax **46.5 MHz** after a 4.6× repipeline campaign, every round re-proven
+bit-exact on the 1155-test assembled golden; campaign CLOSED — the worst path is route-dominated,
+physical work not arithmetic).
 
-> **These levers sit on top of correctness gaps that are still OPEN** (they change the *bandwidth*
-> arithmetic, not the *product-done* bar). Per README's honest ledger: there is **no assembled Q4_K
-> end-to-end numeric golden** yet — the assembled model is exercised only as speculative-decode ==
-> greedy *self-consistency*, and the model/decoder/MLA-level TBs run against a generic bf16 twin, not
-> the `_q4k` product; the datapath is **Q4_K-only** (no Q6_K/Q8_0/F16 mixed-type path, so a real
-> UD-Q4_K_XL checkpoint can't be consumed as-is); MLA omits the `1/√qk_head_dim` softmax scale; and
-> bit-exactness vs the *real* published GGUF / llama.cpp is unvalidated (our goldens are our **own**
-> ggml reimpl `tools/q4k_ref.py`, never the downloaded bytes). None of that is fixed by this plan —
-> it is tracked in `README.md` / `NEXT_STEPS_PLAN.md`.
+> **Status update — most of the old correctness gaps are now CLOSED.** The assembled Q4_K end-to-end
+> numeric golden is **DONE** (`make model-q4k` — 1155 tests bit-exact vs the numpy reference
+> `tools/glm_model_q4k_ref.py`, plus `make model-q4k-acthw` through the ACT_HW=1 serialized-activation
+> datapath); **mixed-type Q6_K/Q8_0/F16 consumers are DONE** (`make mixedtype`), so a real UD-Q4_K_XL
+> checkpoint's dynamic type mix can be consumed; and the MLA `1/√qk_head_dim` softmax scale is now
+> **applied**. Still OPEN: bit-exactness vs the *real* published GGUF / llama.cpp is unvalidated (our
+> goldens are our **own** ggml/numpy reimpls, never the downloaded bytes) — tracked in `README.md` /
+> `NEXT_STEPS_PLAN.md`.
 
 **The memory-stall mechanism this plan rests on is emulatable on real RTL cycles.** `glm_q4k_system`
 carries an `EXPERT_STALL` parameter (default 0 = byte-identical to the committed system) that
@@ -36,11 +39,21 @@ demand-stall `= 3·FLASH_LAT + 9`, slope = miss count — while the committed to
 the **prior FP8-track measurement** (branch `fp8`; see [`CYCLE_EMULATION.md`](CYCLE_EMULATION.md),
 still FP8-framed): the `EXPERT_STALL`/`FLASH_LAT` params are present in the Q4_K system, but a Q4_K
 re-run of the sweep is **[PENDING]**. Either way this upgrades the roofline's stall term from
-*assumed* to *counted*.
+*assumed* to *counted*. (With the measured 46.5 MHz routed Fmax the *slice* demo wall-clock is now
+computable: cyc_per_tok ~8.0–11.0 K → **~170–240 µs/token ≈ ~4,200–5,800 slice tok/s** — the
+correctness-demo speed of the tiny slice, **not** a GLM-5.2 product number.)
 
 Baseline (measured h, [EST] BW): NVMe ~50 GB/s [EST] (aggregate across many PCIe lanes/drives — a
 single Gen4 x4 NVMe ~7 GB/s), h≈27 % (measured, see 2.3), K=1 → **~2–3 tok/s single-user [EST]**,
 ~8–10 J/token [EST].
+
+> **Update — h/U are now proxy-MEASURED ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE-1B-7B trace; GLM
+> rerun open):** residency-only bandwidth-h ≈ **0.36–0.60** with ~20 % of the expert pool cached
+> (~90 GB at GLM scale), **0.72–0.88** at ~50 % (~225 GB); LRU collapses to ~0 below a 10 % cache.
+> Measured-roofline design points (all [EST], MEASURED-PROXY h/U inputs): 1–2 NVMe (no multipliers)
+> ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64ch) → 25–47; 225 GB +
+> 200 GB/s → **54–127** (the "100 tok/s" design point). See also
+> [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).
 
 Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendor IP) · 🔴 out of RTL scope.
 
@@ -60,7 +73,7 @@ Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendo
 | # | Item | Type | Plan | Est. impact |
 |---|---|---|---|---|
 | 2.1 | **Expert decompressor** in the NVMe→DDR5 path | 🟢 | Store expert weights losslessly-compressed on the NVMe SSD and decompress on-chip during fetch → cut NVMe bytes/expert → effective NVMe_BW ↑ and NVMe read energy ↓ by the same factor. A `weight_decomp` unit (canonical-Huffman, bit-exact lossless) exists. **⚠️ FP8-specific — Q4_K re-run [PENDING]:** the built `weight_decomp.v` is an **FP8 E4M3 byte** decompressor; its **1.34× (5.97 bits/sym; 8 tests)** is a **prior FP8-track measurement (branch `fp8`)**, where raw FP8 weight *bytes* have entropy well under 8 bits. **Q4_K does not inherit that number**: a Q4_K super-block is *already* ~4.5 bpw block-entropy-packed (fp16 `d`/`dmin` + 6-bit scales + 4-bit codes), so the lossless headroom left for a second Huffman pass is **much smaller and unmeasured**. Re-target the decompressor to Q4_K blocks (or drop it) and **measure the real Q4_K ratio** before claiming any win. Do **not** relabel the FP8 1.34× as a Q4_K result. | **[PENDING]** for Q4_K (prior FP8 track: ~1.34×) |
-| 2.2 | **MTP K>1 / better draft** — verify more tokens per weight-load | 🟢 | Extend `spec_decode_seq` to a K>1 multi-token draft (longest-accepted-prefix). **Built + gated: `DRAFT_K>1` (g_kn batch verifier), spec==greedy** on the Q4_K model (`spec_decode_top` 19/19; K=1 byte-identical; `spec_batched_top` / `spec_chain_top` via `make spec-slow`). Eff tok/pass under a chained-decay acceptance model [EST] (the shipped 1-MTP-layer reality) at α=0.7: K=1→1.69, K=2→2.08, K=3→2.17. HONEST: the shipped model has 1 MTP layer, so K>1 must chain the head autoregressively (acceptance decays) → **K=2 is the sweet spot**; K=3+ is marginal unless a deeper MTP stack lands. Realized in RTL by `spec_chain_top`: the MTP head runs recurrently on chain hidden-state `h_mtp` to mint K drafts, then a `PE_M=K+1` batched-verify in one weight-load commits the accepted prefix (spec==greedy; self-draft K_eff ~1.7–2.2 [EST]). | **K=2 ≈ +23 %** [EST] over K=1 (chained) |
+| 2.2 | **MTP K>1 / better draft** — verify more tokens per weight-load | 🟢 | Extend `spec_decode_seq` to a K>1 multi-token draft (longest-accepted-prefix). **Built + gated: `DRAFT_K>1` (g_kn batch verifier), spec==greedy** on the Q4_K model (`spec_decode_top` 19/19; K=1 byte-identical; `spec_batched_top` / `spec_chain_top` via `make spec-slow`). Eff tok/pass under a chained-decay acceptance model [EST] (the shipped 1-MTP-layer reality) at α=0.7: K=1→1.69, K=2→2.08, K=3→2.17. HONEST: the shipped model has 1 MTP layer, so K>1 must chain the head autoregressively (acceptance decays) → **K=2 is the sweet spot**; K=3+ is marginal unless a deeper MTP stack lands. Realized in RTL by `spec_chain_top`: the MTP head runs recurrently on chain hidden-state `h_mtp` to mint K drafts, then a `PE_M=K+1` batched-verify in one weight-load commits the accepted prefix (spec==greedy; self-draft K_eff ~1.7–2.2 [EST]). **Measured U(K) correction ([`H_MEASUREMENT.md`](H_MEASUREMENT.md)):** the K positions' expert *union* grows with K (proxy-measured U(2)=1.51–1.65, U(4)=2.25–2.64), so the realized NVMe-byte amortization is **A/U(K) ≈ 1.1–1.3× at K=4 (A≈3)** — read the spec multiplier through that cap, not as ×K_eff. | **K=2 ≈ +23 %** [EST] over K=1 (chained); NVMe-byte win capped by measured U(K) |
 | 2.3 | **Higher cache hit-rate h** — bigger cache + predictor-driven prefetch | 🟢 | Wire `expert_predictor` into `expert_cache_pf` prefetch. **❌ MEASURED NO-OP at GLM cache size (`expert_prefetch_top`, format-agnostic):** at SLOTS=900 (> reuse distance) the predictor hints the most-popular expert, which LRU **already keeps resident** → 0 prefetches issued, hit-rate byte-identical to baseline; deep LOOKAHEAD 1/2/3 identical. Only helps in the narrow regime just *below* the reuse-distance knee (SLOTS=550: 0 %→4.6 %). **Conclusion: hit-rate is capped by fine-grained-routing entropy, not prefetch cleverness — this lever does not move the real config.** (Matches the ledger: predictor-prefetch is a measured no-op.) | **~0 %** at real cache size (honest) |
 | 2.4 | **Union-skip grouped MoE** (batch axis) — fetch only the union of selected experts | 🟢 | The PE_M>1 grouped MoE in `glm_decoder_block_q4k` scans the expert axis (`T_ESCAN`) and fetches **only** the union of experts any of the B rows selected (combinational `any_has` membership), not all N_EXPERT. **Union-skip is folded INLINE** into `glm_decoder_block_q4k` (the `T_ESCAN` scan + `any_has` cursor mirror the now-removed standalone `batched_moe.v` reference pattern). The PE_M batch-widen enabler is DONE across swiglu/router/mla/mtp (`_q4k`). *(The full B-coverage cross-check `make bcov` — B∈{1,2,3,5,8} × routing {same,distinct,random,overlap}, batched(PE_M=B) == B per-row runs bit-exact, union fetched once — was a **prior FP8-track** gate, removed from `main`; see branch `fp8`.)* On the single-user box the batch axis is exercised only by speculative decode's small `PE_M=K+1` self-verify batch (`spec_chain_top`, B=1 per user); the large-batch B≈256 case is the **non-target datacenter-serving** regime (kept as analysis, not this product). | up to **~32×** fewer NVMe expert fetches at small batch (the single-user spec-decode verify batch) [EST]; ~0 at B≈256 (union≈all — the non-target datacenter-batch regime) |
 
@@ -90,9 +103,10 @@ energy lever — it directly cuts NVMe bytes. P3.2 (clock gating) trims idle. Be
 ## Projected combined effect (single-user, [EST])
 
 Stacking the 🟢 RTL items on the baseline (~2–3 tok/s, ~8–10 J/token). **Every row is [EST]** — the
-built RTL items are verified *as RTL* here, but the absolute tok/s awaits Vivado fit + a running
-board, and the levers sit on an as-yet-unvalidated assembled Q4_K numeric path (see the OPEN-gaps
-banner above):
+built RTL items are verified *as RTL* here (and the Vivado routed fit + 46.5 MHz Fmax are now
+MEASURED — see above), but the absolute tok/s awaits a running board; the assembled Q4_K numeric path
+now has its 1155-test end-to-end golden (`make model-q4k`, vs our own numpy reimpl — still not the
+real GGUF/llama.cpp):
 
 | Step | Lever | tok/s | J/token | status |
 |---|---|---|---|---|
@@ -117,9 +131,14 @@ observation-only. All numbers [EST].
 > — DDR5-multi-channel / HBM + multi-NVMe) ~15–40 tok/s [EST]**, where the lever-stacked figures here
 > live; **rung ③ (volume SoC/ASIC — HBM + near-memory compute) ~40+ tok/s [EST]**. "Built today" means
 > the RTL is built + verified *as RTL* — **not** that rung-② speed is reachable on rung-① cheap
-> hardware, and **not** that the assembled Q4_K numeric path has an end-to-end golden yet. The same
+> hardware. (The assembled Q4_K numeric path now **has** its end-to-end golden — `make model-q4k`,
+> 1155 bit-exact vs our own numpy reimpl.) The same
 > Q4_K RTL runs on every rung; only the bandwidth it is fed changes. (Q4_K's GEMM core is bit-exact to
-> `tools/q4k_ref.py`, our own ggml reimpl — **not** the downloaded GGUF or llama.cpp.)
+> `tools/q4k_ref.py`, our own ggml reimpl — **not** the downloaded GGUF or llama.cpp.) Clock↔area at
+> the measured fit: compute-side stream consumption = dequant lanes × clock — at the measured
+> 46.5 MHz, 7 GB/s (1 NVMe) needs ~300 lanes and 100 GB/s ~4,300 (infeasible on KU3P); ~1,000 at
+> 200 MHz-class; ~200 at ASIC 1 GHz+. A higher clock buys a smaller/cheaper die, **not** more tok/s
+> (memory stays the wall past saturation).
 
 ## Execution order (RTL, by impact-per-effort)
 

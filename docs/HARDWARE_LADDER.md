@@ -7,17 +7,22 @@ streams the routed experts** — memory bandwidth is set by the **FPGA/silicon's
 set by **how much money is in the build**. So the plan is: **prove it works cheap → raise → scale.***
 
 > All tok/s here are **[EST]** — first-order projections from the bandwidth roofline
-> (`tok/s ≈ sustained streaming BW / [(1−h)·routed footprint] · K`), **not** measured silicon. There is
-> **no** routed-netlist Fmax, no PnR fit, and no running board yet; every figure below stays **[EST]**
-> until a Vivado/Gowin fit + a bring-up board measures a real Fmax ÷ cyc_per_tok. Only rung ① is a
+> (`tok/s ≈ sustained streaming BW / [(1−h)·routed footprint] · K`), **not** measured silicon. Read the
+> spec multiplier `K` as **A/U(K) ≈ 1.1–1.3× at K=4** per the measured union factor U(K), not ~2× —
+> and `h` now has measured-proxy values (OLMoE trace) — see [`H_MEASUREMENT.md`](H_MEASUREMENT.md).
+> The **FPGA fit + routed Fmax are MEASURED**: Vivado ML 2026.1 full place&route of
+> `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1) — 142,320 LUT (87.5%), 421 DSP, routed
+> Fmax **46.5 MHz** after a closed 4.6× repipelining campaign, every round re-proven bit-exact on the
+> 1155-test assembled golden. But there is still **no running board**, so every tok/s below stays
+> **[EST]** until bring-up measures a real Fmax ÷ cyc_per_tok on hardware. Only rung ① is a
 > near-term buildable proof; ②③ are funding-gated projections.
 
 > **Local-device retarget (Q4_K).** `main` develops the **Q4_K local-inference track** — the target
 > weight store is the published `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` (**~467 GB**, ~38% smaller than the
 > 753 GB FP8 checkpoint). At ~0.6 B/param avg vs FP8's ~1.0, Q4_K reads **~1.6× fewer bytes/token**, so on
 > a bandwidth-bound box it is **~1.6× faster than FP8** at the same interface [EST]. "Bit-exact" on this
-> track means **bit-exact to our ggml-Q4_K reference `tools/q4k_ref.py`** — the whole-file /
-> mixed-type Q6_K·Q8_0·F16 / real published-GGUF checks are **OPEN** (see
+> track means **bit-exact to our ggml-Q4_K reference `tools/q4k_ref.py`** — mixed-type Q6_K·Q8_0·F16
+> RTL consumers are **DONE** (`make mixedtype`); the whole-file / real published-GGUF checks are **OPEN** (see
 > [`../README.md`](../README.md)). FP8 is preserved on branch **`fp8`** + tag **`fp8-verified-baseline`**
 > ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
 
@@ -56,14 +61,21 @@ add (our `ddr5_xbar`/`flash_xbar` already parameterize the channel count; the ce
 | **② Custom board** | mid FPGA (Versal / Agilex / HBM-class US+) DDR5 multi-ch or HBM | DDR5 8–12 ch or HBM (~400 GB/s–1 TB/s) feeding the working set | **~15–40** | **contingent** — needs expert-cache hit rate *or* non-bit-exact pruning | ~$3–6 k | seed | post-raise |
 | **③ SoC / ASIC** | custom silicon (HBM stacks + many-channel PHY + near-memory Q4_K compute) | HBM3 on-package (~TB/s) | **~120 aspirational** | tiered (467 GB ≠ fits HBM) | high NRE, low unit | Series B+ / volume | at scale |
 
+> **Update — measured-proxy design-point menu ([EST], MEASURED-PROXY h/U inputs;
+> [`H_MEASUREMENT.md`](H_MEASUREMENT.md), [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)):**
+> NVMe 1–2 (no multipliers) ~0.5–1 tok/s; 90 GB DRAM expert cache + 100 GB/s → 13–24;
+> 90 GB + 200 GB/s (ONFI 64ch) → 25–47; 225 GB + 200 GB/s → 54–127 (the "100 tok/s" design point).
+> Measured residency-only h (OLMoE proxy): ~20% of pool cached → h=0.36–0.60; ~50% → 0.72–0.88
+> (LRU collapses below ~10%). Spec-chain amortization is A/U(K) ≈ 1.1–1.3× at K=4, not ~2×.
+
 *Per-rung parts, box BOM, and per-seat economics: [`BOM.md`](BOM.md) — all cost/economics figures are
 **[EST]/[PENDING]** planning numbers, not quotes. Short version — the BOM is memory/storage/board-dominated,
 the FPGA is a minority, and a rung-② ~$3–6 k box is order-of-magnitude cheaper than an 8×H100 self-host
 for the offline-753B use case [EST].*
 
 Each rung is **the same RTL** — whose **Q4_K GEMM core is bit-exact vs the ggml reference**
-(`glm_matmul_q4k` 160/160), while the **assembled end-to-end model golden is still OPEN**
-([`../README.md`](../README.md)). Only the memory interface it drives changes; nothing about the model
+(`glm_matmul_q4k` 160/160), and the **assembled end-to-end model golden is DONE**
+(`make model-q4k` 1155 + `make model-q4k-acthw` 1155; [`../README.md`](../README.md)). Only the memory interface it drives changes; nothing about the model
 changes across rungs — **just the bandwidth the silicon can feed it.**
 
 ### ① Prove-it — the near-term goal
@@ -90,8 +102,10 @@ set**. But note the **honesty knob**: that bandwidth feeds the DDR/HBM-resident 
 rate; the **~14 GB routed experts still change every token**, so **~15–40 tok/s [EST] is *contingent***,
 not free. You reach it only by either
 
-- **(bit-exact) landing routed experts in the DDR/HBM cache** at a real hit rate — capped by routing
-  entropy, and the predictor-prefetch path is a **MEASURED no-op** ([`ULTRA_PERF.md`](ULTRA_PERF.md)); or
+- **(bit-exact) landing routed experts in the DDR/HBM cache** at a real hit rate — now **measured
+  (proxy)**: residency-only h=0.36–0.60 with ~20% of the pool cached (~90 GB GLM-scale), 0.72–0.88 at
+  ~50% ([`H_MEASUREMENT.md`](H_MEASUREMENT.md)); the predictor-prefetch path remains a
+  **MEASURED no-op** ([`ULTRA_PERF.md`](ULTRA_PERF.md)); or
 - **(NOT bit-exact) activation-sparsity / expert pruning** — a separate model-quality decision that trades
   the bit-exact guarantee for fewer streamed experts.
 
@@ -114,6 +128,33 @@ no capital); real later (that's how bandwidth-bound silicon products scale).
 
 ---
 
+### Rung-③ memory-tier decision (2026-07, FIXED)
+
+The rung-③ SoC's memory system is **decided**: **LPDDR5X 256 GB (8×32 GB packages,
+512-bit, ~550 GB/s) as the h-cache tier + ONFI-direct NAND 64ch (~200 GB/s, raw
+1 TB) as the stream tier** — the measured-proxy 54–127 tok/s design point
+([`H_MEASUREMENT.md`](H_MEASUREMENT.md)). The reasoning trail, kept honest:
+
+- **CXL 512 GB — REJECTED.** CXL solves capacity (which NAND already gives for
+  ~$0.05–0.1/GB) and not bandwidth (which is our wall): one x16 Gen5 link is
+  ~50 GB/s effective → ~4–5 tok/s, *below* the NAND array at ~30× the $/GB, and
+  a multi-link CXL root drags in server-class host silicon. Same PCIe wall the
+  offloading literature sits behind ([`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).
+- **512 GB full residency — REJECTED.** Counter-intuitive but measured-informed:
+  full residency forces the capacity onto the *slow* medium (DDR5 DIMMs,
+  ~350 GB/s at 8ch) → ~25–35 tok/s [EST], **below** the 225-GB-class hybrid,
+  because the hybrid serves the hot 72–88 % (measured h at 50 % pool) from
+  *faster* LPDDR5X and lets $100 of NAND absorb the miss tail. Hierarchy beats
+  hoarding.
+- **LPDDR5X sizing**: packages top out at 32 GB (x64), so 8 packages = 256 GB on
+  a 512-bit bus is the practical ceiling class (Apple M-Max/Strix Halo/DGX Spark
+  prove the packaging + consumer price point). The 512-bit width is REQUIRED,
+  not a luxury: at the 54–127 tok/s point the cache tier itself carries several
+  hundred GB/s (hits + hot set), ~70–90 % of 550 GB/s. A 4-package/128-GB SKU
+  lands in the 25–47 tok/s class — the two SKUs share one die.
+- FPGA rungs keep DDR4/DDR5 DIMMs (no LPDDR5X hard controllers in FPGAs);
+  LPDDR5X enters with the ASIC PHY IP at rung ③.
+
 ## Why this ordering is the right bet
 
 - **De-risk before spend.** A ~$1–2 k FPGA proves the RTL on real silicon before any ~$3–6 k custom board
@@ -129,11 +170,13 @@ no capital); real later (that's how bandwidth-bound silicon products scale).
 
 ## Honest caveats
 
-- Every tok/s is **[EST]** — roofline projections, no routed netlist / Fmax / running board. Even rung ①
-  is projected until the FPGA demo measures a real Fmax ÷ cyc_per_tok.
+- Every tok/s is **[EST]** — roofline projections. The **fit + routed Fmax are now MEASURED** (Vivado
+  ML 2026.1 PnR on XCKU3P, 46.5 MHz, campaign closed at 4.6× — the worst path is route-dominated, not
+  arithmetic), but there is still **no running board**, so even rung ① is projected until the FPGA demo
+  measures a real Fmax ÷ cyc_per_tok on hardware.
 - **Bit-exact ≠ real GGUF.** All of the above is bit-exact only to our ggml reimpl `tools/q4k_ref.py`;
-  the whole-file, mixed-type (Q6_K/Q8_0/F16 — RTL is **Q4_K-only**), and real published-GGUF / llama.cpp
-  checks are **OPEN** ([`../README.md`](../README.md)).
+  mixed-type Q6_K/Q8_0/F16 RTL consumers are **DONE** (`make mixedtype`), but the whole-file and real
+  published-GGUF / llama.cpp checks are **OPEN** ([`../README.md`](../README.md)).
 - **Separate the bit-exact band from the knobs.** Rung ① (~0.5–8 tok/s) is bit-exact throughout. Rung ②'s
   ~15–40 needs *either* a DDR-cached-expert hit rate (routing-entropy-limited; prefetch is a measured
   no-op) *or* non-bit-exact pruning — state which one when quoting it.

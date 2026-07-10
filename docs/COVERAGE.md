@@ -179,8 +179,10 @@ configuration** — the small parameterization the unit TBs instantiate. It is
   `make q4k` (the Q4_K unit gate — `q4k_prim` / `glm_matmul_q4k` bit-exact to the
   **ggml Q4_K reference** `tools/q4k_ref.py`, with `swiglu_expert_q4k` / `moe_router_q4k`
   checked functionally, not against a numeric golden), and `make formal`. That
-  fidelity is at the **leaf/unit** level — the *assembled* Q4_K numeric path has
-  **no** end-to-end golden yet (see the bf16-twin caveat below).
+  fidelity spans the **leaf/unit** level and — since the `make model-q4k` gate closed
+  the gap — the **assembled** forward pass (`glm_model_q4k` **bit-exact vs the assembled
+  numpy golden** `tools/glm_model_q4k_ref.py`, **1155/1155**; see the bf16-twin caveat
+  update below).
 - **Q4_K numeric-core coverage** — `glm_matmul_q4k`, `swiglu_expert_q4k`,
   `moe_router_q4k`, and the `q4k.vh` primitives have gated **functional** TBs
   (`make q4k`) but are **not yet** in this Verilator structural set. **[PENDING]**
@@ -194,24 +196,27 @@ configuration** — the small parameterization the unit TBs instantiate. It is
   token or functional sim at full config.
 - **Whole-datapath / capstone coverage** — the large integration modules
   (`glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`, `glm_q4k_system*`,
-  `glm_q4k_soc_ms`, `spec_*`) are intentionally out of this run (minutes-long) and,
-  more importantly, are **elaboration-only** at the assembled level — there is no
-  gated functional sim of the assembled Q4_K path to instrument (the prior FP8
-  `batched_moe` `bcov` lives only on branch `fp8`; `batched_moe` was folded inline
-  into `glm_decoder_block_q4k` on `main`). Coverage here targets the fast leaf/unit
+  `glm_q4k_soc_ms`, `spec_*`) are intentionally out of this run (minutes-long). The
+  assembled Q4_K path now **does** have a gated functional sim (`make model-q4k`,
+  1155/1155 vs the assembled numpy golden), but it is iverilog-gated and not
+  instrumented in this Verilator structural set (the prior FP8 `batched_moe` `bcov`
+  lives only on branch `fp8`; `batched_moe` was folded inline into
+  `glm_decoder_block_q4k` on `main`). Coverage here targets the fast leaf/unit
   modules.
 
-> **bf16-twin caveat (the assembled-Q4_K golden gap — stated plainly).** The
+> **bf16-twin caveat (updated — the functional half of the gap is since closed).** The
 > model/decoder/attention/MTP-level testbenches (`glm_model_tb`,
 > `glm_decoder_block_tb`, `mla_attn_tb`, `mtp_head_tb`) compile the **generic bf16
 > twin** RTL — `src/glm_model.v`, `src/glm_decoder_block.v`, `src/mla_attn.v`,
 > `src/swiglu_expert.v`, `src/moe_router.v`, `src/mtp_head.v` (**zero Q4_K**) — **not**
-> the `_q4k` product modules. So **no** structural coverage and **no** functional
-> golden exists for the assembled Q4_K numeric path: zero lines of the assembled
-> Q4_K datapath are checked against any golden today. The bit-exactness that *is*
-> proven is Q4_K vs the team's own **ggml reimplementation** (`tools/q4k_ref.py`) at
-> the **leaf** level (`make q4k`) — never the real published GGUF file / `llama.cpp`,
-> and never the assembled model. This is a known-open gap, not a covered case.
+> the `_q4k` product modules, so **no structural coverage** exists here for the
+> assembled Q4_K numeric path. The **functional golden**, however, now exists: the
+> assembled `glm_model_q4k` full forward is gated **bit-exact vs the assembled numpy
+> golden** (`make model-q4k` **1155/1155** + `model-q4k-acthw` 1155/1155,
+> `tools/glm_model_q4k_ref.py`). The bit-exactness proven is Q4_K vs the team's own
+> **ggml reimplementation** (`tools/q4k_ref.py` / `glm_model_q4k_ref.py`) at the
+> **leaf** level (`make q4k`) and the **assembled** level (`make model-q4k`) — never
+> the real published GGUF file / `llama.cpp`, which remains the open gap.
 
 ### Testbenches that do NOT verilate/run (skipped, with reason)
 
@@ -236,6 +241,7 @@ and a fresh merged total are **PENDING**. The two skipped *build* failures are a
 Verilator `--timing` codegen defect; the three skipped *run* failures are
 Verilator `real`/`$exp`/`$sqrt`/bit-canonicalization disagreements with the
 reference iverilog goldens. Correctness/fidelity is owned by the iverilog suite
-(`make q4k` at the leaf level) and the formal proofs; this coverage report is a
-structural-exercise complement to them, and the assembled Q4_K path remains a
-stated open gap.
+(`make q4k` at the leaf level, `make model-q4k` at the assembled level — 1155/1155
+vs the assembled numpy golden) and the formal proofs; this coverage report is a
+structural-exercise complement to them. The assembled Q4_K path stays outside this
+*structural* set, and bit-exactness to the real GGUF / llama.cpp stays open.

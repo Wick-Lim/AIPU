@@ -8,10 +8,13 @@
 > cache sizes, and BOM numbers below are now the Q4_K figures** — re-derived from the prior FP8
 > track by the deterministic quant ratio (Q4_K mix ≈ **0.6 B/param** vs FP8's ~1.0, i.e. **×0.6**),
 > with FP8 shown only as the **prior comparison**. Per-bit **energy ratios are format-agnostic** and
-> carry over unchanged, as does the **memory-hierarchy / streaming / expert-cache thesis**. All
-> silicon / perf numbers stay **[EST]/[PENDING]** (no Vivado fit or board run yet — only the quant
-> byte-math is deterministic). **Not bit-exact to the published GGUF:** the RTL is **Q4_K-only**,
-> while UD-Q4_K_XL is a *mixed* k-quant (some Q6_K/Q8_0/F16 tensors) whose mixed-type path is **OPEN**;
+> carry over unchanged, as does the **memory-hierarchy / streaming / expert-cache thesis**. The
+> **FPGA fit is now MEASURED** (Vivado ML 2026.1 routed fit of `glm_q4k_system_cdc` on **XCKU3P**,
+> compact config + ACT_HW=1: 142,320 LUT / 87.5 %, 421 DSP, 0 BRAM, routed Fmax **46.5 MHz** after a
+> closed bit-exact repipelining campaign — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); **board
+> bring-up is not done**, so system-level perf/BOM numbers stay **[EST]**. **Not bit-exact to the
+> published GGUF:** the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype`),
+> but bit-exactness to the *real downloaded GGUF bytes / llama.cpp runtime* remains **OPEN**;
 > the moat is **offline + full-frontier (753B) + appliance price**, *not* bit-exactness to the GGUF
 > (see [`README.md`](../README.md)). RTL/test names of the form `*_fp8` below map to their `*_q4k`
 > equivalents on main (branch `fp8` preserves the FP8 track).
@@ -32,7 +35,11 @@
 > memory interface changing: **rung 1** (prove-it, now) a low-end FPGA + **DDR4 ~4 ch (~100 GB/s)** +
 > 1 NVMe → **~5–8 tok/s [EST]**; **rung 2** (post-seed) this **DDR5 8–12 ch (or HBM), ~300–600 GB/s**
 > custom board → **~15–40 tok/s [EST]**; **rung 3** (at volume) a SoC/ASIC with HBM stacks (~TB/s) →
-> **~40+ tok/s [EST]**. Read every "64 GB DDR5" below as the **rung-2** spec — on rung 1 the fast tier
+> **~40+ tok/s [EST]**. *(Update — measured-proxy roofline design points, h/U from the OLMoE trace,
+> [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe 1–2 drives, no multipliers ~0.5–1 tok/s; 90 GB DRAM +
+> 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 — all [EST] with MEASURED-PROXY
+> inputs; the spec multiplier reads as **A/U(K) ≈ 1.1–1.3× at K=4**, not ×K.)* Read every "64 GB DDR5"
+> below as the **rung-2** spec — on rung 1 the fast tier
 > is DDR4, on rung 3 it is HBM / on-package.
 >
 > **Fast-memory choice: multi-channel DDR5, not HBM/GDDR6.** This workload is **NVMe/PCIe-bandwidth-
@@ -223,6 +230,12 @@ prior FP8's 22 GB):
 
 > **aggregate tokens/s ≈ NVMe_BW / [ (1 − h) × footprint ]**  ·  (then × K for speculative/MTP)
 
+> **Measured correction ([`H_MEASUREMENT.md`](H_MEASUREMENT.md)):** the "× K" term must be read as
+> **A/U(K)** — the K speculative tokens route to *overlapping but not identical* experts, and the
+> measured union factor (U(2)=1.51–1.65, U(4)=2.25–2.64, U(8)=3.25–3.92, OLMoE proxy) caps the
+> amortization at **~1.1–1.3× at K=4 (A≈3)**, not ~×K. h now also has measured-proxy values
+> (bandwidth-h 0.36–0.60 at a ~90 GB / 20 % cached pool; 0.72–0.88 at ~225 GB / 50 %).
+
 where **h** is the *batched* cache hit rate measured through the real RTL (§7.1, §8):
 batch 1 = 26.5 %, batch 8 = 29.7 %, batch 32 = 50.5 %. Each lever moves one term:
 
@@ -231,7 +244,7 @@ batch 1 = 26.5 %, batch 8 = 29.7 %, batch 32 = 50.5 %. Each lever moves one term
 | **Prefetch** | latency-bound → **bandwidth-bound** | required to reach the wall; 99 % stall cut |
 | **Batching** | raises **h** → lowers (1 − h) | h 27 %→50 % (batch 1→32) ⇒ only **~1.5×** here |
 | **Sub-Q4 re-quant** (off-path) | shrinks the **footprint** below Q4_K | modest — Q4_K already banked the FP8→Q4 **~1.6×** |
-| **Speculative/MTP** | **÷K** weight passes (K tokens/pass) | **~×K** |
+| **Speculative/MTP** | **÷K** weight passes (K tokens/pass) | measured **A/U(K) ≈ 1.1–1.3× at K=4** ([`H_MEASUREMENT.md`](H_MEASUREMENT.md)), not ~×K |
 | **NVMe/PCIe bandwidth** (hardware) | raises **NVMe_BW** (more lanes / drives) | linear |
 
 **This project runs the published Q4_K weights** (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`),
@@ -251,10 +264,12 @@ drives, **not** a single M.2 [EST]; prefetch on):
 | **batch 32 + MTP ×2** | — | — | **~15** | **~31** |
 | *(off-path)* sub-Q4 re-quant batch 32 + MTP ×2 | — | ~4.3 GB | ~23 | ~46 |
 
-**The multiplier that matters is speculative / MTP decoding (×K).** GLM-5.2 ships an MTP head
-(`num_nextn_predict_layers=1`) and we built it (`mtp_head_q4k`): verifying K tokens per weight-load
-pass divides the NVMe traffic ~K× **without leaving Q4_K**. With a longer draft (a small draft
-model or multi-token MTP) K can exceed 2.
+**The multiplier that matters is speculative / MTP decoding — but its measured value is A/U(K),
+not ×K.** GLM-5.2 ships an MTP head (`num_nextn_predict_layers=1`) and we built it (`mtp_head_q4k`):
+verifying K tokens per weight-load pass amortizes the NVMe traffic **without leaving Q4_K** — but the
+K drafts route to overlapping-not-identical experts, so the measured amortization is
+**A/U(K) ≈ 1.1–1.3× at K=4, A≈3** ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE proxy; GLM rerun
+open), not the ideal ~K×. Read the "MTP ×2" rows above as ideal-K upper bounds.
 
 **Batching is not a free Nx** in this NVMe/PCIe-bandwidth-bound regime — it only helps through the
 hit rate, and trained-router entropy caps the reuse: batch 32 gives **~1.5× aggregate**, split
@@ -278,7 +293,10 @@ batching is a modest, latency-costing aggregate boost. Interactive, not datacent
 Compute and the single die are *not* the limit (the die idles on NVMe reads); the wall is moving
 ~11–14 GB of routed-expert weights per token across the on-module NVMe/PCIe bus. (Further sub-Q4
 re-quant would push further but is a different, re-quantized model — outside the "run the published
-Q4_K" goal, and Q4_K already banked the FP8→Q4 ~1.6×.)
+Q4_K" goal, and Q4_K already banked the FP8→Q4 ~1.6×.) *(Measured update: the "MTP ×2" rows are
+ideal-K upper bounds — the measured spec amortization is A/U(K) ≈ 1.1–1.3× at K=4 — and the
+measured-proxy design-point menu (NVMe-only ~0.5–1 · 90 GB+100 GB/s ~13–24 · 90 GB+200 GB/s ~25–47 ·
+225 GB+200 GB/s ~54–127 tok/s [EST]) is in [`H_MEASUREMENT.md`](H_MEASUREMENT.md).)*
 
 ## 8. MoE expert-cache subsystem (the heart of it)
 
@@ -309,7 +327,8 @@ can't be statically placed — it's a **caching + scheduling** problem:
 - **Layout**: store co-activated experts contiguously / aligned for sequential NVMe reads
   (bandwidth- not IOPS-bound, since each expert is a ~22 MB contiguous Q4_K block).
 - **Speculative / MTP decoding**: GLM-5.2 ships an MTP head (built here as `mtp_head_q4k`) — verify
-  K tokens per weight-load pass → cut weight traffic ~K×.
+  K tokens per weight-load pass → cut weight traffic by the measured **A/U(K) ≈ 1.1–1.3× at K=4**
+  (the drafts' expert unions overlap only partially — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)), not ~K×.
 
 ## 9. Hardware ceiling vs software leverage
 
@@ -372,7 +391,9 @@ NVMe/PCIe-bound.
 - The full GLM-5.2 (UD-Q4_K_XL) operator datapath: `glm_matmul_q4k`, `swiglu_expert_q4k`,
   `mla_attn_q4k`, `moe_router_q4k`, `glm_decoder_block_q4k`, and the capstone **`glm_model_q4k`**
   (full forward pass, next-token argmax; the Q4_K GEMM core is bit-exact to the ggml Q4_K
-  reference `tools/q4k_ref.py` — the assembled model has no numeric golden yet).
+  reference `tools/q4k_ref.py`, and the assembled model now has an end-to-end golden —
+  `make model-q4k` 1155 + `model-q4k-acthw` 1155; bit-exactness to the real GGUF bytes /
+  llama.cpp remains open).
 - **Streaming weight-pull interfaces** (`w_req`/`w_col` + per-[128,128]-block bf16 scales) on
   every unit — the weight *source is abstracted*, so DDR5/NVMe/host can drive them.
 - The **`mtp_head_q4k`** for speculative decoding.
@@ -403,7 +424,11 @@ NVMe/PCIe-bound.
   floor below ~13 GB (Q4_K; the floor is slot-based), and batching as the dominant lever. Still
   **calibrated, not captured** — the actual
   numbers need a *real* GLM-5.2 routing trace (can't run 753B here); the trained-router balance
-  assumption could be off in either direction.
+  assumption could be off in either direction. **Update:** h/U now have **measured-proxy** values
+  from a real MoE trace (OLMoE-1B-7B-Instruct — EOR 0.35–0.49, U(2)=1.51–1.65 / U(4)=2.25–2.64,
+  bandwidth-h 0.36–0.60 at a ~90 GB / 20 % cached pool; LRU collapses to ~0 below 10 % cache) —
+  see [`H_MEASUREMENT.md`](H_MEASUREMENT.md) and [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md);
+  the GLM rerun remains open.
 - **NVMe/PCIe bandwidth** (~10s GB/s **aggregate**) is assumed; this is **not** one M.2's figure — a
   single PCIe Gen3 x4 NVMe is ~3.5 GB/s and Gen4 x4 ~7 GB/s [EST], so ~10s GB/s means **striping many
   PCIe lanes / several NVMe drives**, which the custom board must actually deliver. PCIe/NVMe read BW

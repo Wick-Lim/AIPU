@@ -1,14 +1,15 @@
 # `fpga/` — XCKU3P fit (Vivado) for the GLM-5.2 **Q4_K** accelerator
 
-The **[PENDING] hardware-fit gate**: turn the verified Q4_K RTL into a **real, routed
-FPGA fit** — actual LUT / DSP / BRAM utilization and routed **Fmax** on a Kintex
-UltraScale+ **XCKU3P** — the number iverilog (sim) and yosys (`check-assert`,
-structural) cannot give. Getting this number sets the FPGA class → the box's size,
-thermal budget, BOM, and per-seat price.
+The **hardware-fit gate — MEASURED, closed** (see [Results](#results--measured-vivado-ml-20261-2026-07-compact-config--act_hw1)
+below): the verified Q4_K RTL is a **real, routed FPGA fit** — actual LUT / DSP / BRAM
+utilization and routed **Fmax** on a Kintex UltraScale+ **XCKU3P** — the number iverilog
+(sim) and yosys (`check-assert`, structural) cannot give. This number sets the FPGA
+class → the box's size, thermal budget, BOM, and per-seat price.
 
 > **Track note.** This is the **current Q4_K / XCKU3P / Vivado** flow. A prior scaffold
-> targeted **FP8 on Gowin GW5AT-138** (`gowin/`, `nextpnr/`); that referenced the FP8
-> datapath now removed from `main` (preserved on branch `fp8`) and is superseded here.
+> targeted **FP8 on Gowin GW5AT-138** (Gowin/nextpnr); that scaffold is **removed**
+> (superseded by this Vivado flow) — it referenced the FP8 datapath also removed from
+> `main` (preserved on branch `fp8`).
 
 ## What it synthesizes
 `glm_q4k_system_cdc` — the whole 2-clock product top (compute die `glm_model_q4k` +
@@ -85,8 +86,9 @@ script).
 - **Pins**: add `set_property PACKAGE_PIN`/`IOSTANDARD` from your dev board's master XDC.
 
 ## Honest notes
-- **First real fit** — expect Vivado to surface synthesis-specific issues the structural
-  yosys gate did not (width/timing/inference warnings); iterate.
+- **First real fit** (DONE — see Results below): Vivado did surface issues the structural
+  yosys gate could not (long combinational cones); iterated through the repipeline rounds,
+  each re-proven bit-exact.
 - **Wide top-level ports** (resolved): `glm_q4k_system_cdc` exposes thousands of
   memory-/logits-side bits (`logits`=VOCAB·16, `h_state`, DDR/Flash/KV/dequant buses).
   Full P&R would fail on **I/O count** on a real package. `bringup_harness.v` buries all

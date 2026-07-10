@@ -29,9 +29,10 @@ N_EXPERT=16, Q_LORA=1536. **This study pushes to the TRUE full config**
   replication-count sign, and full-hierarchy connectivity — at the **real** dims.
 - **NOT checked here:** behavior/functional correctness, timing, area, gate mapping.
   Elaboration ≠ synthesis ≠ simulation. Functional fidelity is exercised **at the slice**
-  by the committed Q4_K leaf TBs (`glm_matmul_q4k` / `swiglu_expert_q4k` / `moe_router_q4k`)
-  and the assembled spec loops (DUT-vs-DUT); an end-to-end numeric golden for the assembled
-  `glm_model_q4k` does not yet exist. **Real-checkpoint Q4_K validation is OPEN** — the
+  by the committed Q4_K leaf TBs (`glm_matmul_q4k` / `swiglu_expert_q4k` / `moe_router_q4k`),
+  the assembled spec loops (DUT-vs-DUT), and — since closed — the **assembled end-to-end
+  golden** (`make model-q4k`, **1155/1155** bit-exact vs the assembled numpy reference
+  `tools/glm_model_q4k_ref.py`; + `model-q4k-acthw`). **Real-checkpoint Q4_K validation is OPEN** — the
   prior-FP8 real-weight run lives on branch `fp8` (`REAL_CKPT_VALIDATION.md`, deleted from
   `main`); that record was FP8-only and does **not** cover the Q4_K datapath. Full synthesis /
   abc gate-mapping was not attempted (this is an elaboration-only study).
@@ -226,8 +227,9 @@ width-lint family** in `mla_attn_q4k`, a documented consequence of the flagged S
 - **Full-config functional simulation** — intractable: the LM-head GEMV alone streams
   MODEL_DIM(6144) × VOCAB(154880) ≈ 2.4×10⁸ K-beats **per token**; a 256-expert MoE layer is
   billions of cycles/token. P1.2 is a **structural/elaboration** contract, not "set params +
-  run the TB." (Slice functional fidelity: committed Q4_K leaf TBs + spec loops (DUT-vs-DUT);
-  real-checkpoint Q4_K fidelity is **OPEN** — the prior-FP8 real-weight run is on branch `fp8`.)
+  run the TB." (Slice functional fidelity: committed Q4_K leaf TBs + the assembled end-to-end
+  golden `make model-q4k` (1155/1155) + spec loops (DUT-vs-DUT); real-checkpoint Q4_K fidelity
+  is **OPEN** — the prior-FP8 real-weight run is on branch `fp8`.)
 - **1M-context attention scratch (S_MAX)** — kept small; decoupling the window from S_MAX is
   task **B7**.
 - **Synthesis / gate mapping / area / timing** — not attempted (this is an

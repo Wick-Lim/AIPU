@@ -4,8 +4,9 @@
 single goal is **Gate 3**: one signed design-partner LOI. Companion to the customer's-side of the
 [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) / [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md).*
 
-> **Honest stance — read first.** There is **no shippable box yet** (P1.1 fidelity + FPGA fit/demo are
-> open gates). So this is **not** a sales motion for a finished product. It is a **design-partner /
+> **Honest stance — read first.** There is **no shippable box yet** (P1.1 fidelity + board bring-up/demo
+> are open gates; the **FPGA fit itself is measured** — routed on XCKU3P at 46.5 MHz,
+> [`../fpga/`](../fpga/README.md)). So this is **not** a sales motion for a finished product. It is a **design-partner /
 > problem-validation** motion: we're building it, and we want a small number of legal firms that
 > *actually have the can't-cloud constraint* to (a) validate the pain, (b) shape the product, and (c)
 > sign a **non-binding LOI to pilot when the demo lands**. Never imply a product you can ship today —
@@ -193,13 +194,13 @@ No cost. In return you get first access and you shape the product around your co
 
 | They say | You say (honest) |
 |---|---|
-| "You don't even have a product." | "Correct — that's *why* I want you now. Design partners shape it and get first access; the hard tech risk is unusually retired (compute kernels bit-exact to the ggml Q4_K reference in sim, memory controllers formally verified). The two open gates are whole-model fidelity and the FPGA fit — exactly what a design partner helps us close. I'm asking for input + an LOI, not a purchase." |
+| "You don't even have a product." | "Correct — that's *why* I want you now. Design partners shape it and get first access; the hard tech risk is unusually retired (compute kernels bit-exact to the ggml Q4_K reference in sim, memory controllers formally verified, and the whole design placed-and-routed on a real FPGA at a measured 46.5 MHz). The two open gates are whole-model fidelity and board bring-up — exactly what a design partner helps us close. I'm asking for input + an LOI, not a purchase." |
 | "How is this different from Harvey / Copilot?" | "Those still send your text to a cloud. This runs the whole model **offline, inside your network** — it works with the ethernet unplugged, so nothing can leave. That's the exact line your confidential matters can't cross." |
 | "Our GC will never approve cloud AI." | "Right — that's the point. There's no cloud, and no connection: the box runs with the ethernet unplugged. Your security team can audit that nothing egresses — because there's no path out — while the compute path itself is verified against the open Q4_K reference kernels." |
 | "Why not a private cloud — in-VPC / tenant deployment, a zero-retention API, or a TEE / confidential-computing enclave?" | "Those are all still the cloud: they need a live connection, so they can't pass the test your constraint actually sets — *does it work with the ethernet unplugged?* A VPC, a zero-retention promise, and a TEE each fail it (no link, no service). This is the only option that runs disconnected, which is what ends the 'secured cloud' debate for good." |
 | "Is a local model good enough?" | "The small models that fit a laptop aren't — that's the gap. This runs the *full* 753B frontier model locally and offline, not a shrunk one. Offline alone is table-stakes (a laptop model is offline too); the moat is the combination — offline **and** full-frontier, at a per-seat price." |
-| "What will it cost?" | "TBD until the FPGA fit closes — we're targeting a **per-seat** price, in the range of the premium tools you already buy, not a datacenter build. Design partners get preferential terms." |
-| "When is it real?" | "Two gates: real-model fidelity (a GPU run) and a measured FPGA demo. I'll show you the demo the moment it exists — the LOI just means you're first in line, non-binding." |
+| "What will it cost?" | "TBD until board quotes close — the FPGA fit is already measured (a KU3P-class part), which sets the silicon class behind the BOM; we're targeting a **per-seat** price, in the range of the premium tools you already buy, not a datacenter build. Design partners get preferential terms." |
+| "When is it real?" | "Two gates: real-model fidelity (a GPU run) and a running-board demo (the FPGA fit/Fmax is already measured — what's left is bring-up on a physical board). I'll show you the demo the moment it exists — the LOI just means you're first in line, non-binding." |
 
 ---
 

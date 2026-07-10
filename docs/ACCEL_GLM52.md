@@ -455,9 +455,13 @@ VOCAB 154880) elaborates clean (`test/full_config_elab_wrap.v`, `iverilog -tnull
 **Verification gates:** (1) iverilog functional vs golden (`make q4k` / `make unittests` /
 `make mixedtype` / `make model-q4k`); (2) yosys structural synth (`make synth-glm`); (3) routed
 PnR / Fmax / LUT-DSP fit — **MEASURED**: Vivado ML 2026.1 real synth + full place&route of
-`glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): **141,710 LUT (87.1%)**, 99.6K FF,
-**421 DSP**, 0 BRAM, hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through three bit-exact
-repipeline rounds, campaign ongoing — see `fpga/README.md` + `fpga/results/`. (The old
+`glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): **142,320 LUT (87.5%)**, ~100K FF,
+**421 DSP**, 0 BRAM, hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through bit-exact
+repipeline rounds (each round re-proven on the 1155-test assembled golden). **Campaign CLOSED at
+4.6×**: the worst path is now route-dominated (wide-bus wiring at 87% utilization) — physical
+work, not arithmetic; 46.5 MHz sits in the bring-up demo's target band, 200 MHz-class is
+rung-②/③ work, and the stage decompositions carry to the ASIC unchanged — see `fpga/README.md`
++ `fpga/results/`. (The old
 Gowin/nextpnr scaffold was removed, superseded by the Vivado flow.)
 
 ---
@@ -605,11 +609,25 @@ energy. The tok/s is **rung-dependent** (bandwidth set by IO pins/PHYs → budge
 volume (rung ③)** with **~9 → ~3 J/token**, all **[EST]** until a running board —
 see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md). A routed PPA
 result **is now in-repo**: Vivado ML 2026.1 real synth + full place&route of `glm_q4k_system_cdc`
-on XCKU3P (compact config + ACT_HW=1) — **141,710 LUT (87.1%)**, 99.6K FF, **421 DSP**, 0 BRAM,
-hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through three bit-exact fmax repipeline rounds
+on XCKU3P (compact config + ACT_HW=1) — **142,320 LUT (87.5%)**, ~100K FF, **421 DSP**, 0 BRAM,
+hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through bit-exact fmax repipeline rounds
 (`rope_interleave_unit` 10-stage; `glm_act` 20-stage + rmsnorm reduce/rsqrt; `glm_matmul_q4k`
-dequant+MAC 5-stage), campaign ongoing — see `fpga/README.md` + `fpga/results/`. ACT_HW is a
+dequant+MAC 5-stage — each re-proven on the 1155-test assembled golden). **Campaign CLOSED at
+4.6×**: the worst path is now route-dominated (wide-bus wiring at 87% utilization) — physical
+work, not arithmetic; 46.5 MHz sits in the bring-up demo's target band, 200 MHz-class is
+rung-②/③ work, and the stage decompositions carry to the ASIC unchanged — see `fpga/README.md`
++ `fpga/results/`. ACT_HW is a
 result-invariant resource knob (`glm_act` HW_LANES serialization).
+
+> **Update (measured-proxy h/U inputs — see [`H_MEASUREMENT.md`](H_MEASUREMENT.md) +
+> [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).** The roofline
+> `tok/s ≈ BW / [(1−h)·footprint] · K` now has **measured (PROXY, OLMoE-trace)** inputs:
+> bandwidth-h (residency-only) 0.36–0.60 at a ~90 GB (20%-pool) cache, 0.72–0.88 at ~225 GB;
+> and the spec multiplier K must be read as **A/U(K) ≈ 1.1–1.3× at K=4** (measured union factor
+> U(4)=2.25–2.64) — **not** ~2×. Resulting design-point menu **[EST, measured-proxy inputs]**:
+> NVMe-only ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64ch) → 25–47;
+> 225 GB + 200 GB/s → 54–127 (the "100 tok/s" design point). h/U are proxy measurements; the
+> GLM rerun is open.
 
 > **Prior-FP8 note.** Earlier revisions of this doc/track carried specific **FP8** measurements
 > (sky130 PPA slack, LUT/DSP counts, cycle counts, byte/BOM figures). Those are **prior-FP8**

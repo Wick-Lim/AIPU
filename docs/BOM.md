@@ -39,8 +39,11 @@ So "make the box cheaper" ≈ "need less memory bandwidth" ≈ "accept lower tok
 
 Low-end **Kintex UltraScale+ (KU3P-class)** dev board + DDR4 + one NVMe. **Reduced-config demo** (a dev
 board's DDR/storage can't hold the 467 GB Q4_K model); goal is *"real 753B-family RTL runs on real FPGA
-silicon, offline, bit-exact to the ggml-Q4_K reference (`tools/q4k_ref.py`)"*, at ~5–8 tok/s [EST]
-(the FPGA fit / Fmax that would make this measured is **[PENDING]**).
+silicon, offline, bit-exact to the ggml-Q4_K reference (`tools/q4k_ref.py`)"*. The FPGA fit / Fmax is
+**MEASURED — DONE** (Vivado routed `glm_q4k_system_cdc` on XCKU3P: 142,320 LUT / 87.5%, 421 DSP, 0 BRAM,
+46.5 MHz; [`../fpga/`](../fpga/README.md)); at 46.5 MHz the demo slice computes ~4,200–5,800 slice tok/s
+(the correctness-demo speed of the reduced config, **not** a GLM-5.2 product number), while GLM-scale
+NVMe-only streaming sits at ~0.5–1 tok/s [EST, measured-proxy — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)].
 
 | Line | Part (example) | ~Cost | Note |
 |---|---|---|---|
@@ -51,14 +54,18 @@ silicon, offline, bit-exact to the ggml-Q4_K reference (`tools/q4k_ref.py`)"*, a
 | **Prove-it total** | | **~$1,000–2,500 + tool** | one unit, for the demo — not a product |
 
 > This rung is **capex for the demo**, not a per-seat product cost. Its job is to convert `[EST]` → a
-> measured Fmax ÷ cyc_per_tok and a real "it runs" video. Cheapest path to the fundable proof.
+> measured Fmax ÷ cyc_per_tok (**DONE** — 46.5 MHz routed ÷ ~8.0–11.0 K cyc/tok → ~170–240 µs/token on
+> the demo slice) and a real "it runs" video (board bring-up — **still open**). Cheapest path to the
+> fundable proof.
 
 ---
 
 ## Rung ② — custom product board (post-seed, ~$3–6 k/box)
 
 Custom PCB (outsourced artwork + assembly) carrying a **mid FPGA with DDR5 multi-channel or HBM** + big
-DDR + multi-NVMe. This is the actual **shippable single-user box** at ~15–40 tok/s [EST].
+DDR + multi-NVMe. This is the actual **shippable single-user box** at ~15–40 tok/s [EST]
+(measured-proxy design points: ~13–24 at 90 GB DRAM + 100 GB/s, ~25–47 at 200 GB/s, ~54–127 at
+225 GB + 200 GB/s — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)).
 
 | Line | Part | ~Cost | Note |
 |---|---|---|---|
@@ -129,7 +136,9 @@ All figures **[EST]**.
 
 - All prices are **order-of-magnitude [EST]** — FPGA needs a distributor quote, board needs a PCB-house
   quote, ASIC NRE is a wide band. Treat as ranges, not commitments.
-- Rung-② tok/s (~15–40) is the funded number; the **near-term demo (rung ①) is ~5–8 and reduced-config**.
+- Rung-② tok/s (~15–40) is the funded number (measured-proxy design points ~13–47, up to ~54–127 with a
+  225 GB cache — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)); the **near-term demo (rung ①) is
+  reduced-config** (GLM-scale NVMe-only streaming ~0.5–1 tok/s [EST]).
 - BOM is **memory/storage/board-dominated**; the FPGA is a minority. "Cheaper box" means "less bandwidth"
   means "lower tok/s" — the ladder, in money.
 - Software / host / support / margin are **on top** of these hardware BOMs (a product sells above BOM).

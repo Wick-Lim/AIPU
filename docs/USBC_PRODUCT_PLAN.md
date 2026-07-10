@@ -23,8 +23,12 @@ computer over a single USB-C cable.
 - [`OPERATION_FLOW.md`](OPERATION_FLOW.md) — how one token flows end-to-end.
 
 > **All power/cost/size figures here are [EST]** — modeled, not measured on silicon or a board.
-> The single biggest unknown is the **FPGA fit** (unmeasured; yosys abc/KMAX wall) — it sets the
-> FPGA class, and therefore the size, thermal, BOM and power. **De-risking it is Phase D0.**
+> The **FPGA fit is now MEASURED** (D0.2 DONE — Vivado ML 2026.1 routed fit of `glm_q4k_system_cdc`
+> on **XCKU3P**, compact config + ACT_HW=1: 142,320 LUT / 87.5 %, ~100K FF, 421 DSP, 0 BRAM, hold
+> met, routed Fmax **46.5 MHz** after a closed bit-exact repipelining campaign — see
+> [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); that pins the FPGA class (KU3P-class) and unblocks
+> size, thermal, BOM and power. **Board bring-up (D1) is still open**; the remaining D0 de-risk is
+> real-GGUF fidelity (D0.1).
 
 ---
 
@@ -39,8 +43,8 @@ subscription-free come as the *result*.
 | | |
 |---|---|
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
-| **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp, and the RTL is **Q4_K-only** today (no Q6_K/Q8_0/F16 consumer — see §2 gaps) |
-| **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) |
+| **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp; the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype` — see §2) |
+| **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST]; spec multiplier = A/U(K) ≈ 1.1–1.3× at K=4)* |
 | **Power** | ~80–110 W at interactive throughput (self-powered; ~30 W throttled) [EST] |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
 | **Host** | thin driver + a local OpenAI-compatible endpoint → existing chat UIs / editors point at it |
@@ -107,8 +111,9 @@ loading resident set → ready) so the app can show "warming up" instead of fail
   small-but-faithful slice (`glm_matmul_q4k` **160/160**; `q4k_prim` **18/18**;
   `swiglu_expert_q4k` **240/240** functional; `moe_router_q4k` **40/40** invariants — `make q4k`).
   **Honest scope:** bit-exact is vs our **own** ggml reimpl, **not** the real GGUF bytes / llama.cpp;
-  and the **assembled** `glm_model_q4k` has **no end-to-end numeric golden** yet — it is exercised
-  only as **spec==greedy** self-consistency (`spec_decode_top` **19/19**, DUT-vs-DUT).
+  the **assembled** `glm_model_q4k` now has an **end-to-end golden** (`make model-q4k` **1155** +
+  `model-q4k-acthw` **1155**), plus **spec==greedy** self-consistency (`spec_decode_top` **19/19**,
+  DUT-vs-DUT).
 - The memory system (ddr5_xbar, flash_xbar, kv_cache_pager, expert_cache_pf, weight_loader_q4k,
   boot_loader), BMC-proven (these blocks are **byte-agnostic** — they move addresses/slots/IDs, not
   weight bytes — so they carried over from the prior FP8 track unchanged in logic); the batching
@@ -142,16 +147,18 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 
 **Not done (the gaps to a product):**
 - **Real-model full-scale fidelity** (PRODUCT_ROADMAP P1 — *the* gate: the real ~467 GB Q4_K weights
-  must produce the real model's tokens end-to-end, checked against a numeric golden). No assembled
-  `glm_model_q4k` end-to-end golden exists today; and bit-exactness vs the **real downloaded GGUF /
+  must produce the real model's tokens end-to-end, checked against a numeric golden). The assembled
+  `glm_model_q4k` end-to-end golden is now **DONE** (`make model-q4k` 1155 + `model-q4k-acthw` 1155);
+  what remains **OPEN** is bit-exactness vs the **real downloaded GGUF /
   llama.cpp** (a different arithmetic contract — Q8-quantized activations + integer dot vs our
-  bf16-activation / fp32-accumulate path) is **OPEN**. **Blocking for everything.**
-- **Mixed-type (Q6_K / Q8_0 / F16) path** — the RTL is **Q4_K-only** (`grep -ril 'q6_k|q8_0' src/`
-  = 0; `weight_loader_q4k` has no `w_type` field). The real UD-Q4_K_XL dynamic mix keeps sensitive
-  tensors at higher precision, so the chip **cannot consume the published checkpoint as-is** — those
-  tensors would have to be re-quantized to Q4_K (voids the fidelity moat) or fed pre-dequantized as
-  bf16 — so closing this is a real prerequisite before *"runs the published GGUF"* is literally true.
-- **FPGA fit / bitstream** — unmeasured (yosys wall); no placed-and-routed design, no real board.
+  bf16-activation / fp32-accumulate path). **Blocking for the product claim.**
+- **Mixed-type (Q6_K / Q8_0 / F16) path** — **DONE** (`make mixedtype`): the RTL now has
+  Q6_K/Q8_0/F16 consumers, so the published UD-Q4_K_XL dynamic mix (sensitive tensors at higher
+  precision) can be consumed as-is. *(The remaining fidelity gap is the real-GGUF / llama.cpp
+  bit-exactness above, not type coverage.)*
+- **FPGA fit / bitstream** — fit **MEASURED/DONE** (Vivado routed fit + closed Fmax campaign on
+  XCKU3P, 46.5 MHz — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); **no real board yet** (board
+  bring-up is D1).
 - **Host software — the real backend + driver** — the API/protocol/tokenizer layer is scaffolded
   (above); what remains is a signed cross-OS **USB-C driver** and a **real backend** (simulator- then
   hardware-backed) + production runtime/scheduler behind the swappable mock.
@@ -201,20 +208,25 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 - **D0.1 Real-model fidelity** — execute PRODUCT_ROADMAP P1.1 (real ~467 GB Q4_K checkpoint → real
   tokens, against a numeric golden; and close the Q4_K-only / mixed-type gap so the published
   UD-Q4_K_XL mix can be consumed as-is). **Hard prerequisite** — no product until this passes.
-- **D0.2 FPGA fit** — take the design through the **vendor flow (Gowin / nextpnr / Vivado)** to get
-  real LUT/DSP/BRAM/DDR-PHY utilization → pick the **FPGA class** (this unblocks size, thermal, BOM,
-  power). This is the project's #1 unknown; closes the yosys wall.
+  *(Partly DONE: the assembled end-to-end golden (`make model-q4k` 1155) and the mixed-type
+  consumers (`make mixedtype`) are in; the real-checkpoint / llama.cpp bit-exactness remains open.)*
+- **D0.2 FPGA fit** — **(DONE — Vivado ML 2026.1 routed fit of `glm_q4k_system_cdc` on XCKU3P,
+  compact config + ACT_HW=1: 142,320 LUT / 87.5 %, 421 DSP, 0 BRAM, routed Fmax 46.5 MHz, campaign
+  closed bit-exact on the 1155-test golden; the old Gowin/nextpnr scaffold is removed. FPGA class =
+  KU3P-class.)* ~~take the design through a vendor flow to get real utilization → pick the FPGA
+  class~~ — was the project's #1 unknown; now measured.
 - **D0.3 Power point** — decide the operating point (§7): ~100 W self-powered "fast" vs ~40 W
   throttled "quiet/small". Drives thermal + PSU + enclosure.
 - **D0.4 Bring-up feasibility** — confirm the target FPGA dev-kit has the DDR5 + NVMe (M.2/PCIe) +
-  USB-C IO the design needs. *Dev-board vs product split:* the **Tang Mega 138K Pro** (GW5AT-138)
-  dev board is a **bring-up / reduced-demo board only** — it has ~32 MB onboard Flash + ~1 GB
-  soldered DDR3 [EST], nowhere near the model store — so the **product needs a custom board**
-  (GW5AT-138-class + big DDR5 + NVMe via M.2/PCIe). The dev board proves the pipeline at reduced
-  scale; the NVMe/DDR5 model store lives on the custom board (Phase D3).
+  USB-C IO the design needs. *(Update: the measured fit landed on **XCKU3P** via Vivado, so the
+  bring-up board is now **KU3P-class**; the Gowin/nextpnr path — and with it the Tang Mega 138K Pro
+  (GW5AT-138) dev-board plan below — is superseded.)* *Dev-board vs product split:* a dev board is a
+  **bring-up / reduced-demo board only** — nowhere near the model store — so the **product needs a
+  custom board** (KU3P-class + big DDR5 + NVMe via M.2/PCIe). The dev board proves the pipeline at
+  reduced scale; the NVMe/DDR5 model store lives on the custom board (Phase D3).
 - **GATE D0:** real tokens match the real model **and** the design fits a costable FPGA at a viable
-  power point. *If FPGA fit forces a >$8 k data-center card, revisit scope (throttle / smaller
-  resident set / cost target).*
+  power point. *(The fit half is **DONE** — it fits XCKU3P, a low-end UltraScale+, so no >$8 k
+  data-center card is forced; the real-GGUF fidelity half remains open.)*
 
 ### Phase D1 — FPGA prototype bring-up
 - D1.1 Port the full-scale RTL to the chosen FPGA; DDR5 + NVMe (M.2/PCIe) + USB-C PHY integration
@@ -261,7 +273,7 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 |---|---|---|
 | **Power point** | ~100 W fast (self-powered) · ~40 W quiet (throttled, slower) | ship **self-powered ~90 W** (interactive tok/s); offer a quiet/eco mode — **the RTL knob exists** (`clk_throttle` runs the die f/div, byte-identical, [`LOW_POWER.md`](LOW_POWER.md) §4) |
 | **Power delivery** | own PSU/barrel · USB-PD EPR 240 W · bundled PD brick | **own DC input** (EPR host+cable support is still rare); USB-C = data |
-| **FPGA class** | mid FPGA (~$0.5–2 k) · data-center card (~$3–8 k) | **decided by D0.2 measurement** — the pivotal cost driver |
+| **FPGA class** | mid FPGA (~$0.5–2 k) · data-center card (~$3–8 k) | **decided — D0.2 measured**: fits **XCKU3P** (KU3P-class, low-end UltraScale+) at 87.5 % LUT |
 | **Model updates** | NVMe model-store rewrite tool · sealed | **field-updatable** (GLM ships point releases) |
 | **Openness** | closed appliance · open driver/API | **open local API** (drives adoption via existing clients) |
 | **NVMe drive grade** | TLC (balanced) · SLC (low-power, $$) · QLC (cheap, slow) | **TLC** NVMe bulk; SLC only if power ≫ cost ([`LOW_POWER.md`](LOW_POWER.md)) |
@@ -323,8 +335,8 @@ zero-retention / TEE) needs connectivity and fails the unplugged test.
 
 | # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| 1 | **FPGA fit unknown** — may need an expensive data-center card, breaking the cost story | high | **D0.2 measure first**; die-shrink levers ([`MINIATURIZATION.md`](MINIATURIZATION.md)) + compact config; throttle/scope if needed |
-| 2 | **Real-model fidelity not yet closed** — no assembled-model numeric golden; not bit-verified vs the real GGUF / llama.cpp; RTL is **Q4_K-only** (can't consume the UD-Q4_K_XL mixed-type checkpoint as-is) | high | D0.1 (PRODUCT_ROADMAP P1.1) is the very first gate — covers both the numeric golden and the mixed-type consumer |
+| 1 | **FPGA fit** — **CLOSED**: D0.2 measured — fits **XCKU3P** (142,320 LUT / 87.5 %, 421 DSP, routed 46.5 MHz), no data-center card needed | closed | headroom is tight (87.5 % LUT) — die-shrink levers ([`MINIATURIZATION.md`](MINIATURIZATION.md)) + compact config stay relevant |
+| 2 | **Real-model fidelity not fully closed** — assembled-model golden now **DONE** (`make model-q4k` 1155) and the mixed-type consumers landed (`make mixedtype`); still **not bit-verified vs the real GGUF / llama.cpp** | high | D0.1 (PRODUCT_ROADMAP P1.1) — the remaining piece is the real-GGUF / llama.cpp bit-exactness |
 | 3 | **Power > USB-PD** | med | self-powered design (§7); accept it's not a bus stick |
 | 4 | **Host software effort** — driver + server + cross-OS is real work | med | OpenAI-compatible API to reuse the existing client ecosystem |
 | 5 | **Thermal/acoustics** in a small box | med | power-point choice; eco mode; proven eGPU-class cooling |
@@ -353,7 +365,7 @@ RTL. D0 is cheap and decisive — **do it before committing to the rest.**
 ## 11. Immediate next steps (this quarter)
 
 1. **D0.1** — run the real-checkpoint full-model fidelity check on a GPU host (PRODUCT_ROADMAP P1.1).
-2. **D0.2** — get the design through a vendor FPGA flow for a real utilization number → FPGA class.
+2. **D0.2** — **(DONE — Vivado routed fit + closed Fmax campaign on XCKU3P; see §5 D0.2.)**
 3. **D0.3** — pick the power point (~90 W self-powered recommended) and draft the thermal envelope.
 4. Wire the **host-side local OpenAI-compatible server** ([`host/`](../host/README.md), already
    scaffolded against a mock backend) to a simulator-backed backend now (no hardware needed) so the
@@ -363,5 +375,7 @@ RTL. D0 is cheap and decisive — **do it before committing to the rest.**
 
 ## Status
 - **This plan: drafted** (device track, complements the RTL track in PRODUCT_ROADMAP.md).
-- **Gating unknowns:** real-model fidelity (D0.1) + FPGA fit (D0.2) — both must close before board spend.
-- **Everything downstream** (size, thermal, BOM, price, timeline) is bounded by the FPGA class D0.2 returns.
+- **Gating unknowns:** real-GGUF / llama.cpp fidelity (D0.1, open). **FPGA fit (D0.2) is CLOSED —
+  MEASURED** (Vivado routed fit on XCKU3P, 46.5 MHz, campaign closed).
+- **Everything downstream** (size, thermal, BOM, price, timeline) is bounded by the FPGA class D0.2
+  returned: **KU3P-class**.
