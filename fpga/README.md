@@ -51,6 +51,20 @@ keeps the node-locked license valid across container runs.
 > (the ML-Standard/WebPACK successor); it grants `Vivado_Synthesis` +
 > `Vivado_Implementation` + `Vivado_Simulation`, which covers this whole flow.
 
+### Docker Desktop resource footguns (learned the hard way)
+Docker Desktop **validates** `settings.json` at boot. A resource value it rejects
+(memory or disk **exceeding what the host can back** — e.g. a 150 GB VM disk on a
+111 GB-free host) does not get clamped: Docker **factory-resets every resource
+setting** (mem → 8 GB, disk → 60 GB) **and recreates the VM disk — wiping all
+volumes**, including the 57 GB Vivado install. Rules that keep it stable:
+1. Edit `settings.json` only with Docker **fully stopped** (wait for
+   `com.docker.backend` to exit) — a shutdown flush overwrites live edits.
+2. Keep `memoryMiB` ≥ 32768 (the compact-chip synth OOM-kills below that even
+   with `maxThreads 4`) and `diskSizeMiB` comfortably **under** host free space.
+3. Keep the extracted installer + `install_config.txt` (`/Users/Shared/xilinx_setup/`)
+   — if the volume is ever wiped, the reinstall is one ~1 h batch command
+   (`xsetup -a XilinxEULA,3rdPartyEULA -b Install -c install_config.txt`).
+
 ### Docker crash workaround (handled automatically by `run_fit.sh`)
 With a valid license, Vivado 2026.1 in Docker then **aborts at launch** with
 `realloc(): invalid pointer` — the FlexLM checkout (`libXil_lmgr11.so`) scans
