@@ -19,7 +19,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow formal formal-ind lint host-test synth-glm fit-harness cdc coverage clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt formal formal-ind lint host-test synth-glm fit-harness cdc coverage clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, and the memory-controller formal proofs.
@@ -87,10 +87,15 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_decode_seq_sim test/spec_decode_seq_tb.v src/spec_decode_seq.v
 	@printf '[%s] ' "spec_decode_seq"; $(VVP) $(BUILD_DIR)/spec_decode_seq_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_decode_seq"; exit 1; }
-	@# spec_decode_seq K>1: multi-token draft (DRAFT_K=1/2/3), spec==greedy exact + eff-tok/pass vs alpha.
+	@# spec_decode_seq K>1: multi-token draft (DRAFT_K=1/2/3/4/6/8), spec==greedy exact + eff-tok/pass vs alpha.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_decode_seq_k_sim test/spec_decode_seq_k_tb.v src/spec_decode_seq.v
 	@printf '[%s] ' "spec_decode_seq(K>1)"; $(VVP) $(BUILD_DIR)/spec_decode_seq_k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_decode_seq_k"; exit 1; }
+	@# spec_depth_adapt: ADAPTIVE draft depth (runtime k_cur in [1..K] + accept-rate policy) --
+	@# spec==greedy under ANY depth schedule (forced + closed-loop), ADAPT=0 default byte-compatible.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_depth_adapt_sim test/spec_depth_adapt_tb.v src/spec_decode_seq.v src/spec_depth_adapt.v
+	@printf '[%s] ' "spec_depth_adapt"; $(VVP) $(BUILD_DIR)/spec_depth_adapt_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: spec_depth_adapt"; exit 1; }
 	@# kv_cache_pager: MLA latent-KV ring cache (append + DSA-gather + Flash overflow), single-module system.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/kv_cache_pager_sim test/kv_cache_pager_tb.v src/kv_cache_pager.v
 	@printf '[%s] ' "kv_cache_pager"; $(VVP) $(BUILD_DIR)/kv_cache_pager_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -328,11 +333,22 @@ spec-slow:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_batched_top_sim test/spec_batched_top_tb.v src/spec_batched_top.v src/glm_model_q4k.v src/spec_decode_seq.v src/mtp_head_q4k.v src/glm_decoder_block_q4k.v src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
 	@printf '[%s] ' "spec_batched_top"; $(VVP) $(BUILD_DIR)/spec_batched_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_batched_top"; exit 1; }
-	@# spec_chain_top (task B8): K-step MTP chain; committed stream == greedy rollout EXACT (spec==greedy).
+	@# spec_chain_top (task B8): K-step MTP chain (K=2 + K=4 engines); committed stream == greedy rollout EXACT (spec==greedy).
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_chain_top_sim test/spec_chain_top_tb.v src/spec_chain_top.v src/mtp_head_q4k.v src/glm_model_q4k.v src/glm_decoder_block_q4k.v src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/spec_decode_seq.v src/glm_fp_pipe.v
 	@printf '[%s] ' "spec_chain_top"; $(VVP) $(BUILD_DIR)/spec_chain_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_chain_top"; exit 1; }
 	@echo "spec-slow: spec_batched_top + spec_chain_top passed (spec==greedy)"
+
+# spec-adapt: adaptive draft depth (runtime-variable K).  spec_decode_seq(ADAPT=1)
+#   honors a per-pass k_cur in [1..DRAFT_K]; spec_depth_adapt picks k_cur from the
+#   observed accept results (streak-counter policy).  Gate: spec==greedy under ANY
+#   depth schedule (forced, closed-loop-vs-software-model, and ADAPT=0 default-off),
+#   K=2/3/4/6/8.  Same TB also runs inside `unittests`; this is the standalone gate.
+spec-adapt:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_depth_adapt_sim test/spec_depth_adapt_tb.v src/spec_decode_seq.v src/spec_depth_adapt.v
+	@printf '[%s] ' "spec_depth_adapt"; $(VVP) $(BUILD_DIR)/spec_depth_adapt_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: spec_depth_adapt"; exit 1; }
 
 # Formal (bounded model checking) of the memory-system controllers via yosys write_smt2 +
 # yosys-smtbmc -s z3.  Each harness test/formal/<dut>_fv.v instantiates the committed controller

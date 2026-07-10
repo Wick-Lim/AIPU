@@ -312,6 +312,7 @@ brew install icarus-verilog verilator yosys     # iverilog 13.0, verilator 5.048
 make unittests   # build+run every per-unit TB (GLM-5.2 bf16/fp32 twins + Q4_K units + spec_decode_top + system units)
 make q4k         # the Q4_K sub-gate: q4k_prim 18 / glm_matmul_q4k 160 / swiglu_expert_q4k 240 / moe_router_q4k 40
 make spec-slow   # the long spec-decode tops (spec_batched_top + spec_chain_top): spec==greedy at larger K
+make spec-adapt  # adaptive draft depth (runtime k_cur in [1..K] + accept-rate policy): spec==greedy under ANY depth schedule
 make formal      # bounded model checking (yosys-smtbmc + z3) of the memory controllers + clk_throttle
 make formal-ind  # unbounded k-induction of boot_loader / kv_cache_pager / spec_decode_seq / ddr5_xbar / flash_xbar
 make coverage    # verilator line/toggle/branch structural coverage over the verilatable unit TBs

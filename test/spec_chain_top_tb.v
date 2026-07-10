@@ -24,7 +24,7 @@
 //      (truth_vec), never a raw draft, that committed stream IS the model's greedy
 //      rollout for ANY K -- the drafts only gate HOW MANY tokens commit per pass.
 //      We assert, beat-for-beat and X-free, that the DUT committed stream EXACTLY
-//      equals this reference, for K=2 AND K=3.
+//      equals this reference, for K=2 AND K=4.
 //
 //  (2) K_eff sanity:
 //      * with NONZERO embed/weights we SEARCH (prompt x pos x weight-seed) for a
@@ -37,7 +37,7 @@
 //        draft quality.
 //
 //  The model + MTP weight ROMs are the committed tiny slice (== the pem / mtp_head
-//  faithful-slice TBs).  K=2 and K=3 each run in their own parameterized engine;
+//  faithful-slice TBs).  K=2 and K=4 each run in their own parameterized engine;
 //  the top aggregates and prints "ALL <N> TESTS PASSED"; $fatal on any
 //  spec!=greedy / miscount / X / timeout.
 //============================================================================
@@ -707,7 +707,9 @@ module sct_engine #(
             commit_n=0; cap=1'b1;
             @(negedge clk); start=1'b1; @(negedge clk); start=1'b0;
             wd=0;
-            while (!done && wd<20000000) begin @(negedge clk); wd=wd+1; end
+            // 40M-negedge watchdog: a K=4 NP=2 DUT phase measures ~18M cycles
+            // (2 passes x 6 forwards x ~1.5M), too close to the old 20M limit.
+            while (!done && wd<40000000) begin @(negedge clk); wd=wd+1; end
             cap=1'b0;
             if (!done) begin $display("FAIL K=%0d %0s: DUT TIMEOUT", DRAFT_K, nm); errors=errors+1; disable run_case; end
             @(negedge clk);
@@ -806,7 +808,7 @@ module sct_engine #(
 endmodule
 
 //============================================================================
-//  spec_chain_top_tb : run the K=2 and K=3 binding engines, aggregate
+//  spec_chain_top_tb : run the K=2 and K=4 binding engines, aggregate
 //============================================================================
 module spec_chain_top_tb;
     reg clk = 1'b0;
@@ -814,26 +816,32 @@ module spec_chain_top_tb;
 
     wire [31:0] t2, e2;
     wire        f2;
+    wire [31:0] t4, e4;
+    wire        f4;
 
-    // ONE engine only (K=2).  Each spec-chain pass runs a FULL glm_model_q4k
-    // forward, and every extra elaborated model/MTP netlist costs per simulated
-    // cycle -- so a single K=2 engine (main + verify + ref_model + 2 mtp) is the
-    // largest slice that finishes in the fast budget.  K=3 is validated separately
-    // (spec_decode_seq_k already binds the DRAFT_K=3 accept/reject rule); here the
-    // costly part is the model itself, whose K-independence is proven by K=2.
+    // TWO engines, en-serialized (K=2 then K=4).  Each spec-chain pass runs a
+    // FULL glm_model_q4k forward, and every extra elaborated model/MTP netlist
+    // costs per simulated cycle -- K=2 is the smallest g_kn binding, K=4 binds a
+    // deeper chain (4 recurrent h_mtp hops) + a PE_M=5 verify batch in the same
+    // budget class (~2x K=2).  K=3/6/8 are validated separately: spec_decode_seq_k
+    // binds the accept/reject rule at those widths and spec_chain_top DRAFT_K=4/8
+    // elaborate clean; the costly model itself is K-independent (proven by K=2/4).
     sct_engine #(.DRAFT_K(2)) engK2 (.clk(clk), .en(1'b1), .tests_out(t2), .errors_out(e2), .finished(f2));
+    sct_engine #(.DRAFT_K(4)) engK4 (.clk(clk), .en(f2),   .tests_out(t4), .errors_out(e4), .finished(f4));
 
     // global watchdog
     initial begin #4000000000; $display("FAIL: global timeout"); $fatal(1,"timeout"); end
 
     initial begin
         wait (f2 === 1'b1);
+        wait (f4 === 1'b1);
         @(negedge clk);
-        if (e2 != 32'd0) begin
-            $display("FAILED: %0d error(s) across %0d tests (K=2)", e2, t2);
+        if ((e2 != 32'd0) || (e4 != 32'd0)) begin
+            $display("FAILED: %0d error(s) across %0d tests (K=2: %0d/%0d, K=4: %0d/%0d)",
+                     e2+e4, t2+t4, e2, t2, e4, t4);
             $fatal(1,"fail");
         end
-        $display("ALL %0d TESTS PASSED", t2);
+        $display("ALL %0d TESTS PASSED", t2+t4);
         $finish;
     end
 endmodule

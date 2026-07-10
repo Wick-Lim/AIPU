@@ -69,6 +69,18 @@
 //               always-correct model token).  Every committed token is the
 //               model's greedy argmax, so the committed stream == greedy for
 //               ANY K.  The two paths are generate-split: K=1 is byte-identical.
+//   ADAPT    -- 0 (default): FIXED depth -- the k_cur port is sunk and the
+//               batch verifier scans min(n_draft, K) drafts exactly as before;
+//               every existing consumer/TB elaborates the identical verifier.
+//               1: ADAPTIVE depth (docs/R3_APPLIANCE_SPEC.md sec 9) -- the
+//               per-pass k_cur port additionally bounds the scan:
+//               nd_eff = min(n_draft, clamp(k_cur, 1..K)).  OUTPUT-INVARIANCE:
+//               k_cur only changes HOW MANY drafts are scanned per pass; every
+//               committed token is still the model's own greedy argmax from
+//               truth_vec, so the committed stream == greedy decode for ANY
+//               depth schedule -- no depth policy can corrupt the output, only
+//               the tokens/pass throughput.  (Batch path g_kn only; at K=1 the
+//               depth is always 1 and k_cur is meaningless.)
 //
 // DISCIPLINE: synchronous active-high reset, every output registered, no latch,
 //   no combinational loop, deterministic -- pure integer / control logic.
@@ -76,6 +88,7 @@
 module spec_decode_seq #(
     parameter integer TOKW    = 16,
     parameter integer DRAFT_K = 1,
+    parameter integer ADAPT   = 0,   // 1 => honor the per-pass k_cur depth port
     // ---- derived (do NOT override) -- width for a 0..K draft count ----
     parameter integer DKW     = (DRAFT_K <= 1) ? 1 : $clog2(DRAFT_K + 1)
 )(
@@ -109,7 +122,19 @@ module spec_decode_seq #(
     //     n_draft                   = #valid drafts this pass (<= K)
     input  wire [DRAFT_K*TOKW-1:0]     draft_vec,
     input  wire [(DRAFT_K+1)*TOKW-1:0] truth_vec,
-    input  wire [DKW-1:0]              n_draft
+    input  wire [DKW-1:0]              n_draft,
+
+    // ---- ADAPTIVE DRAFT DEPTH (active ONLY when ADAPT!=0 and DRAFT_K>1;
+    //      sunk/tied-off otherwise so existing consumers stay unchanged) ----
+    //   k_cur bounds how many of the presented drafts are SCANNED this pass:
+    //   nd_eff = min(n_draft, clamp(k_cur, 1..K)).  Sample-with-pass_valid.
+    //   The pass_* taps let a policy (src/spec_depth_adapt.v) observe each
+    //   pass's accept result; pass_done pulses on the m_1 commit cycle (one
+    //   cycle after pass_valid), >= K cycles before the next legal pass.
+    input  wire [DKW-1:0]              k_cur,      // per-pass depth (clamped 1..K)
+    output wire                        pass_done,  // 1-cycle pulse: pass consumed
+    output wire [DKW-1:0]              pass_acc,   // p: drafts accepted that pass
+    output wire [DKW-1:0]              pass_dep    // nd_eff actually scanned
 );
     // K=1 -> exactly 2 committed tokens on an accept (verified + 1 bonus draft);
     // the +1 bonus is added inline to total_tokens (see accept path below).
@@ -123,9 +148,15 @@ module spec_decode_seq #(
     generate
     if (DRAFT_K == 1) begin : g_k1
         // the K>1 batch ports are inactive in this branch -> sink them
+        // (k_cur too: at K=1 the depth is constitutively 1, ADAPT is a no-op)
         /* verilator lint_off UNUSEDSIGNAL */
-        wire _u_kn = &{1'b0, draft_vec, truth_vec, n_draft};
+        wire _u_kn = &{1'b0, draft_vec, truth_vec, n_draft, k_cur};
         /* verilator lint_on UNUSEDSIGNAL */
+
+        // adaptive-depth observation taps: meaningless at K=1 -> tied off
+        assign pass_done = 1'b0;
+        assign pass_acc  = {DKW{1'b0}};
+        assign pass_dep  = {DKW{1'b0}};
 
         // K-ready draft store (K=1 uses slot 0).  Flag marks a draft is held.
         reg [TOKW-1:0] pending_draft [0:DRAFT_K-1];
@@ -268,7 +299,40 @@ module spec_decode_seq #(
         wire [OCW-1:0] nd_ext = n_draft;                 // zero-extend DKW -> OCW
         /* verilator lint_on WIDTHEXPAND */
         wire [OCW-1:0] nd_w   = (nd_ext > K_OCW) ? K_OCW : nd_ext;
-        wire [OCW-1:0] pfx_w  = acc_prefix(draft_vec, truth_vec, nd_w);  // p (0..K)
+
+        // ---- per-pass EFFECTIVE depth (adaptive-K hook, ADAPT param) ------
+        //   ADAPT=0 (default): nd_eff == nd_w -- the fixed-depth verifier,
+        //     identical to the pre-ADAPT module; k_cur is sunk.
+        //   ADAPT!=0: nd_eff = min(nd_w, clamp(k_cur, 1..K)) -- k_cur bounds
+        //     how many drafts are scanned THIS pass.  Only the scan length
+        //     changes: commits still come exclusively from truth_vec (the
+        //     model's own greedy argmaxes), so the committed stream == greedy
+        //     for ANY k_cur schedule (output-invariance by construction).
+        wire [OCW-1:0] nd_eff;
+        if (ADAPT != 0) begin : g_ad
+            /* verilator lint_off WIDTHEXPAND */
+            wire [OCW-1:0] kc_ext = k_cur;             // zero-extend DKW -> OCW
+            /* verilator lint_on WIDTHEXPAND */
+            wire [OCW-1:0] kc_hi  = (kc_ext > K_OCW) ? K_OCW : kc_ext;   // <= K
+            wire [OCW-1:0] kc_w   = (kc_hi == {OCW{1'b0}})               // >= 1
+                                    ? {{(OCW-1){1'b0}}, 1'b1} : kc_hi;
+            assign nd_eff = (nd_w > kc_w) ? kc_w : nd_w;
+        end else begin : g_fix
+            // fixed depth: k_cur inactive in this configuration -> sink it
+            /* verilator lint_off UNUSEDSIGNAL */
+            wire _u_kc = &{1'b0, k_cur};
+            /* verilator lint_on UNUSEDSIGNAL */
+            assign nd_eff = nd_w;
+        end
+
+        wire [OCW-1:0] pfx_w  = acc_prefix(draft_vec, truth_vec, nd_eff); // p (0..K)
+
+        // per-pass observation taps for a depth policy (registered, pulse+hold)
+        reg           pd_r;                 // pass_done pulse
+        reg [DKW-1:0] pa_r, pw_r;           // per-pass p / nd_eff
+        assign pass_done = pd_r;
+        assign pass_acc  = pa_r;
+        assign pass_dep  = pw_r;
 
         always @(posedge clk) begin
             if (rst) begin
@@ -283,12 +347,18 @@ module spec_decode_seq #(
                 main_passes  <= 32'd0;
                 accepts      <= 32'd0;
                 rejects      <= 32'd0;
+                pd_r         <= 1'b0;
+                pa_r         <= {DKW{1'b0}};
+                pw_r         <= {DKW{1'b0}};
                 for (j = 0; j <= DRAFT_K; j = j + 1)
                     obuf[j] <= {TOKW{1'b0}};
             end else begin
                 // pulse defaults (overridden below)
                 commit_valid <= 1'b0;
                 accepted     <= 1'b0;
+                pd_r         <= 1'b0;
+                pa_r         <= pa_r;   // hold last pass's observation
+                pw_r         <= pw_r;
 
                 if (start)
                     running <= 1'b1;
@@ -298,8 +368,13 @@ module spec_decode_seq #(
                     main_passes  <= main_passes + 32'd1;
                     total_tokens <= total_tokens + {{(32-OCW){1'b0}}, pfx_w} + 32'd1;
                     accepts      <= accepts + {{(32-OCW){1'b0}}, pfx_w};      // p accepted
-                    rejects      <= rejects + {{(32-OCW){1'b0}}, (nd_w - pfx_w)}; // discarded
+                    rejects      <= rejects + {{(32-OCW){1'b0}}, (nd_eff - pfx_w)}; // scanned & discarded
                     accepted     <= (pfx_w != {OCW{1'b0}});
+
+                    // policy observation tap: p and the depth actually scanned
+                    pd_r <= 1'b1;
+                    pa_r <= pfx_w[DKW-1:0];    // p      <= K -> fits DKW
+                    pw_r <= nd_eff[DKW-1:0];   // nd_eff <= K -> fits DKW
 
                     // commit m_1 now; queue m_2..m_{p+1} for the drain cycles
                     commit_valid <= 1'b1;
