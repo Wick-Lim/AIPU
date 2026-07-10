@@ -32,8 +32,10 @@ h/U 측정(OLMoE 프록시 + GLM-4.5-Air 실측, [`H_MEASUREMENT.md`](H_MEASUREM
 `14·U/A (routed) + 11/A (핫셋) + ~0.5 (KV) ≈ 15.4GB — h와 무관.`
 
 **tok/s = 1.1TB/s ÷ 15.4GB ≈ 71 [EST], 결정론** (h 불확실성이 설계에서 제거됨).
-**갱신(GLM-4.5-Air 실측 U):** 적응형 스펙체인 포함 실효 대역 **~76–95 tok/s**
-— 남은 변수는 수락률 r 하나 ([`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2차 측정).
+**갱신 2(r까지 실측, 잡 B):** MTP 수락률 실측 r₁=0.87·위치별 급감 →
+메모리-바운드 최적 깊이 K=1–2, **상주 박스 ≈ 80 tok/s [실측-입력 EST]**
+(GLM-5.2의 더 깊은 MTP가 공표 수준이면 ~95; [`H_MEASUREMENT.md`](H_MEASUREMENT.md)
+3차 측정). 적응형 컨트롤러는 이 최적점에 자율 안착 — 설계 검증됨.
 
 ## 3. 실리콘: 클록은 목표가 아니라 파생값
 

@@ -31,10 +31,12 @@ vol = modal.Volume.from_name("aipu-traces", create_if_missing=True)
 hf_cache = modal.Volume.from_name("aipu-hf-cache", create_if_missing=True)
 
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.from_registry(          # vLLM JIT-compiles kernels -> needs nvcc
+        "nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11"
+    )
     .pip_install("vllm>=0.10.1", "huggingface_hub[hf_transfer]")
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_HOME": "/hf",
-          "VLLM_LOGGING_LEVEL": "INFO"})
+          "VLLM_LOGGING_LEVEL": "INFO", "CUDA_HOME": "/usr/local/cuda"})
 )
 
 PROMPTS = [
