@@ -148,6 +148,9 @@ to ~45). The new primary design point:
 - **The 1024-bit hybrid (~84 tok/s) survives as the upside SKU** if the GLM h
   measurement lands ≥0.75 — keep the ONFI pads on-die, unbonded in the
   residency SKU, so both SKUs share one die.
+- Full appliance concept spec (board 120×80 mm, on-substrate packaging, power
+  v1→v3 history, clock/node/lane derivation, competitive bracket):
+  [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).
 
 <details><summary>v1 decision (2026-07, superseded — kept for the reasoning trail)</summary>
 

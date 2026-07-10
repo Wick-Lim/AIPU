@@ -13,6 +13,15 @@ routed on XCKU3P at 46.5 MHz, [`../fpga/`](../fpga/README.md).)*
 
 ---
 
+> **Positioning update (2026-07, v3 full-residency spec [EST]):** the rung-③ box
+> targets **~71 tok/s deterministic** — Opus/Gemini-Pro-class *per-user* output
+> speed, offline, no subscription, first-token latency without network/queue.
+> Same-bracket champion today is a $10k+ Mac Studio M3 Ultra 512GB at ~15–25
+> tok/s for this model class → ~3–4× the speed at roughly half the price.
+> Groq/Cerebras-class 500+ tok/s is a **different bracket** (SRAM-resident,
+> racks, $M, thousands of users amortized; a 467GB model cannot fit their
+> single box). See [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §7.
+
 ## The intersection that defines the buyer
 
 The box only wins for someone who needs **all three** at once:
