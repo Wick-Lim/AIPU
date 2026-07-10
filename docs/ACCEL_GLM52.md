@@ -105,7 +105,11 @@ no path out** (the audit is literally "does it work with the ethernet unplugged?
 on-box residency described in this doc is exactly what makes that possible: the entire **~467 GB**
 UD-Q4_K_XL GGUF lives **on the box**, streamed from a ~1 TB NVMe SSD (M.2 / PCIe) with a fast DDR
 hot-weight cache (rung-dependent — DDR4 on the prove-it FPGA, DDR5/HBM on the funded custom board;
-see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) (see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md)),
+see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) (see [`USBC_PRODUCT_PLAN.md`](USBC_PRODUCT_PLAN.md))
+*(updated 2026-07: the primary rung-③ design point is now **full DRAM residency** — 512 GB
+LPDDR5X holds the whole ~467 GB checkpoint and the NVMe shrinks to a one-time boot-load device
+(~70 s); NVMe **streaming** remains how rung ① and the hybrid upside SKU work — see
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md))*,
 so after a **one-time provisioning** load (itself doable in a secure facility; new-model/weight
 updates are a physical re-provision) the card serves one user (**B=1**) with no internet and no
 cloud, ever. That unlocks frontier-model use in the disconnected / locked-out environments cloud
@@ -420,10 +424,14 @@ reference `tools/glm_model_q4k_ref.py`: **ALL 1155 TESTS bit-exact** (logits+arg
 datapath (also 1155) — ACT_HW is a result-invariant resource knob. The caveat that **stays**: the
 golden is the team's **own** numpy reimpl, **NOT** llama.cpp/GGUF — nothing yet asserts the
 forward pass matches the real GGUF bytes or llama.cpp's runtime. Separately,
-**spec-decode == greedy self-consistency**: `spec_decode_top` **19/19** (`make unittests`) proves
+**spec-decode == greedy self-consistency**: `spec_decode_top` **18/18** (`make unittests`) proves
 the speculative loop emits exactly what greedy would — the "greedy golden" is *itself* a
 `glm_model_q4k` sharing the same weight ROMs (a lossless-speculation safety property, a
 DUT-vs-DUT check). Larger loops (`spec_batched_top` / `spec_chain_top`) via `make spec-slow`.
+*(updated 2026-07: **adaptive draft depth** is landed — `spec_decode_seq` `ADAPT` param
+(default 0, yosys sequential-equivalence PROVEN unchanged for existing consumers) + `k_cur`
+port + the `spec_depth_adapt` policy, gated by `make spec-adapt`; output-invariant by
+construction — spec==greedy holds for ANY depth schedule.)*
 
 **Numerics policy (as built — matches §3):**
 1. RMSNorm Σx² in **fp32** (6144 bf16 terms overflow bf16 precision), bf16 I/O.
@@ -467,6 +475,12 @@ Gowin/nextpnr scaffold was removed, superseded by the Vivado flow.)
 ---
 
 ## 7. Memory & scale system (tiered + streaming + 1M paging)
+
+> *(updated 2026-07: the primary rung-③ design point is now **full residency** — the whole
+> ~467 GB UD-Q4_K_XL image in 512 GB LPDDR5X, T2 reduced to a one-time boot-load M.2 NVMe;
+> see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The tiered/streaming description below
+> stays TRUE and ACTIVE for rung ① (the FPGA demo streams from NVMe), the hybrid upside SKU,
+> and >512 GB checkpoints.)*
 
 **Tier 0 — on-chip SRAM:** active token activations, current-layer GEMM tiles, DSA index-set
 scratch, softmax scratch, HOT weights (MLA proj, shared expert, router W_g, RMSNorm γ, the fp32
@@ -564,7 +578,7 @@ The GEMM engine is the **Q4_K weight core `glm_matmul_q4k`** (with its bf16 sibl
 - Block bring-up: (a) attention sub-block vs the twin's golden attention; (b) FFN sub-block
   (router+experts+combine) — Q4_K units checked functionally / by invariant; (c) the **assembled
   Q4_K model is bit-exact vs its end-to-end numpy golden** (`make model-q4k`, all 1155 tests;
-  §6c), plus **spec-decode == greedy self-consistency** (`spec_decode_top` 19/19).
+  §6c), plus **spec-decode == greedy self-consistency** (`spec_decode_top` 18/18).
 
 ### 8.4 The CONCRETE FIRST unit to build
 
@@ -586,7 +600,7 @@ The GEMM engine is the **Q4_K weight core `glm_matmul_q4k`** (with its bf16 sibl
 | Q4_K weight core **bit-exact vs ggml ref** (`glm_matmul_q4k`, `q4k_prim`) + Q6_K/Q8_0/F16 mixed path (`make mixedtype`) | 725B cold-expert residency (1.45 TB bf16 / ~435 GB Q4_K) |
 | Per-unit twins vs fp32/fp64 golden (rmsnorm, rope, dsa, mla, mtp) | 94.2 GB 1M-context latent cache (bf16) |
 | Q4_K operators functional/invariant (swiglu 240, router 40) | Q4_K residency of the ~467 GB UD-Q4_K_XL image |
-| Assembled model **bit-exact vs own numpy golden** (`make model-q4k`, 1155) + spec==greedy (19/19) | Multi-chip HBM farm + cross-chip expert sharding |
+| Assembled model **bit-exact vs own numpy golden** (`make model-q4k`, 1155) + spec==greedy (18/18) | Multi-chip HBM farm + cross-chip expert sharding |
 | Structural sign-off: 753B-shape elaboration + whole-top synth; routed Vivado PnR/Fmax on XCKU3P (`fpga/`) | 512× FLOP-cap payoff at 1M context |
 | PE_M batching + union-fetch (params present; bit-exact only on prior FP8 track) | Full-rate expert-stream bandwidth at 753B |
 
@@ -605,8 +619,10 @@ throughput; the DSA 2048-key FLOP cap keeps attention compute constant at long c
 the 1M bottleneck to latent-cache bandwidth (the indexer's O(S) pass) rather than attention FLOPs.
 Power follows the same story — NVMe/DDR traffic for expert + cache movement dwarfs the PE-array
 energy. The tok/s is **rung-dependent** (bandwidth set by IO pins/PHYs → budget): roughly
-**~5–8 tok/s on the prove-it FPGA (rung ①) → ~15–40 on the funded custom board (rung ②) → ~40+ at
-volume (rung ③)** with **~9 → ~3 J/token**, all **[EST]** until a running board —
+**~5–8 tok/s on the prove-it FPGA (rung ①) → ~15–40 on the funded custom board (rung ②) →
+~76–95 on the full-residency rung-③ appliance** (whole checkpoint in 512 GB LPDDR5X — see
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); the only remaining unknown is the accept rate r)
+with **~9 → ~3 J/token**, all **[EST]** until a running board —
 see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md). A routed PPA
 result **is now in-repo**: Vivado ML 2026.1 real synth + full place&route of `glm_q4k_system_cdc`
 on XCKU3P (compact config + ACT_HW=1) — **142,320 LUT (87.5%)**, ~100K FF, **421 DSP**, 0 BRAM,
@@ -626,8 +642,24 @@ result-invariant resource knob (`glm_act` HW_LANES serialization).
 > and the spec multiplier K must be read as **A/U(K) ≈ 1.1–1.3× at K=4** (measured union factor
 > U(4)=2.25–2.64) — **not** ~2×. Resulting design-point menu **[EST, measured-proxy inputs]**:
 > NVMe-only ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64ch) → 25–47;
-> 225 GB + 200 GB/s → 54–127 (the "100 tok/s" design point). h/U are proxy measurements; the
-> GLM rerun is open.
+> 225 GB + 200 GB/s → 54–127. h/U here were proxy measurements — both points have since been
+> superseded (next note).
+
+> **(updated 2026-07 — design-point pivot + GLM-family measurement.)** Two supersessions:
+> **(1) U(K) is now GLM-family MEASURED**, no longer OLMoE-proxy-only: GLM-4.5-Air (45 MoE
+> layers × 128 experts × top-8) traced on Modal H100 via MoE-gate hooks — EOR 0.36–0.39
+> (6× random), U(2)=1.60–1.64, U(4)=2.60–2.71, U(6)=3.46–3.62, U(8)=4.19–4.41 (±0.05 workload
+> variance); the OLMoE numbers above stand as first-pass history (see
+> [`H_MEASUREMENT.md`](H_MEASUREMENT.md)). **(2) The primary rung-③ design point pivoted to
+> FULL RESIDENCY** — 512 GB LPDDR5X holds the whole ~467 GB image, so **h=1 by construction**
+> and h stops being a product-deciding variable (h-curves stay relevant only for the hybrid-SKU
+> decision); the rung-③ effective band is **~76–95 tok/s [EST]** and the only remaining unknown
+> is the accept rate r (vLLM MTP sweep pending) — see
+> [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The streaming design-point menu above stays
+> relevant only for rung ① / the hybrid upside SKU / >512 GB checkpoints; "54–127" survives
+> only as the hybrid-SKU-if-h≥0.75 note. Adaptive draft depth (K∈[1..5]; the GLM-U K-sweep
+> plateaus at K=4–5 at r=0.9) is adopted and RTL-landed (`make spec-adapt`, §6c). GLM-5.2's
+> own routing (vs Air) remains open — never overclaim.
 
 > **Prior-FP8 note.** Earlier revisions of this doc/track carried specific **FP8** measurements
 > (sky130 PPA slack, LUT/DSP counts, cycle counts, byte/BOM figures). Those are **prior-FP8**

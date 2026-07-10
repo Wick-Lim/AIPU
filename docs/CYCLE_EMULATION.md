@@ -33,7 +33,11 @@ knobs, and counting cycles.
 > the NAND-specific PHY is swapped for an NVMe host controller. The committed RTL keeps the
 > `flash_*` identifiers (`flash_xbar`, `FLASH_LAT`, `flash_req`, `flash_seq`, …); below, a "Flash"
 > in a param / sweep-label / PERF-output string is that committed name, while the storage *concept*
-> it models is NVMe/PCIe read latency and bandwidth.
+> it models is NVMe/PCIe read latency and bandwidth. *(2026-07 design-point update: on the primary
+> rung-③ **residency** box the whole ~467 GB checkpoint resides in 512 GB LPDDR5X (~1.1 TB/s
+> on-package) and the single M.2 NVMe is boot-load only — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md);
+> the NVMe-streaming latency model here remains the live mechanism for the rung-① FPGA demo, the
+> hybrid upside SKU, and >512 GB checkpoints.)*
 
 This is the software-emulation core of "FPGA emulation" — **measured cycles**, not a board run.
 It does **not** produce an absolute real-753B tok/s (that needs full-scale weights / a real FPGA);
@@ -150,10 +154,15 @@ real config the per-token miss count is large: ~75 MoE layers × ~8 routed exper
 With the GLM-trace hit rate `h ≈ 27%` (measured on the FP8 prior track, `make cache-study` [removed
 from `main` — see branch `fp8`] / [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md)), that is ~**hundreds
 of demand misses per token**. (**Update — newer proxy measurement:** [`H_MEASUREMENT.md`](H_MEASUREMENT.md),
-OLMoE-1B-7B-Instruct trace, GLM rerun open — bandwidth-h is cache-size-dependent: **0.36–0.60** with
+OLMoE-1B-7B-Instruct trace — U(K)/EOR have since been **GLM-family measured** on GLM-4.5-Air
+([`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2nd measurement), superseding the OLMoE first-pass —
+bandwidth-h is cache-size-dependent: **0.36–0.60** with
 a 20 % expert pool cached (~90 GB at GLM scale), **0.72–0.88** at 50 % (~225 GB), collapsing to ~0
 below 10 % under LRU; see also [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md). Read `h` from
-that measurement; the mechanism and formula here are unchanged.) Using the **measured** per-miss cost (each miss exposes ≈ `FLASH_LAT`
+that measurement; the mechanism and formula here are unchanged. **2026-07 pivot:** on the primary
+rung-③ **residency** box h=1 by construction — the whole checkpoint sits in 512 GB LPDDR5X
+([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)) — so this h-driven miss extrapolation applies to the
+rung-① / hybrid-SKU streaming regime.) Using the **measured** per-miss cost (each miss exposes ≈ `FLASH_LAT`
 cycles, from finding 1) and the **measured** hit rate:
 
 ```

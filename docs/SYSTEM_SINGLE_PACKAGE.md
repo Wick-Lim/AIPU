@@ -35,12 +35,18 @@
 > memory interface changing: **rung 1** (prove-it, now) a low-end FPGA + **DDR4 ~4 ch (~100 GB/s)** +
 > 1 NVMe → **~5–8 tok/s [EST]**; **rung 2** (post-seed) this **DDR5 8–12 ch (or HBM), ~300–600 GB/s**
 > custom board → **~15–40 tok/s [EST]**; **rung 3** (at volume) a SoC/ASIC with HBM stacks (~TB/s) →
-> **~40+ tok/s [EST]**. *(Update — measured-proxy roofline design points, h/U from the OLMoE trace,
-> [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe 1–2 drives, no multipliers ~0.5–1 tok/s; 90 GB DRAM +
-> 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 — all [EST] with MEASURED-PROXY
-> inputs; the spec multiplier reads as **A/U(K) ≈ 1.1–1.3× at K=4**, not ×K.)* Read every "64 GB DDR5"
+> **~40+ tok/s [EST]**. *(Updated 2026-07 — the **rung-3 primary design point pivoted to full
+> residency**: 512 GB LPDDR5X on-package (~1.1 TB/s) holds the whole ~467 GB checkpoint, cold store =
+> one M.2 NVMe, **~76–95 tok/s [EST]** — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
+> measured-proxy roofline design points ([`H_MEASUREMENT.md`](H_MEASUREMENT.md); h/U first measured
+> on the OLMoE trace, U now superseded by the GLM-4.5-Air measurement): NVMe 1–2 drives, no
+> multipliers ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB +
+> 200 GB/s ~54–127 — all [EST]; these **streaming** points now apply to **rung 1 / the hybrid upside
+> SKU / >512 GB checkpoints**, not the rung-3 primary; the spec multiplier reads as **A/U(K)**,
+> not ×K.)* Read every "64 GB DDR5"
 > below as the **rung-2** spec — on rung 1 the fast tier
-> is DDR4, on rung 3 it is HBM / on-package.
+> is DDR4, on rung 3 it is **512 GB LPDDR5X on-package** (full residency; HBM stays the
+> long-range ceiling).
 >
 > **Fast-memory choice: multi-channel DDR5, not HBM/GDDR6.** This workload is **NVMe/PCIe-bandwidth-
 > bound** (the wall is reading cold experts from the NVMe SSD), so the fast tier only needs ~300–600 GB/s.
@@ -235,6 +241,10 @@ prior FP8's 22 GB):
 > measured union factor (U(2)=1.51–1.65, U(4)=2.25–2.64, U(8)=3.25–3.92, OLMoE proxy) caps the
 > amortization at **~1.1–1.3× at K=4 (A≈3)**, not ~×K. h now also has measured-proxy values
 > (bandwidth-h 0.36–0.60 at a ~90 GB / 20 % cached pool; 0.72–0.88 at ~225 GB / 50 %).
+> *(Updated 2026-07: U(K) is now **GLM-family measured** — GLM-4.5-Air, superseding the OLMoE
+> first pass: U(2)=1.60–1.64, U(4)=2.60–2.71, U(6)=3.46–3.62, U(8)=4.19–4.41, ±0.05. And on the
+> full-residency rung-3 primary ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)) **h=1 by
+> construction** — the h values matter only for rung 1 / the hybrid upside SKU.)*
 
 where **h** is the *batched* cache hit rate measured through the real RTL (§7.1, §8):
 batch 1 = 26.5 %, batch 8 = 29.7 %, batch 32 = 50.5 %. Each lever moves one term:
@@ -268,8 +278,9 @@ drives, **not** a single M.2 [EST]; prefetch on):
 not ×K.** GLM-5.2 ships an MTP head (`num_nextn_predict_layers=1`) and we built it (`mtp_head_q4k`):
 verifying K tokens per weight-load pass amortizes the NVMe traffic **without leaving Q4_K** — but the
 K drafts route to overlapping-not-identical experts, so the measured amortization is
-**A/U(K) ≈ 1.1–1.3× at K=4, A≈3** ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE proxy; GLM rerun
-open), not the ideal ~K×. Read the "MTP ×2" rows above as ideal-K upper bounds.
+**A/U(K) ≈ 1.1–1.3× at K=4, A≈3** ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE proxy — since
+superseded by the GLM-4.5-Air measurement, U(4)=2.60–2.71; GLM-5.2's own routing still
+unmeasured), not the ideal ~K×. Read the "MTP ×2" rows above as ideal-K upper bounds.
 
 **Batching is not a free Nx** in this NVMe/PCIe-bandwidth-bound regime — it only helps through the
 hit rate, and trained-router entropy caps the reuse: batch 32 gives **~1.5× aggregate**, split
@@ -284,8 +295,9 @@ the single-user ceiling to **~25–40 tok/s [EST]** — the top of the **rung-2 
 range (~15–40) and the fuller-stack product headline ([`ULTRA_PERF.md`](ULTRA_PERF.md) §4). Stage
 that to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md): the old flat "~25–40" was implicitly this
 **rung-2** number and it is **not** reachable on the cheap near-term hardware — the **prove-it FPGA
-(rung 1, DDR4 ~4 ch) is ~5–8 tok/s [EST]** (real + bit-exact, slow-but-honest), and a **rung-3
-SoC/ASIC (HBM, ~TB/s) tops ~40+ [EST]** at volume. The **~15–31 aggregate** at batch 32 + MTP ×2 (~100 GB/s
+(rung 1, DDR4 ~4 ch) is ~5–8 tok/s [EST]** (real + bit-exact, slow-but-honest), and the **rung-3
+SoC/ASIC runs ~76–95 [EST]** at volume (2026-07 full-residency primary — 512 GB LPDDR5X on-package,
+~1.1 TB/s; [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)). The **~15–31 aggregate** at batch 32 + MTP ×2 (~100 GB/s
 aggregate NVMe — many PCIe lanes / drives striped [EST]) is the **non-target batched/datacenter regime of the same silicon, not the product's
 speed** (the box runs B=1). Prefetch is required (hides
 latency → reach the bandwidth wall); MTP and raw NVMe/PCIe bandwidth are the real multipliers;
@@ -296,7 +308,9 @@ re-quant would push further but is a different, re-quantized model — outside t
 Q4_K" goal, and Q4_K already banked the FP8→Q4 ~1.6×.) *(Measured update: the "MTP ×2" rows are
 ideal-K upper bounds — the measured spec amortization is A/U(K) ≈ 1.1–1.3× at K=4 — and the
 measured-proxy design-point menu (NVMe-only ~0.5–1 · 90 GB+100 GB/s ~13–24 · 90 GB+200 GB/s ~25–47 ·
-225 GB+200 GB/s ~54–127 tok/s [EST]) is in [`H_MEASUREMENT.md`](H_MEASUREMENT.md).)*
+225 GB+200 GB/s ~54–127 tok/s [EST]) is in [`H_MEASUREMENT.md`](H_MEASUREMENT.md) — updated 2026-07:
+that streaming menu now applies to rung 1 / the hybrid upside SKU / >512 GB checkpoints; the rung-3
+primary is full residency, **~76–95 tok/s [EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).)*
 
 ## 8. MoE expert-cache subsystem (the heart of it)
 
@@ -427,8 +441,14 @@ NVMe/PCIe-bound.
   assumption could be off in either direction. **Update:** h/U now have **measured-proxy** values
   from a real MoE trace (OLMoE-1B-7B-Instruct — EOR 0.35–0.49, U(2)=1.51–1.65 / U(4)=2.25–2.64,
   bandwidth-h 0.36–0.60 at a ~90 GB / 20 % cached pool; LRU collapses to ~0 below 10 % cache) —
-  see [`H_MEASUREMENT.md`](H_MEASUREMENT.md) and [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md);
-  the GLM rerun remains open.
+  see [`H_MEASUREMENT.md`](H_MEASUREMENT.md) and [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).
+  **The GLM-family rerun is now DONE** (2026-07 2nd measurement: GLM-4.5-Air traced on an H100 via
+  MoE-gate hooks — EOR 0.36–0.39 (~6× random), U(2)=1.60–1.64, U(4)=2.60–2.71, U(6)=3.46–3.62,
+  U(8)=4.19–4.41, workload variance ±0.05 — superseding the OLMoE proxy, which stays as the
+  first-pass history); **GLM-5.2's own routing remains unmeasured** (Air is GLM-family, not the
+  flagship). With the rung-3 full-residency pivot ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md))
+  **h is no longer product-deciding on the primary SKU** (h=1 by construction); h-curves stay
+  relevant for rung 1 / the hybrid upside SKU.
 - **NVMe/PCIe bandwidth** (~10s GB/s **aggregate**) is assumed; this is **not** one M.2's figure — a
   single PCIe Gen3 x4 NVMe is ~3.5 GB/s and Gen4 x4 ~7 GB/s [EST], so ~10s GB/s means **striping many
   PCIe lanes / several NVMe drives**, which the custom board must actually deliver. PCIe/NVMe read BW
@@ -446,6 +466,10 @@ NVMe/PCIe-bound.
   upgradeable.
 - This is **interactive, not datacenter-real-time**; high tokens/s/user at scale still wants
   multi-chip HBM (bandwidth), which the **rung-2** DDR5 board here deliberately trades away for cost.
-  Reclaiming that bandwidth is precisely the **rung-3 SoC/ASIC** endgame (HBM stacks, many-channel
-  PHY, near-memory compute at ~TB/s) — sequenced after the FPGA proves PMF, at volume; see
-  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md).
+  Reclaiming that bandwidth is precisely the **rung-3 SoC/ASIC** endgame (~TB/s, many-channel PHY,
+  near-memory compute) — sequenced after the FPGA proves PMF, at volume; see
+  [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Updated 2026-07: the rung-3 **primary** design point
+  is now **full residency** — 512 GB LPDDR5X, 1024-bit on-package, ~1.1 TB/s, the whole ~467 GB
+  checkpoint DRAM-resident, one commodity M.2 NVMe as cold store, **~76–95 tok/s [EST]** —
+  [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); HBM stays the long-range ceiling, and this doc's
+  NVMe-streaming analysis applies to rung 1 / the hybrid upside SKU / >512 GB checkpoints.)*

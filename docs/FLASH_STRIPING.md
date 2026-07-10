@@ -2,7 +2,9 @@
 
 **The one fact that drives everything:** single-user decode throughput is **linear in
 NVMe read bandwidth** (`tok/s ≈ NVMe_BW / [(1−h)·footprint] · K` — read the spec multiplier `K` as
-**A/U(K) ≈ 1.1–1.3× at K=4** per the measured union factor U(K), not ~2×; `h` is now measured-proxy —
+**A/U(K) ≈ 1.1–1.3× at K=4** per the measured union factor U(K), not ~2× (U now **GLM-family
+MEASURED** on GLM-4.5-Air — U(4)=2.60–2.71 — superseding the first-pass OLMoE proxy; adaptive
+spec-chain K∈[1..5] adopted in RTL); `h` is now measured-proxy —
 see [`H_MEASUREMENT.md`](H_MEASUREMENT.md)), and a 1–4 TB on-board
 NVMe SSD is **not one fast lane — realized bandwidth scales with parallel NVMe drives / PCIe
 lanes**. Aggregate bandwidth is `N_CH × per-channel BW` (each channel = a striping endpoint
@@ -10,6 +12,13 @@ backed by an NVMe drive / PCIe lane), but that N× is only *realized* if every t
 spread evenly across the channels. **How weights are laid out across channels is therefore a
 first-class performance lever, not an afterthought.** This doc consolidates the two mechanisms
 that deliver it and lays out the striping design space.
+
+> **Scope (updated 2026-07):** the **primary rung-③ design point is now full residency** — 512 GB
+> LPDDR5X holds the whole ~467 GB checkpoint, cold storage is one commodity M.2 NVMe (~70 s
+> boot-load), and the ONFI streaming tier is deleted from that SKU
+> ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md), [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) pivot
+> section). This streaming analysis remains TRUE and ACTIVE for **rung ① (the FPGA demo box streams
+> from NVMe)**, the **hybrid upside SKU** (ONFI pads stay on-die), and **future >512 GB checkpoints**.
 
 The workload (real GLM-5.2): **75 MoE layers × 256 experts, top-8 fetched per layer per
 token, ~22 MB/expert (Q4_K, ~0.6 B/param avg [EST])**, plus the always-read shared expert,
@@ -186,9 +195,13 @@ in realized aggregate NVMe BW, striping the routed-expert stream across drives/l
 > [`H_MEASUREMENT.md`](H_MEASUREMENT.md), [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)):**
 > the table above is the cache-free striping floor. Adding a DRAM expert cache on top of the stream:
 > 90 GB cached + 100 GB/s → ~13–24 tok/s; 90 GB + 200 GB/s (ONFI 64ch) → ~25–47;
-> 225 GB + 200 GB/s → ~54–127 (the "100 tok/s" design point). Measured residency-only h (OLMoE
-> proxy): ~20% of pool cached → 0.36–0.60; ~50% → 0.72–0.88 (LRU collapses below ~10%). Any spec-chain
-> multiplier `K` on these rows is A/U(K) ≈ 1.1–1.3× at K=4, not ~2×.
+> 225 GB + 200 GB/s → ~54–127 (formerly the "100 tok/s" design point — now the **hybrid-upside-SKU**
+> case only, contingent on GLM h ≥ 0.75; the primary rung-③ point is **full residency, ~76–95 tok/s
+> [EST]** — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)). Measured residency-only h (OLMoE
+> proxy): ~20% of pool cached → 0.36–0.60; ~50% → 0.72–0.88 (LRU collapses below ~10%) — with the
+> residency pivot these h-curves matter only for the hybrid SKU. Any spec-chain multiplier `K` on
+> these rows is A/U(K), not ~2× — U(K) is now **GLM-Air MEASURED** (U(4)=2.60–2.71, superseding the
+> OLMoE-proxy U), adaptive spec-chain K∈[1..5] adopted in RTL.
 
 **Honest BW anchor [EST].** These are roofline numbers, not silicon: a single NVMe SSD is
 ~3.5 GB/s (PCIe Gen3 x4), ~7 GB/s (Gen4 x4), ~14 GB/s (Gen5 x4). The ~28 GB/s and ~100 GB/s rows are

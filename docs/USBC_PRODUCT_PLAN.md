@@ -10,7 +10,9 @@ computer over a single USB-C cable.
 - [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — the **performance ladder** (the anchor for every tok/s
   headline here). Throughput is set by **memory bandwidth**, which is set by the FPGA/silicon's IO +
   PHY, which is set by budget — so speed is **staged across rungs**: ① prove-it FPGA ~5–8 · ② funded
-  custom board ~15–40 · ③ SoC/ASIC at volume ~40+ tok/s [EST]. Read every tok/s in this doc as
+  custom board ~15–40 · ③ SoC/ASIC at volume **~76–95 tok/s [EST]** (updated 2026-07 — the rung-③
+  primary design point pivoted to **full residency**: 512 GB LPDDR5X holds the whole ~467 GB
+  checkpoint; see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)). Read every tok/s in this doc as
   **rung-dependent** per that ladder.
 - [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md) — the **RTL / silicon track** (P1–P4: real-model
   fidelity, full-scale, robustness, vendor-IP + FPGA physical). *That* makes the chip correct and
@@ -44,7 +46,7 @@ subscription-free come as the *result*.
 |---|---|
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
 | **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp; the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype` — see §2) |
-| **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST]; spec multiplier = A/U(K) ≈ 1.1–1.3× at K=4)* |
+| **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST] — updated 2026-07: these **streaming** points now apply to rung ① / the hybrid upside SKU / >512 GB checkpoints; the rung-③ primary is **full residency, ~76–95 tok/s [EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); spec multiplier = A/U(K), U now GLM-4.5-Air measured — U(4)=2.60–2.71, superseding the OLMoE proxy)* |
 | **Power** | ~80–110 W at interactive throughput (self-powered; ~30 W throttled) [EST] |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
 | **Host** | thin driver + a local OpenAI-compatible endpoint → existing chat UIs / editors point at it |
@@ -112,7 +114,7 @@ loading resident set → ready) so the app can show "warming up" instead of fail
   `swiglu_expert_q4k` **240/240** functional; `moe_router_q4k` **40/40** invariants — `make q4k`).
   **Honest scope:** bit-exact is vs our **own** ggml reimpl, **not** the real GGUF bytes / llama.cpp;
   the **assembled** `glm_model_q4k` now has an **end-to-end golden** (`make model-q4k` **1155** +
-  `model-q4k-acthw` **1155**), plus **spec==greedy** self-consistency (`spec_decode_top` **19/19**,
+  `model-q4k-acthw` **1155**), plus **spec==greedy** self-consistency (`spec_decode_top` **18/18**,
   DUT-vs-DUT).
 - The memory system (ddr5_xbar, flash_xbar, kv_cache_pager, expert_cache_pf, weight_loader_q4k,
   boot_loader), BMC-proven (these blocks are **byte-agnostic** — they move addresses/slots/IDs, not
@@ -316,9 +318,14 @@ smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (
 rungs — **rung ①** the ~$1–2 k prove-it demo box (budget FPGA + DDR4, the near-term build) and **rung ②**
 the funded product (custom board, DDR5/HBM) — the ladder's ~$3–6 k box, up to ~$4–9 k for the
 HBM / data-center-card variant. **Rung ③ — a SoC/ASIC at manufacturing volume** — is the cost endgame:
-HBM stacks + many-channel PHY + near-memory Q4_K (low-precision) compute at ~TB/s, with **lower $/seat and lower power**
+many-channel PHY + near-memory Q4_K (low-precision) compute at ~TB/s, with **lower $/seat and lower power**
 once the multi-million NRE amortizes over volume. Not now (no volume, no capital); sequenced *after* the
-FPGA rungs prove product-market fit — the same verified RTL on every rung.
+FPGA rungs prove product-market fit — the same verified RTL on every rung. *(Updated 2026-07: the
+rung-③ **primary** design point is now **full residency** — 512 GB LPDDR5X (16×32 GB, 1024-bit
+on-package substrate, ~1.1 TB/s) holding the whole ~467 GB checkpoint, cold store = one commodity
+M.2 NVMe (boot-load ~70 s), box ~40–60 W, board 120×80 mm, BOM ~$1.8–2.4 k, **~76–95 tok/s [EST]**;
+the ONFI streaming tier is deleted from the primary SKU (pads stay on-die for the hybrid upside
+SKU); HBM stays the long-range ceiling — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 
 **Cost insight:** power is memory-dominated but **cost is FPGA-dominated** — the FPGA class (set by
 D0.2) is the pivotal BOM lever. Algorithmic levers (spec ÷K, compression, DVFS) improve

@@ -99,15 +99,27 @@ where the **~15–40 tok/s [EST]** interactive product lands, and rung-③ (SoC/
 
 > **Measured-proxy update (2026-07 — [`H_MEASUREMENT.md`](H_MEASUREMENT.md) /
 > [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).** The rung tok/s bands above pre-date the
-> h/U proxy measurement (OLMoE-1B-7B-Instruct trace; GLM rerun open). The measured-roofline
+> h/U proxy measurement (OLMoE-1B-7B-Instruct trace; U(K)/EOR since re-measured GLM-family — see the
+> updated note below). The measured-roofline
 > design-point menu [EST, MEASURED-PROXY inputs] re-bands them: **NVMe ×1–2 (no multipliers)
 > ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64-ch) → 25–47; 225 GB +
-> 200 GB/s → 54–127** (the "100 tok/s" design point). Spec-decode amortization must be read as
-> **A/U(K) ≈ 1.1–1.3× at K=4, A~3** (measured U(4)=2.25–2.64), not a ~2× K multiplier. Also note the
+> 200 GB/s → 54–127**. Spec-decode amortization must be read as
+> **A/U(K) ≈ 1.1–1.3× at K=4, A~3** (measured U(4)=2.25–2.64 OLMoE; GLM-4.5-Air measured
+> U(4)=2.60–2.71 supersedes), not a ~2× K multiplier. Also note the
 > compute-clock ↔ area trade: at the measured 46.5 MHz, sustaining 100 GB/s of dequant consumption
 > would need ~4,300 lanes (not feasible on KU3P; ~1,000 at 200 MHz-class, ~200 at ASIC 1 GHz+) — a
 > higher clock buys a smaller/cheaper die, **not** higher tok/s (memory stays the wall past
 > saturation).
+>
+> **Updated 2026-07:** the **rung-③ primary design point pivoted to FULL RESIDENCY** — 512 GB
+> LPDDR5X (~1.1 TB/s) holds the whole ~467 GB checkpoint, effective band **~76–95 tok/s [EST]**
+> (only the accept rate r unmeasured) — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
+> streaming menu above — including the 54–127 point — now applies to **rung ① (this demo box: NVMe
+> streaming IS how it works), the hybrid upside SKU, and >512 GB checkpoints**, not the rung-③
+> primary SKU; h matters only for the hybrid-SKU decision (residency ⇒ h=1 by construction). U(K)
+> is now **GLM-family measured** — GLM-4.5-Air traced via MoE-gate hooks
+> ([`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2nd measurement): U(4)=2.60–2.71, U(8)=4.19–4.41 —
+> superseding the OLMoE first-pass (kept above as history).
 
 ## Cost / what a real demo needs
 

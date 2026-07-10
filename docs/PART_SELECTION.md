@@ -93,8 +93,10 @@ KU3P; a product board wanting ≥30% headroom points at KU5P-class or config tri
   a 64-bit channel = 4× x16 devices. Length-matched, impedance-controlled routing.
 
 *(This is the tier — DDR4-many-channels — that rung ② may swap for DDR5-fewer-channels or
-HBM to reach ~15–40 tok/s (measured-proxy design points: ~13–47, up to ~54–127 with a 225 GB
-cache — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)); same bit-exact Q4_K RTL, only the bandwidth
+HBM to reach ~15–40 tok/s (measured-proxy design points: ~13–47 —
+[`H_MEASUREMENT.md`](H_MEASUREMENT.md); the ~54–127 @225 GB-cache band now belongs to the
+rung-③ hybrid SKU, the rung-③ primary being full residency at ~76–95 tok/s [EST] —
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); same bit-exact Q4_K RTL, only the bandwidth
 changes.)*
 
 ## 3. NVMe — the model store

@@ -32,9 +32,14 @@ The one fact that shapes everything: **the workload is NVMe/PCIe-bandwidth-bound
 model lives on the NVMe SSD; each token streams its active experts through a DDR5 cache into a mostly-idle
 Q4_K die. Throughput ≈ `NVMe_BW / [(1−h)·footprint] · K` — with the measured correction that **K (the
 spec multiplier) must be read as A/U(K)**: the K+1 verify rows fetch the *union* of their experts
-(measured U(4)=2.25–2.64), so the amortization is ~1.1–1.3× at K=4 (A≈3), not ~2×; measured-proxy h/U
+(measured U(4)=2.25–2.64 on the OLMoE proxy; superseded 2026-07 by the GLM-family measurement,
+GLM-4.5-Air: U(4)=2.60–2.71), so the amortization is ~1.1–1.3× at K=4 (A≈3), not ~2×; measured h/U
 in [`H_MEASUREMENT.md`](H_MEASUREMENT.md) (see also
-[`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).
+[`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)). *(Updated 2026-07: this NVMe-streaming
+operating point is the **rung-①** (this demo) / hybrid-upside-SKU / >512 GB regime; the **rung-③
+primary design point is now FULL RESIDENCY** — the whole ~467 GB checkpoint resident in 512 GB
+LPDDR5X (~1.1 TB/s), h=1 by construction, no per-token NVMe streaming, effective band ~76–95 tok/s
+[EST] — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 
 ## 0. Physical / logical stack
 
@@ -65,8 +70,10 @@ in [`H_MEASUREMENT.md`](H_MEASUREMENT.md) (see also
 - **DDR is rung-dependent** — the diagram's DDR5 working store is the *funded* rung-② point, **not THE spec**:
   the near-term prove-it FPGA runs DDR4 (~4 ch, ~100 GB/s), the funded custom board runs DDR5 multi-ch /
   HBM (~300–600 GB/s); see the hardware ladder ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). NVMe (the
-  ~467 GB model store) is the same on every rung — performance is set by memory bandwidth, i.e. by which
-  silicon the budget buys.
+  ~467 GB model store) is the same on rungs ①② — performance is set by memory bandwidth, i.e. by which
+  silicon the budget buys. *(Updated 2026-07: on the **rung-③ primary full-residency SKU** the whole
+  checkpoint is LPDDR5X-resident (512 GB) and cold storage is one commodity M.2 NVMe boot drive
+  (boot-load ~70 s), not a per-token stream — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 
 ## 1. Boot — execution conditions & resident-set load (NVMe → DDR5)
 
@@ -221,13 +228,18 @@ fp32 weight` MAC, fp32-accumulated in K, rounded to bf16; scores/probs/softmax s
 - **Speculative decode (`spec_batched_top`):** the MTP head drafts K tokens; the main model
   **verifies all K+1 positions in ONE PE_M=K+1 weight-load** (NVMe traffic ÷ up to K+1 on the
   shared-weight streams; measured caveat — the routed-expert amortization is only A/U(K) ≈ 1.1–1.3×
-  at K=4, since the verify rows union their experts, measured U(4)=2.25–2.64:
+  at K=4, since the verify rows union their experts, measured U(4)=2.25–2.64 on the OLMoE proxy —
+  superseded 2026-07 by the GLM-family measurement, GLM-4.5-Air: U(4)=2.60–2.71:
   [`H_MEASUREMENT.md`](H_MEASUREMENT.md)), and the
   committed stream is proven **== greedy** (spec==greedy safety — a real lossless-speculation
   property, but **DUT-vs-DUT self-consistency**: the greedy reference is itself a `glm_model_q4k`,
   **not** a numeric golden vs ggml/llama.cpp). `spec_chain_top` chains the MTP steps.
-  `spec_decode_top` runs in `make unittests` (**19/19**); the larger K>1 loops
-  (`spec_batched_top` / `spec_chain_top`) run via `make spec-slow` (minutes-long).
+  `spec_decode_top` runs in `make unittests` (**18/18**); the larger K>1 loops
+  (`spec_batched_top` / `spec_chain_top`) run via `make spec-slow` (minutes-long). *(Updated
+  2026-07: **adaptive draft depth landed** — `spec_decode_seq` `ADAPT` param (default 0,
+  yosys sequential-equivalence proven unchanged) + the new `spec_depth_adapt` policy module,
+  K adaptive in [1..5], output-invariant by construction (spec==greedy for ANY depth schedule);
+  gate `make spec-adapt`.)*
 
 ## 5. Clocking / CDC
 Host/USB requests cross into the compute domain through `cdc_async_fifo` (+ `reset_sync` per
@@ -264,7 +276,15 @@ the Q4_K analogue is a structural sign-off, not a sim — see §8.)*
   measured-proxy h/U inputs from [`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE trace]: 1–2 NVMe, no
   multipliers ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64-ch) → 25–47;
   225 GB + 200 GB/s → 54–127 — the "100 tok/s" design point. bandwidth-h: 20% pool cached (~90 GB
-  GLM-scale) → h=0.36–0.60; 50% (~225 GB) → 0.72–0.88; a GLM rerun is open.)* **This is the product: a
+  GLM-scale) → h=0.36–0.60; 50% (~225 GB) → 0.72–0.88.)* *(Updated 2026-07: the **rung-③ primary
+  design point is now FULL RESIDENCY** — 512 GB LPDDR5X (~1.1 TB/s) holds the whole ~467 GB
+  checkpoint, effective band **~76–95 tok/s [EST]** (only the accept rate r unmeasured) — see
+  [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); "54–127" is no longer the rung-③ design point —
+  the streaming menu above stays true for rung ①, the hybrid upside SKU, and >512 GB checkpoints.
+  U(K) is now GLM-family measured (GLM-4.5-Air, [`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2nd
+  measurement: U(4)=2.60–2.71, U(8)=4.19–4.41), superseding the OLMoE first-pass; h stays
+  proxy-measured but is no longer product-deciding — residency ⇒ h=1 by construction, h-curves
+  matter only for the hybrid-SKU decision.)* **This is the product: a
   fully offline / air-gapped local box** that
   runs the whole 753B-param frontier model with the ethernet unplugged. The capability it unlocks is frontier AI where the cloud can't
   reach — SCIFs, isolated OT / critical-infra, field/edge, or anywhere a vendor connection is itself the
@@ -302,7 +322,7 @@ batching, striping) exists to shrink that second term.
 | Q4_K GEMM | `glm_matmul_q4k` + `q4k.vh` primitives | **PROVEN — bit-exact vs ggml `tools/q4k_ref.py`**: `glm_matmul_q4k` 160/160, `q4k_prim` 18/18 (`make q4k`); mixed-type Q6_K/Q8_0/F16 consumers bit-exact to the same reference (`make mixedtype`) |
 | head | `mtp_head_q4k`, `sampler`, LM-head `glm_matmul_pipe` | LM head + argmax covered within the assembled `make model-q4k` golden (1155); also exercised via spec==greedy |
 | memory | `flash_xbar`, `ddr5_xbar`, `expert_cache_pf`, `weight_loader_q4k`, `boot_loader`, `weight_decomp` | FORMAL — BMC + unbounded k-induction (7 controllers + ECC ring); `weight_loader_q4k` bit-exact vs `q4k_ref.py` |
-| spec decode | `spec_decode_top`, `spec_batched_top`, `spec_chain_top`, `spec_decode_seq` | spec==greedy (DUT-vs-DUT): `spec_decode_top` 19/19 (`make unittests`); K>1 loops via `make spec-slow`; `spec_decode_seq` BMC + k-induction |
+| spec decode | `spec_decode_top`, `spec_batched_top`, `spec_chain_top`, `spec_decode_seq`, `spec_depth_adapt` | spec==greedy (DUT-vs-DUT): `spec_decode_top` 18/18 (`make unittests`); K>1 loops via `make spec-slow`; `spec_decode_seq` BMC + k-induction; adaptive depth (`ADAPT` + `spec_depth_adapt`, K∈[1..5], output-invariant) via `make spec-adapt` |
 
 ## 9. Honest scope
 This is the flow of the **committed slice** (every operator + ratio faithful) plus the

@@ -59,7 +59,15 @@ scale, robustly, and ship it.*
 > DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64-ch) → 25–47; 225 GB + 200 GB/s → 54–127 — the
 > "100 tok/s" design point. Spec-decode amortization must be read as A/U(K) ≈ 1.1–1.3× at K=4
 > (measured U(4)=2.25–2.64), not ~2×. All still [EST]; h/U are proxy measurements — see also
-> [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).)* The design is
+> [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).)* *(Updated 2026-07: the **rung-③ primary
+> design point is now FULL RESIDENCY** — 512 GB LPDDR5X (~1.1 TB/s) holds the whole ~467 GB
+> checkpoint, h=1 by construction, effective band **~76–95 tok/s [EST]** (the one remaining unknown
+> is the accept rate r, unmeasured) — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
+> streaming design-point menu above stays true and active for rung ①, the hybrid upside SKU, and
+> \>512 GB checkpoints — but "54–127" is no longer the rung-③ design point. U(K) is now
+> **GLM-family measured** — GLM-4.5-Air traced via MoE-gate hooks
+> ([`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2nd measurement): U(4)=2.60–2.71, U(8)=4.19–4.41 —
+> superseding the OLMoE first-pass proxy values.)* The design is
 > deliberately **NVMe/PCIe-bandwidth-bound to be cheap** (an NVMe SSD holds the whole model; **fast DDR** —
 > DDR4 on rung ①, DDR5 or HBM on rung ② — caches the hot working set). Any **aggregate / datacenter-batch**
 > numbers in these docs (B≈256, per-user ~0.14 tok/s) are a **secondary analysis of a different,
@@ -180,12 +188,17 @@ thing the slice and the spec==greedy self-consistency cannot.
     N steps. N_STEPS=1 is byte-identical to the single-step top.
   - **Real draft chaining** (`spec_chain_top`) — the MTP head runs recurrently on its chain hidden-state
     `h_mtp` to mint K drafts, then a PE_M=K+1 batched-verify commits the accepted prefix; committed==greedy
-    (`make spec-slow`).
+    (`make spec-slow`). *(Updated 2026-07: **adaptive draft depth adopted and RTL-landed** —
+    `spec_decode_seq` gains an `ADAPT` param (default 0; yosys sequential-equivalence PROVEN
+    unchanged for existing consumers) + the new `spec_depth_adapt` saturating-streak policy module,
+    K adaptive in [1..5], output-invariant by construction (spec==greedy for ANY depth schedule);
+    gate: `make spec-adapt`.)*
   - **Remains (beyond RTL):** a **RESIDENT DENSE DRAFT model** for higher accept rate (K_eff 3–5 vs
     self-draft's ~1.7–2.2 — needs a trained small draft's weights; measured caveat: the *bandwidth*
     amortization of spec decode is A/U(K) ≈ 1.1–1.3× at K=4, A≈3 — the K+1 verify rows union their
-    experts, measured U(4)=2.25–2.64 — see [`H_MEASUREMENT.md`](H_MEASUREMENT.md)); and the standing
-    P1.1 fidelity chain.
+    experts, measured U(4)=2.25–2.64 on the OLMoE proxy, superseded 2026-07 by the GLM-family
+    measurement (GLM-4.5-Air: U(4)=2.60–2.71) — see [`H_MEASUREMENT.md`](H_MEASUREMENT.md)); and the
+    standing P1.1 fidelity chain.
 
 ### P2 — Productize the RTL (robustness)
 - P2.1 ECC on DDR5 + NVMe read path; error detection / correction / retry / recovery paths. *(Built:

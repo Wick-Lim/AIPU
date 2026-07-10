@@ -37,7 +37,7 @@ or llama.cpp in either case. Everything else is scoped below.
 | `glm_matmul_q4k` (block-dequant → fp32 MAC → bf16) | PE_M=2, PE_N=2, **KMAX=1024 → NSB=4 super-blocks** (a faithful slice, **not** real K=6144) | **160/160 — bit-exact vs ggml Q4_K** *(the one true bit-exact datapath result)* |
 | `swiglu_expert_q4k` (gate/up/down + silu) | HIDDEN=8, INTER=8, KMAX=256 (NSB=1) | **240/240 — functional** (self-labeled; **not** bit-exact) |
 | `moe_router_q4k` (gate GEMV → sigmoid → top-K → renorm) | HIDDEN=8, **N_EXPERT=8, TOPK=2** (**not** the real 256/top-8) | **40/40 — renorm invariants** (**not** a numeric golden) |
-| Assembled `glm_model_q4k` forward pass | committed-slice full forward (`make model-q4k`) + the spec loops | **`make model-q4k` 1155/1155 — bit-exact vs the assembled numpy golden** `tools/glm_model_q4k_ref.py` (logits+argmax+h_state; + `model-q4k-acthw` 1155/1155, ACT_HW result-invariant); **`spec_decode_top` 19/19 — spec==greedy** *(DUT-vs-DUT self-consistency)*; larger `spec_batched_top` / `spec_chain_top` via `make spec-slow` |
+| Assembled `glm_model_q4k` forward pass | committed-slice full forward (`make model-q4k`) + the spec loops | **`make model-q4k` 1155/1155 — bit-exact vs the assembled numpy golden** `tools/glm_model_q4k_ref.py` (logits+argmax+h_state; + `model-q4k-acthw` 1155/1155, ACT_HW result-invariant); **`spec_decode_top` 18/18 — spec==greedy** *(DUT-vs-DUT self-consistency)*; larger `spec_batched_top` / `spec_chain_top` via `make spec-slow` |
 
 The Q4_K GEMM does prove the **multi-super-block block-scaled accumulate** mechanism (NSB=4 super-blocks
 of 256 weights each) bit-exact — just not at the real projection K=6144 (24 super-blocks).
@@ -158,7 +158,8 @@ bandwidth the silicon can feed it changes:
 - **~5–8 tok/s [EST]** on the near-term prove-it FPGA (rung ①) — slow but real + Q4_K bit-exact to the
   ggml reference.
 - **~15–40 tok/s [EST]** on the funded custom board (rung ②) — the interactive product.
-- **~40+ tok/s [EST]** at volume (rung ③ SoC/ASIC).
+- **~76–95 tok/s [EST]** at volume (rung ③ SoC/ASIC — updated 2026-07: the primary rung-③ design
+  point is now **512 GB LPDDR5X full residency**, see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).
 
 The full model is the ~467 GB `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` checkpoint (753B params, ~40B
 active/token). All product tok/s figures are **[EST]** — roofline-modeled. The **FPGA fit is since
@@ -168,12 +169,19 @@ round re-proven bit-exact on the 1155-test assembled golden — see [`../fpga/RE
 the old Gowin/nextpnr scaffold is removed), but **board bring-up is not done**, so absolute product
 tok/s stays [EST].
 
-> **UPDATE — measured-proxy design points ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE proxy; GLM
-> rerun open):** with measured h/U inputs the roofline menu reads NVMe 1–2 (no multipliers)
+> **UPDATE — measured-proxy design points ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE proxy
+> first pass):** with measured h/U inputs the roofline menu reads NVMe 1–2 (no multipliers)
 > ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64ch) → 25–47;
 > 225 GB + 200 GB/s → 54–127 (all still **[EST]**, MEASURED-PROXY inputs). The spec-decode
 > multiplier in the roofline must be read as **A/U(K) ≈ 1.1–1.3× at K=4** (measured union factor
 > U(4)=2.25–2.64), **not** a full ×K. See also [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).
+>
+> *(Updated 2026-07: U(K) is since **GLM-family MEASURED** — GLM-4.5-Air traced via MoE-gate hooks
+> on an H100, U(4)=2.60–2.71 — superseding the OLMoE-proxy U above (OLMoE stays as the first-pass
+> history), and the primary rung-③ design point pivoted to **512 GB LPDDR5X full residency,
+> ~76–95 tok/s [EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the streaming rows above
+> (ONFI 64ch / the 225 GB-cache 54–127 band) now apply to rung ① / the hybrid-upside SKU (h ≥ 0.75)
+> / >512 GB checkpoints, not the primary SKU.)*
 
 ---
 
@@ -190,7 +198,7 @@ Q4_K scale confidence today rests on three legs, scoped to what is actually chec
    dims. **Real-dims Q4_K sweep is PENDING** (OPEN item 2).
 3. **Assembled forward pass** — **bit-exact vs the assembled numpy golden** at the committed slice
    (`make model-q4k` 1155/1155 + `model-q4k-acthw` 1155/1155 — item 1, since closed), plus
-   **spec==greedy** self-consistency (`spec_decode_top` 19/19; larger loops via `make spec-slow`).
+   **spec==greedy** self-consistency (`spec_decode_top` 18/18; larger loops via `make spec-slow`).
    Bit-exactness to the real GGUF bytes / llama.cpp remains open.
 
 **Honestly capped.** Full-config *functional* sim remains infeasible (LM head ~2.38e8 K-beats/token);

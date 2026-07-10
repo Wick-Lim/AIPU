@@ -152,10 +152,10 @@ persistent stores in §2.1. All are on-die → **MBIST-testable** regardless.
 | dsa_indexer.v:162/170/196 | `qbuf [0:IDX_DIM-1]`, `score_mem [0:S_MAX-1]`, `acc_l [0:LANES-1]` | 16/32/32 × depth | Query vector, per-key scores, per-lane dot accum | **SECDED** | Activation/score data. |
 | dsa_indexer.v:197/198/212 | `dim_issue_l`,`dim_done_l [0:LANES-1]`, `tagq [0:TQD-1]` | `DIW+1`/`LW` × depth | Per-lane term counters + tag queue | **PARITY+MBIST** | Counters / tag queue (control). |
 | glm_act.v:330–455 | per-lane stage regs (`s1_r,s2a_*,s2_pr,s3_d,s4_s,n1_r,n2a_p,n2_pr,n3_d,n4_s,x1..x5,nx1..`) | 32 × `LANES` each | SiLU/sigmoid Horner **activation** pipeline stages | **SECDED**-class (transient) | Live activations in a feed-forward poly pipeline; single-pass, flushes every few cycles. SECDED-class data but lowest priority; MBIST-covered as flops. Listed as one grouped row (see §5). |
-| spec_chain_top.v:167 | `h_chain [0:DRAFT_K]` | `MODEL_DIM*16` × DRAFT_K+1 | Draft-chain **hidden states** `h_mtp` | **SECDED** | Model activation carried across draft steps. |
-| spec_chain_top.v:168/169 | `draft_id [0:DRAFT_K-1]`, `truth_id [0:DRAFT_K]` | `TOKW` × depth | Draft / verify **token ids** | **PARITY+MBIST** | Token-index queues (control). |
-| spec_decode_top.v:267 | `emb_buf [0:MODEL_DIM-1]` | 16 × MODEL_DIM | Embedding vector buffer | **SECDED** | Activation. |
-| spec_decode_seq.v:131/233 | `pending_draft [0:DRAFT_K-1]`, `obuf [0:DRAFT_K]` | `TOKW` × depth | Pending / committed **token id** queues | **PARITY+MBIST** | Token-index control queues. |
+| spec_chain_top.v:346 | `h_chain [0:DRAFT_K]` | `MODEL_DIM*16` × DRAFT_K+1 | Draft-chain **hidden states** `h_mtp` | **SECDED** | Model activation carried across draft steps. |
+| spec_chain_top.v:347/348 | `draft_id [0:DRAFT_K-1]`, `truth_id [0:DRAFT_K]` | `TOKW` × depth | Draft / verify **token ids** | **PARITY+MBIST** | Token-index queues (control). |
+| spec_decode_top.v:285 | `emb_buf [0:MODEL_DIM-1]` | 16 × MODEL_DIM | Embedding vector buffer | **SECDED** | Activation. |
+| spec_decode_seq.v:162/264 | `pending_draft [0:DRAFT_K-1]`, `obuf [0:DRAFT_K]` | `TOKW` × depth | Pending / committed **token id** queues | **PARITY+MBIST** | Token-index control queues. |
 | swiglu_expert.v:164/165 | `xbuf [0:HIDDEN-1]`, `hbuf [0:INTER-1]` | 16 × depth | Token x + SiLU·up activation (bf16 variant) | **SECDED** | Activation scratch. |
 | moe_router.v:138/210/243 | `xbuf`,`gate_f`,`win_gate` | 16/32/32 × depth | Router input + gate values (bf16 variant) | **SECDED** | Activation/gate data. |
 | moe_router.v:242 | `win_idx [0:TOPK-1]` | `IDXW` × TOPK | Winning expert indices | **PARITY+MBIST** | Index/control. |
@@ -283,6 +283,11 @@ few cycles. A flip is transient and overwritten. Not ECC/MBIST targets.
 - `tpu_top.v`/`tpu_soc.v`/`tpu_axi.v` `*_mem` names — pipeline-stage / MMIO
   register **suffixes** (`opcode_mem`, `dst_mem`, `result_head`, `REG_*`), not
   memory arrays.
+- `spec_depth_adapt.v` — **new module (2026-07, the adaptive spec-chain depth
+  policy)**: holds **no** `reg`-array memories — only the scalar `streak`
+  saturating counter and the `k_cur` output register. Adds no C6/C7 targets.
+  (The `spec_decode_seq` `ADAPT`/`k_cur`/`pass_*` additions are likewise
+  scalar ports/regs; its token-id queues are already classified in §2.2.)
 
 **Excluded — off-die (see §2.4):** external DDR5 / NVMe payloads modeled by the
 testbench as latency memories; not on our die.

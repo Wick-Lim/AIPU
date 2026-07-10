@@ -28,6 +28,14 @@ lever ladder, and what is built vs. staged.
 
 ## 1. The one fact that governs power: it's mostly storage read (NVMe)
 
+> **(Updated 2026-07 — rung-③ design-point pivot, [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)**
+> The primary rung-③ design point is now **full residency**: 512 GB LPDDR5X (16×32 GB, 1024-bit
+> on-package, ~1.1 TB/s) holds the WHOLE ~467 GB checkpoint — **h=1 by construction**, cold storage is
+> one commodity M.2 NVMe used only for the ~70 s boot-load, box ~40–60 W. On that box the dominant
+> per-token energy term moves from the NVMe read to the (much cheaper/bit) LPDDR5X read. The
+> NVMe-streaming energy analysis below stays TRUE and ACTIVE for the **rung-① FPGA demo, the hybrid
+> upside SKU, and >512 GB checkpoints** — it is re-scoped, not deleted.
+
 `J/token ≈ bytes_moved × energy/bit`. Two anchors decide everything:
 
 - **Storage-read energy per bit ≫ DRAM/bit.** The NVMe/PCIe read path (NAND cell + SSD
@@ -44,7 +52,7 @@ So per-token energy splits roughly (Q4_K, **~25 GB active bytes/token** = ~40B a
 
 | bucket | bytes/token | why | can we cut it? |
 |---|---|---|---|
-| **NVMe routed-expert bytes** | **~14 GB (the wall)** | top-8/256 experts/MoE-layer **change every token** and are streamed from the NVMe SSD (467 GB ≫ any box's DDR — can't all reside) | **only** by moving fewer bytes or moving them less often |
+| **NVMe routed-expert bytes** | **~14 GB (the wall)** | top-8/256 experts/MoE-layer **change every token** and are streamed from the NVMe SSD on the streaming rungs (467 GB ≫ those rungs' DDR — can't all reside there; the rung-③ residency box holds all 467 GB in 512 GB LPDDR5X, so this row becomes a DRAM read — see the pivot note above) | **only** by moving fewer bytes or moving them less often |
 | DDR / cache / KV | **~9 GB hot-set** + latent-KV | attention/dense/shared working set that *can* cache in fast DDR (DDR4 rung-① / DDR5·HBM rung-②) | HBM (energy/bit), smaller footprint |
 | **compute die** | ~80 GFLOP/token (bf16) | on a die that is mostly stalled on the expert stream | DVFS, gating, die-shrink (all done/free — see §4) |
 
@@ -68,12 +76,18 @@ analysis but not this personal box, which runs B=1). Everything below is ranked 
 > ~TB/s move the ~14 GB expert bytes far cheaper/bit, for **lower $/seat + lower power once the NRE
 > amortizes over volume**. ASIC here is **not** a compute play (compute is already ~free, §4) — it is
 > the **volume power/cost win**, sequenced *after* the FPGA rungs prove PMF, not "out of scope."
+> *(2026-07 pivot: the rung-③ **primary** SKU is now the full-residency 512 GB LPDDR5X box (~40–60 W,
+> [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the near-memory/HBM path stays the endgame for the
+> hybrid/streaming SKU and >512 GB checkpoints.)*
 
 ## 2. The irreducible floor
 
-The active experts **must** be re-read from the NVMe SSD every token (the model is fixed; the ~467 GB
-routed-expert set can't reside in a single box's DDR — tens of GB, rung-dependent, DDR4 on the prove-it
-rung and DDR5/HBM on the funded board; [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). That sets a hard
+The active experts **must** be re-read from the NVMe SSD every token *on the streaming rungs* (the
+model is fixed; the ~467 GB routed-expert set can't reside in those rungs' DDR — tens of GB,
+rung-dependent, DDR4 on the prove-it rung and DDR5/HBM on the funded board;
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). *(2026-07: on the primary rung-③ **residency** box the
+whole 467 GB resides in 512 GB LPDDR5X — h=1 by construction — so the floor there is the per-token
+LPDDR5X re-read, far cheaper/bit; [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)* That sets a hard
 J/token floor. The *only* output-preserving ways under it are: **(a) fewer fetches per token** (amortize
 one weight-load across K tokens via spec decode — the single-user box's lever; the across-**B-users**
 batch variant is the non-target datacenter regime, kept for analysis, not this product), **(b) more of
@@ -81,7 +95,9 @@ the hot working set resident** (bigger/faster DDR → higher hit-rate → fewer 
 lever — literally climbing the ladder: more DDR channels / HBM = a bigger chip = a higher rung,
 [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md); now proxy-MEASURED — [`H_MEASUREMENT.md`](H_MEASUREMENT.md),
 OLMoE trace: residency-only bandwidth-h ≈ 0.36–0.60 with ~20 % of the expert pool cached (~90 GB at GLM
-scale), 0.72–0.88 at ~50 % (~225 GB), LRU ~0 below a 10 % cache). Compute tricks cannot touch the floor.
+scale), 0.72–0.88 at ~50 % (~225 GB), LRU ~0 below a 10 % cache — h-curves that, post-pivot, matter only
+for the **hybrid-SKU decision**: the primary rung-③ box is full-residency h=1). Compute tricks cannot
+touch the floor.
 
 > **What about lossless weight compression?** On the **prior FP8 track** the trained E4M3 weight *bytes*
 > had entropy well under 8 bits/symbol (~5–6.5), so a streaming lossless decompressor (`weight_decomp`)
@@ -105,7 +121,7 @@ trick can touch.
 | lever | mechanism | effect | status |
 |---|---|---|---|
 | `flash_xbar` ×N + deep queue | N× storage BW (PCIe lanes / multi-NVMe) + latency-hide | BW, not J/token | ✅ built (latency-hide + N× read fan-out); fabric BMC-proven |
-| MTP/spec **K=2** | verify 2 tokens per weight-load (K_eff≈1.7) | **÷~1.7** on the NVMe term | ✅ built, spec==greedy exact (`spec_decode_top` 19/19) |
+| MTP/spec **K=2** | verify 2 tokens per weight-load (K_eff≈1.7) | **÷~1.7** on the NVMe term | ✅ built, spec==greedy exact (`spec_decode_top` 18/18) |
 | grouped MoE **union-skip** batch **[non-target: B>1 multi-user datacenter regime; the box runs B=1]** | B rows share 1 expert fetch (÷ up to B) | ↓ at B>1 | ✅ built, output-preserving |
 | **DVFS freq** (`clk_throttle`) | run die f/div in the ~4–5× stall slack (§4) | **peak-power only** (not J/token) | ✅ **RTL built, BMC-proven + byte-identical** — the eco/thermal knob |
 | **DVFS voltage** | lower supply at the reduced f | −~15 % total **energy** | vendor/physical (the J/token half) |
@@ -113,8 +129,10 @@ trick can touch.
 | ↳ raise K_eff 1.7 → **3–5** | resident ~1–3 B dense draft (vs the chained MTP self-draft) proposes K=4–8 with higher acceptance | approaches the floor | ⏳ **draft-quality, not RTL** — needs a real 1–3 B draft-model artifact ([`ULTRA_PERF.md`](ULTRA_PERF.md) #4) |
 | ~~`weight_decomp` lossless~~ | ~~1.34× fewer NVMe bytes~~ | **prior-FP8 only** | 🅵 FP8 track (branch `fp8`); Q4_K is already 4-bit → little lossless headroom (§2) |
 
-> **Measured U(K) cap on the ÷K rows ([`H_MEASUREMENT.md`](H_MEASUREMENT.md), OLMoE proxy; GLM rerun
-> open):** the K spec positions' expert *union* grows with K — U(2)=1.51–1.65, U(4)=2.25–2.64 — so on
+> **Measured U(K) cap on the ÷K rows ([`H_MEASUREMENT.md`](H_MEASUREMENT.md); OLMoE first-pass, now
+> superseded by the **GLM-4.5-Air measurement** — U(2)=1.60–1.64, U(4)=2.60–2.71, U(6)=3.46–3.62,
+> U(8)=4.19–4.41, EOR 0.36–0.39, workload variance ±0.05):** the K spec positions' expert *union*
+> grows with K (OLMoE first-pass: U(2)=1.51–1.65, U(4)=2.25–2.64) — so on
 > the routed-expert NVMe term the realized amortization is **A/U(K) ≈ 1.1–1.3× at K=4 (A≈3)**, not
 > ÷K_eff or ÷(K+1). Raising K_eff without beating U(K) buys less than the ideal division suggests
 > (see also [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).
@@ -127,7 +145,7 @@ absolute J/token stays [EST] until the vendor flow + a real board give watts.
 ### What is measured vs modeled (firming the [EST])
 Be clear which inputs are which:
 - **Measured/verified relative factors (Q4_K):** MTP K=2 **spec==greedy exact** (`spec_decode_top`
-  19/19 — DUT-vs-DUT self-consistency, the "greedy golden" is itself a `glm_model_q4k`) → K_eff≈1.7
+  18/18 — DUT-vs-DUT self-consistency, the "greedy golden" is itself a `glm_model_q4k`) → K_eff≈1.7
   (self-draft, α decays past K=2 because GLM ships **one** MTP layer); clock-gating **~73 %** of
   idle-dynamic gated (`clk_en_ctrl_tb`, a gated-*cycle* fraction); die storage-bound roofline
   ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)).
@@ -203,7 +221,7 @@ verified tokens**, and its **Q4_K hardware exists and is output-preserving**:
 - **Verification:** the full `spec==greedy` sims run via **`make spec-slow`** (`spec_batched_top` +
   `spec_chain_top`, both on `glm_model_q4k` / `mtp_head_q4k`) — the committed CI gate (minutes-long in
   iverilog; not re-run to completion in every session). The K=2 spec==greedy exactness is also
-  covered fast by `spec_decode_top` (19/19). *(The `glm_model_fp8_pem` "ALL 3 PASSED" weight-share
+  covered fast by `spec_decode_top` (18/18). *(The `glm_model_fp8_pem` "ALL 3 PASSED" weight-share
   corroboration was a **prior-FP8** result and is not restated as a Q4_K number.)*
 
 **So the ÷K amortization is done in RTL, in Q4_K.** The only thing between K_eff≈1.7 (built, self-draft
@@ -212,6 +230,16 @@ chain — acceptance decays because GLM ships **one** MTP layer) and K_eff 3–5
 **model-quality / artifact** step, **not** an RTL one. (And note the measured union cap: the realized
 NVMe amortization is **A/U(K) ≈ 1.1–1.3× at K=4** — [`H_MEASUREMENT.md`](H_MEASUREMENT.md) — so higher
 K_eff must also beat U(K).)
+
+*(Updated 2026-07 — **adaptive draft depth is ADOPTED + RTL-landed**, commit 6c5332f: `spec_decode_seq`
+gains an `ADAPT` param (default 0 — yosys sequential-equivalence PROVEN unchanged for existing
+consumers) + a `k_cur` port and `pass_*` taps, driven by the new `src/spec_depth_adapt.v`
+saturating-streak policy — **output-invariant by construction** (spec==greedy for ANY depth schedule),
+so it stays on the output-preserving floor. GLM-U K-sweep: at r=0.9 tok/s plateaus at **K=4–5** (K>5
+adds nothing), at r=0.8 the optimum is K=2–3 → adaptive range **K∈[1..5]**. Gates: `spec_depth_adapt`
+31,522; `spec_decode_seq`(K>1) 3,702 (K 1/2/3/4/6/8); K=1 exact 621; `spec_chain_top` 4/4 incl. a new
+DRAFT_K=4 engine; `spec_batched_top` 8/8; `spec_decode_top` 18/18; new `make spec-adapt` Makefile gate.
+The remaining unknown is the accept rate r — vLLM MTP sweep pending.)*
 
 ## 5. Already-built power wins (compute + idle)
 
@@ -278,7 +306,7 @@ ever moving the decoded token relative to the reference.**
 ## Status
 - **Energy budget + DVFS budget: characterized** (this doc; DVFS mechanism carried from the prior-FP8
   perf harness, real-scale [EST]; Q4_K perf re-run PENDING).
-- **Built (Q4_K):** `flash_xbar` (BMC-proven fabric), MTP K=2 (`spec_decode_top` 19/19), union-skip,
+- **Built (Q4_K):** `flash_xbar` (BMC-proven fabric), MTP K=2 (`spec_decode_top` 18/18), union-skip,
   clock-gating ~73 % (`clk_en_ctrl`), die-shrink L0/L1 (`swiglu_expert_q4k`), the spec high-K ÷K-weight-
   load hardware (`spec_batched_top` / `spec_chain_top`, spec==greedy via `make spec-slow`), **and the
   DVFS/eco frequency prescaler** (`clk_throttle` → `clk_en_ctrl.throttle`, f/div peak-power cap,

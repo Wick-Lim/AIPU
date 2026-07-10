@@ -33,6 +33,8 @@
 > **제품 속도는 하드웨어 사다리로 단계화**된다(`docs/HARDWARE_LADDER.md`; 성능 = 메모리 대역폭 = 칩
 > IO/PHY = 자금): **① 저가 FPGA(KU3P급)+DDR4 ~5–8 tok/s [EST](지금, 동작 증명) · ② 시드 후
 > 커스텀보드(DDR5/HBM) ~15–40 [EST] · ③ 볼륨 ASIC ~40+ [EST]** (모두 B=1 싱글유저, 동일 bit-exact RTL).
+> *(갱신 2026-07: rung-③ 1차 설계점은 이제 **512GB LPDDR5X 완전 상주** — 실효 대역 **~76–95 tok/s
+> [EST]**; `docs/R3_APPLIANCE_SPEC.md` 참조.)*
 > 이전의 평평한 ~25–40은 ②(자금-조달-후) 수치다. **main은 정확히 rung-①(FPGA 동작증명) 하나만 개발한다** —
 > rung-②③은 문서화된 로드맵이지 지금 main의 코드가 아니다. 예전 5-스테이지 스칼라 'TPU v2.0' 코어는
 > 저장소에서 **제거**됐다(git 히스토리 참조). 아래 완료 목록의 **배치 멀티시퀀스 트랙**
@@ -223,6 +225,7 @@ B6는 B7보다 먼저 · C1+C2가 C6/C7 게이트.
    no golden). *(마이너: 해당 파일과 `configs/full_glm52.vh`에 `mla_attn_fp8`/`glm_model_fp8` stale 주석 잔존
    — 코드는 `glm_model_q4k`를 인스턴스화.)*
 9. **문서 tok/s 사다리는 전부 [EST]** — 저가 FPGA ~5–8 / 커스텀보드 ~15–40 / 볼륨 ASIC ~40+
+   *(갱신 2026-07: rung-③ 1차는 완전 상주 ~76–95 [EST] — `docs/R3_APPLIANCE_SPEC.md`)*
    (`docs/HARDWARE_LADDER.md`). 실 753B 라우팅 트레이스 + 실측 NVMe/PCIe 대역폭 전까지 측정값 아님.
 10. **"모든 dim은 param bump" 과소평가** — `mla_attn_q4k` scratch를 S_MAX(1M)로 사이징 → SWIN 디커플
     필요(B7). RTL default(`S_MAX=8` 등)는 slice 값.

@@ -79,7 +79,9 @@ PHY** ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), so the absolute tok/s scales
 levers below move the *other* terms. **Measured correction ([`H_MEASUREMENT.md`](H_MEASUREMENT.md),
 OLMoE proxy):** the spec multiplier `K` must be read as **A/U(K)** — the K-position expert *union* grows
 with K (U(2)=1.51–1.65, U(4)=2.25–2.64), so spec-chain amortization is ~**1.1–1.3× at K=4 (A≈3)**, not
-×K. Only three classes of idea move this wall:
+×K. *(Updated 2026-07: U(K) is now **GLM-family measured** — GLM-4.5-Air MoE-gate trace on Modal H100:
+U(2)=1.60–1.64, U(4)=2.60–2.71, U(6)=3.46–3.62, U(8)=4.19–4.41, EOR 0.36–0.39 — superseding the OLMoE
+first-pass values above; [`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2nd measurement.)* Only three classes of idea move this wall:
 **(i) move fewer expert bytes** (sparsity / dedup / stronger decomp), **(ii) compute at the data** (near-storage),
 **(iii) raise speculative K** (better drafts + batched verify). Everything else is incremental — die-side
 fmax/area work does **not** move the wall (the die is already ~75% idle behind the NVMe/storage read).
@@ -96,7 +98,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 > Caveat that stays: the golden is our **own numpy reimpl, NOT llama.cpp/GGUF**. The batched
 > `PE_M`/union/paged-KV paths were verified **bit-exact on the prior FP8 track (branch `fp8`)**, not on
 > Q4_K. Where a row says a mechanism was "verified bit-exact", that is a **[prior-FP8]** result unless
-> stated otherwise. Also checked on Q4_K end-to-end: `spec_decode_top` **19/19 spec==greedy**
+> stated otherwise. Also checked on Q4_K end-to-end: `spec_decode_top` **18/18 spec==greedy**
 > (DUT-vs-DUT self-consistency, the "greedy golden" is itself a `glm_model_q4k` — a lossless-speculation
 > safety property, **not** a numeric golden), + `spec_batched/chain` via `make spec-slow`.
 
@@ -106,7 +108,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 | 2 | **PE_M batch-widening of the Q4_K wrappers** — ✅ **RTL-present (4/4)** | **All four** wrappers (`swiglu_expert_q4k`/`moe_router_q4k`/`mla_attn_q4k`/`mtp_head_q4k`) carry a `PE_M` param + per-row buffers → one weight fetch serves B rows. Weight-share property (*"PE_M=B issues the same weight beats as PE_M=1 → B rows, 1 fetch stream"*) verified bit-exact **[prior-FP8]** | Silicon enabler for #1; 0 extra dequant muls, 0 extra weight BW. **Q4_K unit TBs: functional/invariant, not a PE_M golden** | **rtl-here** | RTL done | (enabler) |
 | 3 | **Stronger weight decompressor (context-modeled)** — ✅ **RTL-present (`weight_decomp2`)** | Spend idle die on an order-1 context-modeled Huffman decoder in the NVMe→DDR5 refill path | ~1.3–1.5× fewer streamed bytes **[prior-FP8, on the FP8 byte stream]** → **Q4_K applicability PENDING** (Q4_K is *already* 4-bit — an extra entropy coder gains less; re-measure needed) | **rtl-here** | RTL done | ✅? |
 | 4 | **Resident dense draft model → high-K spec decode** | ~1–3B DDR5-resident draft proposes K=4–8; target verifies in one pass | K_eff 1.7→**3–5** → ~2–3× single-user, **bit-exact** | rtl-here* | high | ✅ |
-| 5 | **Batched single-pass verification** — ✅ **RTL-present (`spec_batched_top`/`spec_chain_top`)** | Forward {base + D draft} positions *together* as a PE_M=K+1 batch in ONE weight-load (spec NVMe ÷(K+1)) | The gate for spec NVMe gain, **built**; **spec==greedy holds on Q4_K** (`spec_decode_top` 19/19 DUT-vs-DUT; `make spec-slow`). Remaining lift is draft α (#4) | **rtl-here** | RTL done | ✅ |
+| 5 | **Batched single-pass verification** — ✅ **RTL-present (`spec_batched_top`/`spec_chain_top`)** | Forward {base + D draft} positions *together* as a PE_M=K+1 batch in ONE weight-load (spec NVMe ÷(K+1)) | The gate for spec NVMe gain, **built**; **spec==greedy holds on Q4_K** (`spec_decode_top` 18/18 DUT-vs-DUT; `make spec-slow`). Remaining lift is draft α (#4) | **rtl-here** | RTL done | ✅ |
 | 6 | **Contextual activation sparsity in SwiGLU** | Low-rank predictor → fetch only active W_up cols / W_down rows | ~1.5–3× fewer routed bytes (~14→~5–9 GB); **NOT bit-exact** | **rtl-here** | high | ✅ |
 | 7 | **Dynamic top-k expert pruning (k_eff<8)** | Threshold-mask tiny renormalized gates in the router FSM | ~1.3–1.6× fewer routed bytes; cheapest big lever; **NOT bit-exact** | **rtl-here** | low | ✅ |
 | 8 | **Exact router-driven prefetch + K-token union** | Run cheap router GEMV for K spec tokens → exact union prefetch | Demand-stall 81%→~99% + ~1.5–2× byte-dedup; **bit-exact** | **rtl-here** | med | ✅ |
@@ -114,7 +116,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 | 10 | **IndexShare (DSA index once / 4 layers)** | Cache index-list; skip dsa_indexer on 3 of 4 layers (model-faithful) | At 1M ctx: index-read cut ~4× → keeps long-ctx NVMe-bound | **rtl-here** | med | ✅ |
 | 11 | **Parallel/pipelined DSA indexer** | Replace in-order 1-MAC dot with 128-lane reduction tree | At 1M ctx: ~0.05→~6 tok/s (kills O(S)·7-cyc drain); **bit-exact** | **rtl-here** | high | ✅ |
 | 12 | **MLA weight absorption (attend in 512-dim latent)** | Fold W_uk into q, W_uv into W_o; drop per-key up-projection | Removes ~3.2e5 per-key GEMMs/tok; **bit-exact** (matmul reassoc) | **rtl-here** | high | ✅ |
-| 13 | **Near-storage / computational-storage expert compute** — the **rung-③ endgame** | Move the Q4_K dequant+MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling (breaks the FPGA IO/PHY wall). **No J/tok win** | **rung ③** | high | ✅ |
+| 13 | **Near-storage / computational-storage expert compute** — the **rung-③ endgame** *(2026-07 pivot: now the hybrid/streaming-SKU + >512 GB endgame — the primary rung-③ SKU is full-residency LPDDR5X, see §2a / [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md))* | Move the Q4_K dequant+MACs into the NVMe drive (in-SSD / near-NAND); stream 12 KB act down, 12 KB result up | ~1000× fewer bus bytes/expert → **10×+** ceiling (breaks the FPGA IO/PHY wall). **No J/tok win** | **rung ③** | high | ✅ |
 | 14 | **Batch × MTP multiply** | Run all B streams' MTP drafts in the same grouped pass | ~1.7× *on top of* batch → ~60–85 tok/s aggregate @B≈256 | **rtl-here** | low | (compose) |
 | 15 | **Paged multi-sequence KV cache** — ✅ **RTL-present (`kv_cache_pager` NSEQ windows + `glm_q4k_soc_ms` `kv_mem`)** | Per-seq ring windows + a real per-(layer,seq) KV store; `PER_ROW_SEQ` attention lets each row attend its OWN sequence | Enabler for B>1 *distinct users* in one forward. **Verified per-row bit-exact [prior-FP8] at B=2/4; Q4_K multi-seq assembled golden = NOT-YET (B=1 `glm_model_q4k` golden DONE)** | **rtl-here** | RTL done | (enabler) |
 
@@ -134,6 +136,9 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   breaks the FPGA's IO/PHY bandwidth ceiling**, so it is **not "out of scope forever" but the volume endgame
   (rung ③)**: not now (no volume, no capital), real later for cost-down + performance + power at manufacturing
   volume. It does **not** cut J/token (the sense energy is the cost). The compute core is reusable Q4_K RTL.
+  *(Updated 2026-07: the **primary rung-③ design point has pivoted to full residency** — 512 GB LPDDR5X
+  holds the whole ~467 GB checkpoint, [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) — so near-storage
+  compute now applies to the hybrid/streaming upside SKU and >512 GB checkpoints, not the primary SKU.)*
 - **Aggregate batching (#1/#2/#15)** — ⚠️ **NOT the product; a secondary "what-if" for a datacenter
   deployment of the same silicon.** Reframes batching from the naive "~1.5×" (a B=32, LRU-hit-rate artifact)
   to a **6–8× aggregate** lever via expert-union reuse — the **union-fetch mechanism is present in
@@ -156,13 +161,15 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   per-token energy). **rtl-here**, faithful, stacks multiplicatively.
 - **Higher speculative K (#4 + #5 + #8)** — the faithful single-user lever. #5 batched-verify is **RTL-present**
   (`spec_batched_top`/`spec_chain_top`: PE_M=K+1 verify in one weight-load → NVMe ÷(K+1)); **spec==greedy holds
-  on Q4_K** as DUT-vs-DUT self-consistency (`spec_decode_top` 19/19; `spec_batched/chain` via `make spec-slow`).
+  on Q4_K** as DUT-vs-DUT self-consistency (`spec_decode_top` 18/18; `spec_batched/chain` via `make spec-slow`).
   The self-draft MTP chain reaches K_eff ~1.7–2.2; #4 a resident dense draft (needs trained weights) would
   raise α (K_eff → 3–5); #8 exact-router-union dedups the K-token expert set. **All bit-exact** (target
   verifies every token). Honest cap: the MoE union penalty (#22 below) keeps K_eff_nvme well below the
   dense-model ×K — **now measured (proxy):** U(2)=1.51–1.65, U(4)=2.25–2.64 → realized NVMe amortization
   **A/U(K) ≈ 1.1–1.3× at K=4, A≈3** ([`H_MEASUREMENT.md`](H_MEASUREMENT.md) /
-  [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)).
+  [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)). *(2026-07: superseded by the GLM-4.5-Air
+  measured values — U(2)=1.60–1.64, U(4)=2.60–2.71, U(8)=4.19–4.41; OLMoE stays as the first-pass
+  history.)*
 - **Activation sparsity (#6) + dynamic top-k (#7)** — shrink `footprint` directly (~1.5–3× and ~1.3–1.6×).
   Both **NOT bit-exact** (quality knobs; must be validated against the accuracy contract). #7 is the cheapest
   big lever (a comparator+mask in the router).
@@ -256,7 +263,7 @@ B≈355; ×1.7 more with MTP (#14). *(All [EST]; the aggregate regime is non-tar
 1. **Batched verify (#5) — RTL-present.** `spec_batched_top` / `spec_chain_top` forward {base + D draft}
    positions as a PE_M=K+1 batch through ONE `glm_model_q4k` weight-load; per-layer expert streaming serves all
    rows; `spec_decode_seq` commits the accepted prefix (longest-accepted = greedy = bit-exact). **spec==greedy
-   is verified on Q4_K** (`spec_decode_top` 19/19 in `make unittests`; `spec_batched/chain` via `make
+   is verified on Q4_K** (`spec_decode_top` 18/18 in `make unittests`; `spec_batched/chain` via `make
    spec-slow`) — a DUT-vs-DUT self-consistency safety property (the "greedy golden" is itself a `glm_model_q4k`
    sharing the weight ROMs), **not** a numeric golden.
 2. **Resident dense draft (#4) — still PENDING (needs trained weights).** The self-draft path exists today
@@ -268,6 +275,16 @@ B≈355; ×1.7 more with MTP (#14). *(All [EST]; the aggregate regime is non-tar
 4. **Geometry rule (#22):** on a NVMe/storage-bound MoE, prefer **deep-narrow chains** over wide trees — each branch
    drags in (1−r) divergent experts you may reject; a naive 4-wide tree at r=0.35 → K_eff_nvme≈0.85
    (a **regression**). Depth keeps K_eff_nvme>1.
+
+*(Updated 2026-07 — **adaptive spec-chain ADOPTED + RTL-landed** (commit 6c5332f): the GLM-U K-sweep
+shows tok/s at r=0.9 **plateaus at K=4–5** (~93–95; K>5 adds nothing) and at r=0.8 the optimum is
+K=2–3 (~78) → adaptive range **K∈[1..5]**, so a fixed K=6–8 buys nothing. RTL: `spec_decode_seq`
+gains an `ADAPT` param (default 0 — yosys sequential-equivalence PROVEN unchanged for existing
+consumers) + `k_cur` port + `pass_*` taps; new `src/spec_depth_adapt.v` saturating-streak policy;
+**output-invariant by construction** (spec==greedy for ANY depth schedule). Gates: `spec_depth_adapt`
+31,522; `spec_decode_seq`(K>1) 3,702 (K now 1/2/3/4/6/8); K=1 exact 621; `spec_chain_top` 4/4 incl.
+a new DRAFT_K=4 engine; `spec_batched_top` 8/8; `spec_decode_top` 18/18; new `make spec-adapt`
+Makefile gate. The only remaining unknown is the accept rate r — vLLM MTP sweep pending.)*
 
 ---
 
@@ -297,12 +314,23 @@ target, not a single-M.2 spec; the tok/s scales roughly linearly with the storag
 single Gen5 x4 ~14 GB/s ≈ ~1 tok/s at ~14 GB routed/tok, before decomp/sparsity/spec-K multipliers).
 
 **Update — measured-proxy design-point menu ([`H_MEASUREMENT.md`](H_MEASUREMENT.md); h/U proxy-measured
-on an OLMoE trace, GLM rerun open; all tok/s still [EST]):** 1–2 NVMe, no multipliers → **~0.5–1 tok/s**;
+on an OLMoE trace — U(K) since GLM-Air-measured, see the pivot note below; all tok/s still [EST]):** 1–2 NVMe, no multipliers → **~0.5–1 tok/s**;
 90 GB DRAM cached (~20 % of the expert pool, bandwidth-h 0.36–0.60) + 100 GB/s → **13–24**; 90 GB +
 200 GB/s (ONFI 64ch) → **25–47**; 225 GB (~50 % pool, h 0.72–0.88) + 200 GB/s → **54–127** (the
 "100 tok/s" design point). LRU collapses to ~0 below a 10 % cache. The roofline formula stands, but read
 the spec multiplier `K` as **A/U(K)** (measured U above). See also
 [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).
+
+*(Updated 2026-07 — design-point pivot, [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)* The **primary
+rung-③ design point is now FULL RESIDENCY**: 512 GB LPDDR5X (16×32 GB, 1024-bit on-package, ~1.1 TB/s)
+holds the whole ~467 GB checkpoint — **h=1 by construction**, cold storage is one commodity M.2 NVMe
+(boot-load ~70 s), and the ONFI-64ch streaming tier is deleted from the primary SKU (pads stay on-die
+for the hybrid upside SKU). The residency-box effective band is **~76–95 tok/s [EST]** (the only
+remaining unknown is the accept rate r — vLLM MTP sweep pending). The h-curve menu above therefore
+applies to **rung ① / the hybrid upside SKU / >512 GB checkpoints**, not the primary rung-③ SKU; the
+**54–127** figure survives only as the hybrid-SKU-if-h≥0.75 note. U(K) is now **GLM-family measured**
+(GLM-4.5-Air: U(2)=1.60–1.64, U(4)=2.60–2.71, U(8)=4.19–4.41 — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)
+2nd measurement; OLMoE stays as the first-pass history).
 
 **Reading it.** The product — a **single-user local box** — stacking the faithful RTL levers projects
 **~15–40 tok/s [EST] on the funded custom board (rung ②) and ~5–8 tok/s [EST] on the near-term prove-it FPGA
@@ -316,7 +344,9 @@ non-target deployment: batching many users reaches the **same** ~50 tok/s ceilin
 each of the ~355 users floors at ~0.14 tok/s — that per-user figure belongs to a datacenter box, never to the
 personal appliance.)* The **only** way to raise the ceiling *itself* above ~50 is near-storage compute (#13) —
 the **rung-③ ASIC/SoC endgame** (HBM stacks + near-memory compute at manufacturing volume, for cost-down +
-performance + power). Cache cleverness (predictor) and extra dies are provably capped.
+performance + power). Cache cleverness (predictor) and extra dies are provably capped. *(2026-07: per the
+pivot note above, the primary rung-③ SKU is now full-residency LPDDR5X — near-storage compute stays the
+endgame for the hybrid/streaming SKU and >512 GB checkpoints.)*
 
 ---
 

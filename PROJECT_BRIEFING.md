@@ -88,7 +88,7 @@ The machine is **NVMe/PCIe-bandwidth-bound, not compute-bound**: per token you m
 **The projection [EST]** follows a **3-rung hardware ladder** set by memory bandwidth = IO pins + hard PHYs = budget (`docs/HARDWARE_LADDER.md`), all B=1 single-user on the same bit-exact RTL:
 - **① prove-it FPGA (KU3P-class + DDR4), ~5–8 tok/s [EST]** — now, proving it runs.
 - **② funded custom board (DDR5/HBM), ~15–40 tok/s [EST]** — after seed.
-- **③ volume ASIC, ~40+ tok/s [EST]** — HBM stacks + many-channel controllers break the FPGA IO/PHY ceiling; NRE pays off only at volume.
+- **③ volume ASIC, ~40+ tok/s [EST]** — HBM stacks + many-channel controllers break the FPGA IO/PHY ceiling; NRE pays off only at volume. *(Updated 2026-07: the rung-③ **primary** design point is now **512 GB LPDDR5X full residency** — the whole ~467 GB checkpoint DRAM-resident (h=1 by construction), cold store one M.2 NVMe (boot-load ~70 s), effective band **~76–95 tok/s [EST]**; HBM stays the long-range ceiling — see `docs/R3_APPLIANCE_SPEC.md` and the pivot section in `docs/HARDWARE_LADDER.md`.)*
 
 The old flat ~25–40 was the funded-rung (②) number, not a near-term-cheap one. Levers that move the needle: multi-channel banking + deep outstanding queues, lossless decompression (order-0 1.34× → order-1 ~1.42× **[EST]**), offline expert→channel placement, speculative K, and — for throughput serving only — expert-grouped batching. **The honest no-op:** the confidence-thresholded predictor-prefetch stack is a measured no-op at realistic cache size (GLM's fine-grained routing is entropy-capped) — kept as verified RTL, marked do-not-re-propose. **All system tok/s numbers are estimates** pending a real 753B routing trace and validated NVMe/PCIe bandwidth on the target board.
 

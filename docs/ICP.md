@@ -7,17 +7,24 @@ frontier open-weight model (GLM-5.2, a 753B-param MoE in ~4-bit **Q4_K** — the
 **works fully offline / air-gapped — nothing leaves because there is no path out** — no per-token fees,
 **one box / one seat** (B=1), at a speed staged to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) rungs.
 (Update — measured-proxy design points [EST] now bound the rung speeds: NVMe-only prove-it rung
-~0.5–1 tok/s; 90 GB DRAM @100 GB/s ~13–24; @200 GB/s ~25–47; 225 GB @200 GB/s ~54–127 — h/U measured on
-an OLMoE proxy trace, [`H_MEASUREMENT.md`](H_MEASUREMENT.md). The FPGA fit itself is **measured**:
+~0.5–1 tok/s; 90 GB DRAM @100 GB/s ~13–24; @200 GB/s ~25–47 — h/U first measured on an OLMoE proxy
+trace, since superseded by GLM-4.5-Air measured U(K), [`H_MEASUREMENT.md`](H_MEASUREMENT.md).
+Updated 2026-07: the rung-③ primary design point is now **full residency** — the whole ~467 GB
+checkpoint in 512 GB LPDDR5X, ~76–95 tok/s effective [EST]
+([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the earlier 225 GB-cache ~54–127 band survives only
+as the hybrid-SKU-if-h≥0.75 case. The FPGA fit itself is **measured**:
 routed on XCKU3P at 46.5 MHz, [`../fpga/`](../fpga/README.md).)*
 
 ---
 
 > **Positioning update (2026-07, v3 full-residency spec [EST]):** the rung-③ box
-> targets **~71 tok/s deterministic** — Opus/Gemini-Pro-class *per-user* output
+> targets an effective **~76–95 tok/s [EST]** (deterministic ~71 base × the
+> adaptive spec-chain on GLM-4.5-Air-measured U(K); accept-rate r still
+> unmeasured — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — Opus/Gemini-Pro-class
+> *per-user* output
 > speed, offline, no subscription, first-token latency without network/queue.
 > Same-bracket champion today is a $10k+ Mac Studio M3 Ultra 512GB at ~15–25
-> tok/s for this model class → ~3–4× the speed at roughly half the price.
+> tok/s for this model class → ~3–6× the speed at roughly half the price.
 > Groq/Cerebras-class 500+ tok/s is a **different bracket** (SRAM-resident,
 > racks, $M, thousands of users amortized; a 467GB model cannot fit their
 > single box). See [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §7.
@@ -178,7 +185,9 @@ board bring-up is not).
 3. **Success metric = "would you pay per-seat for this?"** measured on *quality on confidential work +
    the confidentiality guarantee*, not on tok/s. (Even the prove-it rung's speed is enough to pilot —
    measured-proxy design points [EST] put the NVMe-only rung at ~0.5–1 tok/s and the funded box at
-   ~13–47, up to ~54–127 with a 225 GB cache ([`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — because speed
+   ~13–47, with the rung-③ full-residency box at ~76–95 ([`H_MEASUREMENT.md`](H_MEASUREMENT.md),
+   [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); the ~54–127 cache band is now the
+   hybrid-SKU-if-h≥0.75 case) — because speed
    is not the sale — *provable air-gap / locality — it works unplugged* — is.)
 4. **Deliverable that unlocks the pilot:** a working box (or even the compact FPGA config) that (a) runs
    real GLM-5.2 weights locally and (b) passes the **literal unplugged-ethernet test** — it keeps working

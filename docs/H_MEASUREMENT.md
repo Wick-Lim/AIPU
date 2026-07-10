@@ -1,4 +1,4 @@
-# h / U 실측 (1차: OLMoE 프록시) — 100 tok/s roofline의 측정 기반 업데이트
+# h / U 실측 (1차: OLMoE 프록시 · 2차: GLM-4.5-Air) — 100 tok/s roofline의 측정 기반 업데이트
 
 **왜.** [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)의 결론: 단일 사용자
 100 tok/s의 성패를 가르는 두 숫자 — **대역폭-h**(flash를 실제로 안 건너는 바이트
@@ -73,6 +73,13 @@ LRU/LFU가 비등.)
 소비 ~650GB/s ≈ 1.15T weights/s → lane×clock 불변량으로 **lane ~3K @ ~500MHz**
 (마진 1.3× 포함)이 12–16nm 스윗스팟.
 
+> **(재스코프 2026-07)** rung-3 1차 설계점이 **완전 상주**(512GB LPDDR5X ×16,
+> ~1.1TB/s — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md))로 피벗되어 h는 구성상
+> 1이다. 위 h-곡선과 ONFI 스트리밍 roofline(54–127 tok/s 포함)은 더 이상 1차
+> 설계점 수치가 아니며, rung-1 FPGA 데모 / 하이브리드 상위 SKU / >512GB 체크포인트
+> 판단용으로만 유효하다. 현행 rung-3 실효 대역은 **~76–95 tok/s [EST]** (아래 2차
+> 측정의 K-스윕).
+
 ## 2차 측정 (2026-07-10): GLM-4.5-Air 실측 — 프록시 졸업
 
 Modal H100에서 **zai-org/GLM-4.5-Air**(106B-A12B, 45 MoE층 × 128 experts ×
@@ -104,9 +111,16 @@ top-8 — GLM-5.2와 같은 fine-grained+sigmoid 계열)를 4-bit로 구동, MoE
 
 핵심: **r=0.9여도 K=4–5에서 고원** — K>5는 무이득. 적응 범위는 K∈[1..5]면
 충분(하드웨어 단순화). 상주 박스 실효 대역: **~76–95 tok/s [EST]**, 남은
-유일 변수는 r (vLLM MTP 스윕으로 측정 예정 — 잡 B).
+유일 변수는 r (vLLM MTP 스윕으로 측정 예정 — 잡 B). 적응 스펙체인은 채택되어
+RTL에 반영됨 — `src/spec_depth_adapt.v` + spec_decode_seq ADAPT 파라미터
+(기본 0, 기존 소비자 시퀀셜 등가 PROVEN), `make spec-adapt` 게이트.
 
 ## 정직한 결론
+
+> **(업데이트 2026-07)** 아래 1–2항의 하이브리드(반상주+스트리밍) 설계점 논의는
+> 이제 **하이브리드 상위 SKU / rung-1 데모** 판단용이다 — 1차 설계점은 완전 상주
+> (512GB, ~76–95 tok/s [EST], [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).
+> 3(a)의 GLM류 재측정은 2차 측정(위 GLM-4.5-Air)으로 완료됐다.
 
 1. **90GB DRAM + 64ch ONFI 설계점 = 25–47 tok/s [EST].** 이전 낙관 시나리오(~95)보다
    낮다 — 주범은 U(4)≈2.4 (스펙체인 상각이 반토막).
@@ -120,5 +134,6 @@ top-8 — GLM-5.2와 같은 fine-grained+sigmoid 계열)를 4-bit로 구동, MoE
    길이 확장(768→수천 토큰)으로 STATIC 정책 재평가 (프로파일 절반이 작아 STATIC이
    저평가됐을 수 있음).
 
-모든 수치는 프록시-측정 [MEASURED-PROXY]이며, GLM 자체 값이 나오기 전까지 설계
-결정의 방향타로만 쓴다.
+1차(OLMoE) 수치는 프록시-측정 [MEASURED-PROXY]이며, EOR/U(K)는 2차 GLM-4.5-Air
+실측이 이를 대체한다(OLMoE는 1차 이력으로 유지). GLM-5.2 자체 라우팅과 수락률
+r(vLLM MTP 잡 B)은 여전히 미측정 — 그 전까지 tok/s류 수치는 [EST]로 유지한다.

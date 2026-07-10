@@ -35,9 +35,11 @@ below for the exact status of every claim.
 > prove-it FPGA today → ~15–40 on the funded custom board [EST]** (rung ③ silicon reaches ~40+ at volume)
 > after stacking the faithful levers — the old flat ~25–40 was the funded rung's number, not a
 > near-term-cheap one; see the 3-rung [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md). (These
-> ranges now have a **measured-proxy design-point menu** [EST] behind them — up to 54–127 tok/s at
-> 225 GB cache + 200 GB/s — see [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md) and the update note
-> below.) The design
+> ranges now have a **measured design-point menu** [EST] behind them — the rung-③ **primary** design
+> point is now the **512GB full-residency box, ~76–95 tok/s [EST]**
+> ([`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md)); the streaming 54–127 tok/s point
+> survives as the hybrid-SKU-if-h≥0.75 upside — see
+> [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md) and the update note below.) The design
 > is deliberately NVMe/PCIe-bandwidth-bound to keep it cheap. Where these docs mention *aggregate /
 > datacenter batching* (per-user ~0.14 tok/s at B≈256), that is a **secondary analysis of a
 > different deployment**, not this appliance — see [`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md).
@@ -82,8 +84,9 @@ here means **bit-exact to our ggml-Q4_K reference `tools/q4k_ref.py`**, not to t
 | **Q4_K GEMM core** (`glm_matmul_q4k`) — block dequant → fp32 MAC → bf16 | **PROVEN — bit-exact vs ggml Q4_K** (the one true bit-exact datapath result) | `make q4k` · `glm_matmul_q4k` **160/160** |
 | **Q4_K MoE expert** (`swiglu_expert_q4k`) — gate/up/down + silu | **PROVEN — functional** (self-labeled; not bit-exact) | `make q4k` · `swiglu_expert_q4k` **240/240** |
 | **Q4_K MoE router** (`moe_router_q4k`) — gate GEMV → sigmoid → top-K → renorm | **PROVEN — structural/functional invariants** (not a numeric golden) | `make q4k` · `moe_router_q4k` **40/40** |
-| **Assembled Q4_K spec-decode loop** (`spec_decode_top`) | **PROVEN — spec==greedy** *(DUT-vs-DUT self-consistency; the "greedy golden" is itself a `glm_model_q4k` sharing the same weight ROMs — a real lossless-speculation safety property, **not** a numeric golden)* | `make unittests` · **19/19** |
+| **Assembled Q4_K spec-decode loop** (`spec_decode_top`) | **PROVEN — spec==greedy** *(DUT-vs-DUT self-consistency; the "greedy golden" is itself a `glm_model_q4k` sharing the same weight ROMs — a real lossless-speculation safety property, **not** a numeric golden)* | `make unittests` · **18/18** |
 | **Larger spec loops** (`spec_batched_top` / `spec_chain_top`, K>1) | **PROVEN — spec==greedy** vs an **independent** `glm_model_q4k` reference (same DUT-vs-DUT caveat; kept out of `unittests` — minutes-long) | `make spec-slow` |
+| **Adaptive spec-chain draft depth** (`spec_depth_adapt` policy + `spec_decode_seq` `ADAPT`/`k_cur`) — runtime per-pass depth `k_cur`∈[1..K] | **PROVEN — spec==greedy under ANY depth schedule** (output-invariant by construction: `k_cur` only bounds how many drafts are scanned; `ADAPT=0` default is **yosys sequential-equivalence-proven** identical for existing consumers) | `make spec-adapt` · `spec_depth_adapt` **31,522** + `spec_decode_seq` K-sweep **3,702** (K = 1/2/3/4/6/8) + K=1-exact **621** |
 | **Generic bf16/fp32 datapath twins** (`glm_matmul`, `mla_attn`, `glm_model`, `mtp_head`, …) — the structural siblings of the Q4_K units | **PROVEN — fp32/fp64-golden** (~35 per-unit TBs) — *but these are the generic twins with **zero** Q4_K; the assembled Q4_K path is not what they verify* | `make unittests` |
 | **Memory-system controllers** — routing/one-hot, FIFO no-overflow/underflow, token-accounting, ECC identity, done-gates | **FORMAL — BMC**, 7 controllers + 1 ECC-ring datapath, no counterexample (bounded from reset) | `make formal` |
 | **Selected controllers** (`boot_loader`, `kv_cache_pager`, `spec_decode_seq`, `ddr5_xbar`, `flash_xbar`) | **FORMAL — unbounded k-induction** (all reachable states; documented residual BOUNDED gaps in `docs/FORMAL.md`) | `make formal-ind` |
@@ -93,7 +96,7 @@ here means **bit-exact to our ggml-Q4_K reference `tools/q4k_ref.py`**, not to t
 | **Bit-exactness to the real UD-Q4_K_XL GGUF / llama.cpp** | **NOT-YET** — all goldens are our own ggml reimpl (`tools/q4k_ref.py`), never the real GGUF bytes or llama.cpp runtime | — |
 | **Mixed-type path** (Q6_K / Q8_0 / F16 tensors the dynamic UD-Q4_K_XL mix keeps at higher precision) | **PROVEN — bit-exact vs ggml-reimpl goldens** — `q4k_mixed.vh` dequant primitives + per-column `w_type` routing in `glm_matmul_q4k` + `desc_wtype` in the weight loader; the loader→GEMM path is bit-exact for **all four types** incl. a 24-tile mixed sequence | `make mixedtype` · `q6k_prim` + `q8_0_prim` + `glm_matmul_mixed` **32/32** + `weight_loader_q4k_mixed` **192/192** |
 | **FPGA fit — real Vivado synth + place & route on XCKU3P** | **MEASURED** — compact config + `ACT_HW=1`: **142.3K LUT (87.5%)**, ~100K FF, 421 DSP, 0 BRAM, fits and routes, hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** across the (bit-exact) fmax-repipeline rounds (rope / glm_act+rmsnorm / matmul), **campaign closed at 4.6×** — the worst path is now route-dominated (physical work, not arithmetic; 200 MHz-class is rung-②/③ work) — see [`fpga/README.md`](fpga/README.md) | `bash fpga/run_fit.sh` · `fpga/results/` |
-| **Throughput / energy / BOM / TCO / LOI** | **NOT-YET [EST]** — every tok/s is roofline-modeled (now with **measured-proxy h/U inputs** — [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)); BOM/TCO and the target LOI are planning docs, not evidence | — |
+| **Throughput / energy / BOM / TCO / LOI** | **NOT-YET [EST]** — every tok/s is roofline-modeled (now with **measured h/U inputs** — h proxy-traced, U(K) **GLM-family measured** on GLM-4.5-Air — [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)); BOM/TCO and the target LOI are planning docs, not evidence | — |
 
 **Honest moat statement.** A **UD-Q4_K_XL-native GLM-5.2 RTL datapath** whose GEMM core is **bit-exact
 to an independent ggml reimplementation** (`tools/q4k_ref.py`) for **all four checkpoint types**
@@ -110,19 +113,25 @@ every tok/s, cost, and LOI claim is **[EST]**, not measured on hardware.
 bandwidth-roofline model (`tokens/s ≈ NVMe_BW / [(1−h)·footprint] · K`) — where the spec-decode
 multiplier `K` must be read as **A/U(K) ≈ 1.1–1.3× at K=4** with the **measured** union factor
 U(K) ([`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)), not a full ×K — **not** from silicon —
-though the roofline's two model-side multipliers now have **measured (proxy) inputs**: expert-reuse
-h-curves and the MTP union factor U(K), traced from a real MoE checkpoint
-([`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)), and the compute die now has a **real routed
+though the roofline's two model-side multipliers now have **measured inputs**: expert-reuse
+h-curves (proxy-traced from OLMoE — since the full-residency pivot, h decides only the hybrid SKU)
+and the MTP union factor U(K), now **GLM-family measured** on a GLM-4.5-Air MoE-gate trace,
+superseding the OLMoE first pass ([`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md)), and the compute die now has a **real routed
 netlist** ([`fpga/README.md`](fpga/README.md)). The tok/s is **rung-dependent** — bandwidth is set by the chip's IO pins + PHYs,
 which is set by budget ([`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)): **~5–8 tok/s on the
 prove-it FPGA (rung ①), ~15–40 on the funded custom board (rung ②), ~40+ at volume (rung ③)** [EST],
 with **~9 → ~3 J/token** [EST] after stacking the NVMe-bandwidth levers. Read them as an optimistic
 ceiling ([`ULTRA_PERF.md`](docs/ULTRA_PERF.md), [`IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md)).
-*Update — measured-proxy design-point menu [EST, h/U inputs MEASURED-PROXY from an OLMoE trace,
-GLM rerun open — [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md),
+*Update — measured design-point menu [EST; U(K) is now **GLM-family MEASURED** — a GLM-4.5-Air
+MoE-gate trace (U(4)=2.60–2.71, U(8)=4.19–4.41) supersedes the first-pass OLMoE proxy —
+[`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md),
 [`docs/MOE_LOCALITY_RESEARCH.md`](docs/MOE_LOCALITY_RESEARCH.md)]: NVMe ×1–2, no multipliers
 ~0.5–1 tok/s; 90 GB DRAM cache + 100 GB/s → 13–24; 90 GB + 200 GB/s (ONFI 64ch) → 25–47;
-225 GB + 200 GB/s → 54–127 (the "100 tok/s" design point).* What
+225 GB + 200 GB/s → 54–127. (Updated 2026-07: the rung-③ **primary** design point is now the
+**512GB LPDDR5X full-residency box, ~76–95 tok/s [EST]** —
+[`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md); this streaming menu stays active for
+rung-①, the hybrid upside SKU (h≥0.75), and >512GB checkpoints, so 54–127 is now the hybrid-SKU
+note, not the primary design point.)* What
 *is* validated on real RTL cycles is the roofline's underlying **memory-stall mechanism** (exposed stall
 exactly `3·FLASH_LAT + 9`, faithful `cyc_per_tok` grows with storage-read latency); the absolute tok/s
 stays [EST] ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)).
@@ -231,8 +240,9 @@ assembled Q4_K path's numeric golden is the `model-q4k` gate.
 
 The Q4_K wrappers carry the same `PE_M` decode-batching machinery as the prior FP8 track, and the
 multi-sequence SoC top (`glm_q4k_soc_ms`) exists; what the ledger **proves** on `main` is the
-**spec==greedy** safety property (`spec_decode_top` 19/19, plus the larger `spec_batched_top` /
-`spec_chain_top` under `make spec-slow`). Batching throughput and multi-seq serving remain a
+**spec==greedy** safety property (`spec_decode_top` 18/18, plus the larger `spec_batched_top` /
+`spec_chain_top` under `make spec-slow`, and spec==greedy under **any runtime depth schedule**
+under `make spec-adapt`). Batching throughput and multi-seq serving remain a
 **capability of the silicon**, not the B=1 personal box, and their numeric claims are scoped to
 spec==greedy self-consistency — not an assembled-model numeric golden.
 
@@ -290,7 +300,7 @@ track** (branch `fp8`) — see the appendix. On an NVMe-bound die they improve a
 - **[`docs/Q4K_SYSTEM_PLAN.md`](docs/Q4K_SYSTEM_PLAN.md)** — the non-trivial retarget work plan: the
   weight-bus swap at the die boundary, the four system tops, the weight path, and the Makefile Q4 gate.
 - **[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)** — **the honest hardware plan**: a 3-rung ladder (① prove-it FPGA ~5–8 tok/s now → ② funded custom board ~15–40 → ③ SoC/ASIC ~40+ at volume [EST]) — performance is set by memory bandwidth, which is set by the chip's IO/PHY budget. **Start here for "how fast, on what hardware."**
-- **[`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md)** — the **rung-③ appliance concept spec (v3)**: 512GB LPDDR5X full-residency box — ~71 tok/s [EST] deterministic, ~40–60W, 120×80mm board with on-substrate 1024-bit memory, clock/node/lane derivation (~3K lanes @ ~500MHz, 12–16nm), BOM ~$1.8–2.4k, and the honest competitive bracket (Opus/Gemini-Pro-class per-user speed; Groq/Cerebras is a different bracket).
+- **[`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md)** — the **rung-③ appliance concept spec (v3)** and the rung-③ **primary design point**: 512GB LPDDR5X full-residency box (the whole ~467 GB checkpoint resident; cold storage = one M.2 NVMe, boot-load ~70 s; the ONFI streaming tier is off the primary SKU, retained for the hybrid upside SKU) — **~76–95 tok/s [EST]** effective band with the adaptive spec-chain (GLM-Air-measured U(K); the one remaining unknown is the accept rate r), ~40–60W, 120×80mm board with on-substrate 1024-bit memory, clock/node/lane derivation (~3K lanes @ ~500MHz, 12–16nm), BOM ~$1.8–2.4k, and the honest competitive bracket (Opus/Gemini-Pro-class per-user speed; Groq/Cerebras is a different bracket).
 - **[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)** — product direction (RTL/silicon track): the fidelity gate, robustness/vendor-IP/physical/software/manufacturing phases, the **FPGA-card** product path (ASIC = the rung ③ volume endgame, sequenced after FPGA proves PMF).
 - **[`docs/USBC_PRODUCT_PLAN.md`](docs/USBC_PRODUCT_PLAN.md)** — productization plan for the **USB-C external device** (the appliance track): form factor, power, thermal, host software, BOM/pricing (**[EST]**, planning-doc — not validated), phased D0–D5 gates. The heavy traffic stays internal → USB-C carries only tokens.
 - **[`host/`](host/README.md)** — the **host software scaffold**: a local **OpenAI-compatible server** (`python3 host/aipu_server.py`, stdlib only) mirroring the RTL host interface, the **real GLM-5.2 BPE tokenizer** (+ byte fallback), the **GLM chat template**, OpenAI **sampling params**, and 3 backends — `MockDevice`, a **simulator backend** (drives the RTL model slice via `vvp`), and USB (later). `make host-test` (18 tests). *(Note: the simulator backend still points at the prior `glm_model_fp8` build path and is being retargeted to `glm_model_q4k`.)*

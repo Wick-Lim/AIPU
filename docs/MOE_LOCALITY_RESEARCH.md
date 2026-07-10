@@ -7,6 +7,14 @@
 GLM급 fine-grained MoE에서 보여준 논문은 없다** — 그 지점이 이 프로젝트가 직접 측정해야
 할 공백이다. (아래 본문은 워크플로 종합 에이전트의 출력 그대로.)
 
+> **(업데이트 2026-07)** 이 공백은 직접 측정으로 닫혔다:
+> [`H_MEASUREMENT.md`](H_MEASUREMENT.md) — 1차 OLMoE 프록시, 2차 **GLM-4.5-Air
+> 실측**(EOR 0.36–0.39, U(4)=2.60–2.71, U(8)=4.19–4.41). 또한 rung-3 1차 설계점이
+> **완전 상주**(512GB LPDDR5X, [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md))로
+> 피벗되어 h는 구성상 1 — 본 문서의 flash-스트리밍 분석은 rung-1 FPGA 데모 /
+> 하이브리드 상위 SKU / >512GB 체크포인트에 대해 유효하게 남는다. 남은 미지수는
+> 수락률 r(vLLM MTP 스윕, 잡 B).
+
 ---
 
 # MoE LLM 추론 웹 리서치 종합 (6개 앵글 통합)
@@ -45,6 +53,9 @@ GLM급 fine-grained MoE에서 보여준 논문은 없다** — 그 지점이 이
 
 ## 3. h≈0.9 필요조건에 대한 문헌의 시사
 
+> **(업데이트 2026-07)** 1차 설계점(완전 상주)에서는 h=1이 구성상 성립 — 아래
+> h 논의는 하이브리드 상위 SKU / rung-1 데모 / >512GB 체크포인트 판단용.
+
 **산수부터**: 14GB/token × (1−h) ≤ 100GB/s ÷ 100tok/s = 1GB/token이려면 MTP 없이는 h ≥ 0.93. MTP accept length A로 나누면 필요 h는 1 − A/14: A=2.76(GLM-5 측정치)이면 h ≥ ~0.80, A=4+(GLM-5.2 저지연)이면 h ≥ ~0.71.
 
 **낙관 근거**: (1) 예측 기반 캐싱의 도달치가 목표대에 걸쳐 있다 — 10% 캐시에서 72%(MoE-Beyond), 5% 캐시에서 >88%(SpecMD), FineMoE 실워크로드 75–85%, MoE-SpeQ는 speculative prefetch로 96–99.9%. (2) 예측 정확도 자체는 충분히 높다 — 층간 gate 예측 90–97%(HOBBIT/Fate/Pre-Attention), over-fetch로 ~99%, 그리고 **spec-decode draft가 공짜 expert 오라클**(88.9–90.9%, SP-MoE/MoE-SpeQ)이라는 점은 본 설계의 MTP 체인과 정확히 합치한다. (3) prefill 라우팅이 decode hot set을 ~90% 예고(Patterns behind Chaos)하므로 세션 시작 시 캐시 워밍 가능. (4) 요청 내 working set이 작고(<5%, MoE-Infinity) 태스크 단위로 재발(eMoE) — 단일 사용자 시나리오에 유리. (5) MTP 이득은 concurrency 1에서 최대(AMD 측정 2.11x@1 → 1.25x@64) — 단일 사용자 전제와 정합. (6) 예측·prefetch·eviction은 출력을 바꾸지 않으므로 bit-exact와 충돌 없음.
@@ -52,6 +63,12 @@ GLM급 fine-grained MoE에서 보여준 논문은 없다** — 그 지점이 이
 **비관 근거**: (1) **문헌의 "hit rate"는 대부분 prefetch 포함 수치다.** prefetch hit은 지연은 숨기지만 flash에서 바이트를 여전히 읽는다 — 100 tok/s의 병목은 지연이 아니라 **대역폭**이므로, 바이트를 절약하는 것은 순수 재사용(residency) hit뿐이다. 순수 재사용 지표는 훨씬 낮다: DeepSeek계 연속 토큰 top-K overlap 27.3%(ReMoE), LRU 캐시 hit 16.7–40%(SP-MoE 계열 측정), Mixtral도 layer 0은 랜덤 수준. GLM은 DeepSeek류 fine-grained MoE이므로 낙관 시나리오가 아니라 이쪽이 기본값일 가능성이 높다. (2) MoE-SpeQ의 96–99.9%는 16–32GB 캐시 + 소형 모델(Phi/Qwen1.5/V2-Lite) 조건 — 14GB/token급 라우팅 스트림 규모에서 검증된 바 없다. (3) 검증 패스의 expert 합집합은 draft 깊이에 따라 커져 A의 실효 상각률이 A보다 작다(SpecMoEOff가 draft 길이에 따른 수확체감을 명시). (4) **end-to-end 실증 최고치와의 격차**: flash 스트리밍 실측은 1.3–13 tok/s(R1 mmap, M3 Max, PowerInfer-2, MoE-SpeQ)이고 DRAM 전체 상주조차 256–273GB/s에서 50–55 tok/s다. 100 tok/s는 문헌 최고치의 ~8배. (5) bit-exact 제약이 문헌의 주력 레버 다수를 봉쇄한다: 저비트 miss fetch(HOBBIT), expert 스킵(AdapMoE −25% fetch), 2-bit expert(Eliseev-Mazur, M3 Max — 2-bit는 tool calling 파손), router 미세조정(ReMoE +27%), pre-gate 재학습(Pre-gated MoE). (6) 에너지: flash 읽기 110.8 pJ/b vs HBM 4.2 pJ/b — 3.8–12.5x/token. 결론적으로 문헌은 "h 0.8–0.9는 예측+spec-prefetch로 도달 가능한 범위"임을 시사하되, **대역폭 절약형(재사용) h로서의 0.9는 어떤 논문도 GLM급 fine-grained MoE에서 보여준 적이 없다.**
 
 ## 4. 문헌이 답하지 않는 것 — 직접 측정 항목
+
+> **(업데이트 2026-07)** 항목 1–3은 [`H_MEASUREMENT.md`](H_MEASUREMENT.md)의
+> 1·2차 측정으로 답했다(GLM-4.5-Air EOR/U(K), residency-h 곡선 — 단 GLM-5.2
+> 자체 라우팅은 아직 미확정). 항목 4(수락률 r)는 vLLM MTP 스윕(잡 B) 진행 중.
+> 항목 5–7은 열려 있으며, 완전 상주 피벗 이후 flash 관련 항목은 rung-1 /
+> 하이브리드 SKU 스코프다.
 
 1. **GLM 라우팅 통계 자체**: 측정치는 Mixtral/DeepSeek/Qwen/OLMoE/Switch에 몰려 있고 GLM-4.x/5의 토큰 간 EOR, 층별 반복률, 요청 내 working set 곡선은 미공개. GLM-4.5 MTP 수락률의 공식 발표도 없음(GLM-5의 2.76만 존재). → stock(미세조정 불가, bit-exact) GLM 라우터의 배치-1 트레이스를 직접 뽑아야 함.
 2. **residency-hit vs prefetch-hit 분해**: 문헌은 둘을 합산 보고. 대역폭 한정 설계에서는 "flash에서 안 읽은 바이트 비율"이 진짜 h — 캐시 용량(우리 DRAM GB) 대비 이 값의 곡선을 자체 측정해야 함.

@@ -64,8 +64,10 @@ NVMe-only streaming sits at ~0.5–1 tok/s [EST, measured-proxy — [`H_MEASUREM
 
 Custom PCB (outsourced artwork + assembly) carrying a **mid FPGA with DDR5 multi-channel or HBM** + big
 DDR + multi-NVMe. This is the actual **shippable single-user box** at ~15–40 tok/s [EST]
-(measured-proxy design points: ~13–24 at 90 GB DRAM + 100 GB/s, ~25–47 at 200 GB/s, ~54–127 at
-225 GB + 200 GB/s — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)).
+(measured-proxy design points: ~13–24 at 90 GB DRAM + 100 GB/s, ~25–47 at 200 GB/s —
+[`H_MEASUREMENT.md`](H_MEASUREMENT.md); the ~54–127 @ 225 GB + 200 GB/s cache band now belongs to
+the rung-③ hybrid SKU — the rung-③ primary is full residency at ~76–95 tok/s [EST],
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).
 
 | Line | Part | ~Cost | Note |
 |---|---|---|---|
@@ -84,6 +86,13 @@ board revisions. Amortized over units, negligible per-seat at any real volume.
 ---
 
 ## Rung ③ — SoC/ASIC (at volume, endgame)
+
+> **(updated 2026-07: the rung-③ primary design point pivoted to FULL RESIDENCY** — 512 GB LPDDR5X
+> (16×32 GB, 1024-bit on-package, ~1.1 TB/s) holds the whole ~467 GB checkpoint; cold storage = one
+> commodity M.2 NVMe (boot-load ~70 s); **~76–95 tok/s effective [EST]**; box ~40–60 W; board
+> 120×80 mm; **BOM ~$1.8–2.4 k** — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
+> HBM/streaming shape below survives as the **hybrid upside SKU** (if GLM h≥0.75) and the
+> >512 GB-checkpoint fallback.)
 
 Custom silicon (HBM + many-channel PHY + near-memory Q4_K dequant). **~40+ tok/s, lower power, lower
 $/seat** — but only after volume justifies the NRE.
@@ -113,15 +122,16 @@ can't go, offline, at a seat price"* ([`ICP.md`](ICP.md)). So the comparison tha
 | **Big-RAM workstation — the *same* `UD-Q4_K_XL` GGUF on llama.cpp** | ✅ (identical file) | ✅ | **~$5–15 k [EST]** one-time (~512–768 GB DDR5 to hold 467 GB) |
 | 8×H100 self-host 753 B | ✅ | ✅ | **~$250–400 k** (shared, + power + MLOps) |
 | **This box — rung ②** | **✅** | **✅** | **~$3–6 k/box (one seat) + support** |
-| **This box — rung ③ (volume)** | ✅ | ✅ | **~$1–2 k/box** |
+| **This box — rung ③ (volume)** | ✅ | ✅ | **~$1.8–2.4 k/box** (full-residency SKU [EST] — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)) |
 
 **Honest comparison — the workstation, not the H100.** The real nearest alternative is **not** 8×H100; it is
 a **big-RAM workstation running the identical `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` on llama.cpp** (~512–768 GB
 DDR5 to hold the 467 GB model, **~$5–15 k [EST]**). That box is *also* full-frontier and *also* fully
 offline — on raw capability it is a **tie** (it runs the same file this project targets). What the appliance
 sells against it is **turnkey seat-price + support** (no MLOps, no llama.cpp tuning), a **purpose-built
-memory/streaming datapath** (NVMe-streamed experts instead of paying to keep all 467 GB in expensive DRAM,
-which is the whole cost lever) and — on the funded rungs — **lower power / form factor**. Note also both are
+memory/streaming datapath** (on rungs ①/② and the hybrid SKU, NVMe-streamed experts instead of paying to
+keep all 467 GB in expensive DRAM; the rung-③ primary SKU pivoted to full 512 GB-LPDDR5X residency —
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)) and — on the funded rungs — **lower power / form factor**. Note also both are
 running our-own-scoped Q4_K arithmetic vs the ggml reference, **not** a validated bit-match to llama.cpp's
 runtime.
 
@@ -136,8 +146,10 @@ All figures **[EST]**.
 
 - All prices are **order-of-magnitude [EST]** — FPGA needs a distributor quote, board needs a PCB-house
   quote, ASIC NRE is a wide band. Treat as ranges, not commitments.
-- Rung-② tok/s (~15–40) is the funded number (measured-proxy design points ~13–47, up to ~54–127 with a
-  225 GB cache — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)); the **near-term demo (rung ①) is
+- Rung-② tok/s (~15–40) is the funded number (measured-proxy design points ~13–47 —
+  [`H_MEASUREMENT.md`](H_MEASUREMENT.md); the ~54–127 225 GB-cache band is now the rung-③ hybrid-SKU
+  case, the rung-③ primary being full residency at ~76–95 [EST] —
+  [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the **near-term demo (rung ①) is
   reduced-config** (GLM-scale NVMe-only streaming ~0.5–1 tok/s [EST]).
 - BOM is **memory/storage/board-dominated**; the FPGA is a minority. "Cheaper box" means "less bandwidth"
   means "lower tok/s" — the ladder, in money.

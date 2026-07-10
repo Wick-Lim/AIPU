@@ -34,8 +34,9 @@ honest limits as a first customer. Both are below.*
   team who want it **turnkey**, (c) footprint / power / **per-seat** economics. Be honest where their
   cluster already serves it.
 - **It is NOT the trading hot path.** Interactive research speed — measured-proxy design points [EST]
-  span ~0.5–1 tok/s (NVMe-only prove-it rung) to ~13–47 on the funded custom board, ~54–127 with a
-  larger DRAM cache ([`H_MEASUREMENT.md`](H_MEASUREMENT.md); staged hardware, see
+  span ~0.5–1 tok/s (NVMe-only prove-it rung) to ~13–47 on the funded custom board, ~76–95 on the
+  full-residency rung-③ appliance ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md);
+  [`H_MEASUREMENT.md`](H_MEASUREMENT.md); staged hardware, see
   [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) — **not microseconds**. Never let them think it's a
   trading accelerator.
 - **It is NOT "alpha in a box."** It doesn't generate signals. It lets researchers use a frontier model
@@ -167,7 +168,7 @@ cost — you get first access and shape it around how you actually run infra."*
 | They say | You say (honest) |
 |---|---|
 | "We already run models on our own GPU cluster." | "Then you've solved the capability — so the box is only interesting for (a) **per-desk air-gapped** deployment, (b) skipping the 753B quantize/serve/MLOps for a **turnkey** full-frontier box, (c) footprint/power/cost per seat. If your cluster already serves 753B privately to every desk, you may not need us — I'd rather know that now." |
-| "Is it fast enough?" | "For research/analysis the funded board is — **~13–47 tok/s at its design points, up to ~54–127 with a larger DRAM cache; the near-term NVMe-only prove-it rung is ~0.5–1** ([EST] roofline on measured-proxy h/U — [`H_MEASUREMENT.md`](H_MEASUREMENT.md); wall-clock unmeasured until a board runs; staged hardware — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), interactive. It is **not** the trading hot path, not microseconds. Different tool entirely." |
+| "Is it fast enough?" | "For research/analysis the funded board is — **~13–47 tok/s at its design points, ~76–95 on the full-residency rung-③ appliance ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the near-term NVMe-only prove-it rung is ~0.5–1** ([EST] roofline on measured-proxy h/U — [`H_MEASUREMENT.md`](H_MEASUREMENT.md); wall-clock unmeasured until a board runs; staged hardware — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)), interactive. It is **not** the trading hot path, not microseconds. Different tool entirely." |
 | "Does it give us edge / alpha?" | "It doesn't generate signals. It lets your researchers use a frontier model on data they currently can't — a productivity + secrecy edge, not a signal. I won't pretend otherwise." |
 | "Why not a zero-retention API or an on-prem vendor model?" | "Both still need a connection. The box runs **disconnected** — the audit is 'does it work with the cable unplugged?'. Zero-retention/VPC/TEE all fail that; if that bar doesn't matter to you, you don't need us." |
 | "How do we trust it doesn't exfiltrate?" | "There's no path out — it's air-gapped — and that non-egress is exactly the part your infosec team can audit directly. The datapath is a **formally-verified control plane** (BMC + k-induction) with a **Q4_K compute core bit-exact to the ggml reference**, so they can verify the numeric core too; matching the published GGUF end-to-end is validation we're still finishing, and I'll say so." |
