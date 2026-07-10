@@ -128,7 +128,30 @@ no capital); real later (that's how bandwidth-bound silicon products scale).
 
 ---
 
-### Rung-③ memory-tier decision (2026-07, FIXED)
+### Rung-③ memory-tier decision — v2 PIVOT (2026-07-10): 512 GB LPDDR5X FULL RESIDENCY
+
+**The v1 fix below (256 GB hybrid) was re-decided after the min(NAND, DRAM)
+correction** ([`H_MEASUREMENT.md`](H_MEASUREMENT.md) v2): cache HITS also cross
+the DRAM tier, so the hybrid's honest numbers are ~42 tok/s at 512-bit and
+~84 at 1024-bit *only if GLM h ≥ 0.75* (an unmeasured bet — at h=0.6 it falls
+to ~45). The new primary design point:
+
+- **LPDDR5X 512 GB (16×32 GB, 1024-bit, ~1.1 TB/s), whole checkpoint resident**
+  → **~71 tok/s [EST], deterministic — no h dependence at all.**
+- **Deletes** the ONFI 64ch controller RTL (LDPC/bad-block) from the critical
+  path and the 40–90 W NAND-read power (box → ~40–60 W). Cold storage = one
+  commodity M.2 NVMe (boot-loads 467 GB in ~70 s; no streaming RTL).
+- Costs: +$800–1,700 memory vs the hybrid; 1024-bit = Apple-M-Ultra-class
+  packaging (16 packages double-sided, on-substrate routing — proven practice,
+  our hardest packaging item); capacity ceiling ~512 GB (next-gen bigger
+  checkpoints fall back to the hybrid).
+- **The 1024-bit hybrid (~84 tok/s) survives as the upside SKU** if the GLM h
+  measurement lands ≥0.75 — keep the ONFI pads on-die, unbonded in the
+  residency SKU, so both SKUs share one die.
+
+<details><summary>v1 decision (2026-07, superseded — kept for the reasoning trail)</summary>
+
+### Rung-③ memory-tier decision (2026-07, v1 — SUPERSEDED by the pivot above)
 
 The rung-③ SoC's memory system is **decided**: **LPDDR5X 256 GB (8×32 GB packages,
 512-bit, ~550 GB/s) as the h-cache tier + ONFI-direct NAND 64ch (~200 GB/s, raw
@@ -154,6 +177,8 @@ The rung-③ SoC's memory system is **decided**: **LPDDR5X 256 GB (8×32 GB pack
   lands in the 25–47 tok/s class — the two SKUs share one die.
 - FPGA rungs keep DDR4/DDR5 DIMMs (no LPDDR5X hard controllers in FPGAs);
   LPDDR5X enters with the ASIC PHY IP at rung ③.
+
+</details>
 
 ## Why this ordering is the right bet
 
