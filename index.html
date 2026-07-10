@@ -286,7 +286,7 @@
         </tbody>
       </table>
     </div>
-    <p class="note">Every "proven" row is reproducible from the repo (<span class="mono">make q4k</span>, <span class="mono">make formal</span>). "Proven" here means <b>bit-exact to our own GGML k-quant reimplementation</b>; matching the <b>real published GGUF file</b> end-to-end (mixed Q6_K/Q8_0/F16 tensors) and the assembled whole-model golden are the <b>open</b> items above — named, not buried.</p>
+    <p class="note">Every "proven" row is reproducible from the repo (<span class="mono">make q4k</span>, <span class="mono">make formal</span>). "Proven" here means <b>bit-exact to our own GGML k-quant reimplementation</b>; the mixed Q6_K/Q8_0/F16 tensors and the <b>assembled whole-model forward</b> are now in that proven set (<span class="mono">make mixedtype</span>, <span class="mono">make model-q4k</span> — 1,155 tests bit-exact); matching the <b>real published GGUF bytes / llama.cpp runtime</b> is the <b>open</b> item above — named, not buried.</p>
   </div>
 </section>
 
@@ -373,6 +373,7 @@
       <div class="out">
         <span><b>→</b> Design-partner inquiries: <b><a href="mailto:wicklim90@gmail.com">wicklim90@gmail.com</a></b></span>
         <span><b>→</b> The engineering: <b><a href="https://github.com/Wick-Lim/AIPU">github.com/Wick-Lim/AIPU</a></b></span>
+        <span><b>→</b> Appliance board concept: <b><a href="board.html">board.html</a></b> <span class="mono">(KR)</span></span>
       </div>
     </div>
   </div>
@@ -382,7 +383,7 @@
   <div class="wrap">
     <div class="sechead"><span class="idx">07</span><h2>Honest limits</h2><span class="chip e">documented, not hidden</span></div>
     <div class="risks">
-      <div class="risk"><div class="r">Not silicon yet</div><div class="t">Throughput / BOM figures are <b>roofline [EST]s</b>, not a routed FPGA — the demo (§04, §06) is what makes them measured. Everything tagged <b>proven</b> above <b>is</b> reproducible from the repo.</div></div>
+      <div class="risk"><div class="r">Not silicon yet</div><div class="t">Throughput / BOM figures are <b>roofline [EST]s</b>. The compute die itself <b>is now a real routed FPGA fit</b> (XCKU3P, 87.5% LUT, routed 46.5&nbsp;MHz after a bit-exact repipeline campaign) — the running board demo (§04, §06) is what turns tok/s into a measurement. Everything tagged <b>proven</b> above <b>is</b> reproducible from the repo.</div></div>
       <div class="risk"><div class="r">Whole-model golden open</div><div class="t">The Q4_K <b>operators</b> are bit-exact to the k-quant reference; the <b>assembled 753B forward</b> and validation against the <b>real published GGUF</b> (mixed Q6_K/Q8_0/F16 tensors) are <b>in build, not done</b> — listed as open, not glossed.</div></div>
       <div class="risk"><div class="r">Narrow by design</div><div class="t">This wins only where <b>frontier scale + must-run-offline</b> both bind. That intersection is the <b>intended niche</b>, not a bug — a Mac runs 70B; the cloud runs online; we run the full model, unplugged.</div></div>
       <div class="risk"><div class="r">One box, one seat</div><div class="t">A <b>personal appliance</b> (B=1), not a multi-user server. Batched/datacenter serving is a capability of the same silicon, not this product.</div></div>
