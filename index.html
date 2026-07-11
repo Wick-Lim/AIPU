@@ -263,7 +263,7 @@
       <div class="cell"><div class="lab">Rung ② product</div><div class="val">~15–40 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">custom board, DDR5/HBM</div></div>
       <div class="cell"><div class="lab">Rung ③ ASIC (volume)</div><div class="val">~76–95 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">512GB memory-resident appliance — <a href="board.html">board concept</a></div></div>
     </div>
-    <p class="note" style="margin-top:12px">Performance is set by <b>memory bandwidth = the chip's IO/PHY</b> (compute is cheap — the die idles behind the memory system). So it's staged honestly: <b>prove it cheap on an FPGA → custom board → ASIC at volume</b>. Same GGUF model on every rung; only the bandwidth the silicon feeds it changes. The tok/s figures are <b>bandwidth-roofline [EST]s</b>, gated on the FPGA demo below.</p>
+    <p class="note" style="margin-top:12px">Performance is set by <b>memory bandwidth = the chip's IO/PHY</b> (compute is cheap — the die idles behind the memory system). So it's staged honestly: <b>prove it cheap on an FPGA → custom board → ASIC at volume</b>. Same GGUF model on every rung; only the bandwidth the silicon feeds it changes. The tok/s figures are <b>bandwidth-roofline [EST]s</b> — but a roofline with <b>measured U(K) and MTP accept-rate inputs</b> (measured on GLM-4.5-Air), not pure estimates — gated on the FPGA demo below.</p>
   </div>
 </section>
 
@@ -284,7 +284,7 @@
           <tr><td><span class="what">Real-GGUF dequant crosscheck</span><div class="src">q4k_ref vs llama.cpp's own dequant code</div></td><td>published GGUF, raw bytes</td><td class="num"><span class="c">104.6M</span> weights bitwise-equal</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
           <tr><td><span class="what">Residency-SKU configuration</span><div class="src">RESIDENT=1 · expert refills from LPDDR tier</div></td><td>two-DUT contrast sim + formal equiv of default</td><td class="num"><span class="c">19/19</span> + equiv proven</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
           <tr><td><span class="what">llama.cpp full-runtime equality</span><div class="src">attention/accumulation order differs by design</div></td><td>whole-runtime numerics</td><td class="num">out-of-contract</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
-          <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~76–95 tok/s</td><td><span class="chip e">[est]</span></td></tr>
+          <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · measured U(K) + accept-rate inputs · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~76–95 tok/s</td><td><span class="chip e">[est]</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -298,18 +298,18 @@
     <div class="flag">
       <div class="top">
         <div class="stamp">▍ Next gate</div>
-        <h3>The biggest hardware unknown — "does the die fit a real, affordable FPGA?" — is now <b>measured, not estimated</b>: the Q4_K product top places and routes on the named ~$958-board part. What's left is the physical board demo.</h3>
+        <h3>The biggest hardware unknown — "does the die fit a real, affordable FPGA?" — is now <b>measured, not estimated</b>: the Q4_K product top places and routes on the named ~$1,000-class-board part. What's left is the physical board demo.</h3>
       </div>
       <div class="body">
         <div>
           <p>The FPGA fit sets the box's BOM, and the BOM sets the per-seat price the whole business rests on. The compute datapath <b>elaborates at full 753B scale</b> and the whole chip passes the structural sign-off (<span class="mono">yosys check-assert</span>, 0 unresolved) — the design is coherent end-to-end, not a sketch.</p>
-          <p style="margin-top:12px">The target part is named — a <b>Kintex UltraScale+ XCKU3P</b> (1,368 DSP48E2, DDR4 + PCIe) — and the buildable proof is <b>priced: a ~$958 dev board</b> (≈$500 used), not a research program. The vendor-tool gate is <b>done</b>: the Q4_K product top <b>places and routes on the XCKU3P</b> (87.5% LUT, routed 46.5&nbsp;MHz after a bit-exact repipeline campaign). What remains is the board itself running real weights — that demo converts the roofline [EST]s into a measured tok/s.</p>
+          <p style="margin-top:12px">The target part is named — a <b>Kintex UltraScale+ XCKU3P</b> (1,368 DSP48E2, DDR4 + PCIe) — and the buildable proof is <b>priced: a ~$1,000-class dev board</b>, not a research program. The vendor-tool gate is <b>done</b>: the Q4_K product top <b>places and routes on the XCKU3P</b> (87.5% LUT, routed 46.5&nbsp;MHz after a bit-exact repipeline campaign). The fit was <b>measured at a pinned commit and carried forward by proof, not promise</b>: RTL changes since are formally proven netlist-identical at the fit configuration (yosys sequential equivalence), or the fit re-runs. What remains is the board itself running real weights — that demo converts the roofline [EST]s into a measured tok/s.</p>
         </div>
         <div class="metrics">
-          <div class="r"><span class="l">Target FPGA</span><span class="v ok">XCKU3P · 600 DSP</span></div>
+          <div class="r"><span class="l">Target FPGA</span><span class="v ok">XCKU3P · 1,368 DSP48E2</span></div>
           <div class="r"><span class="l">Full-scale elaborate</span><span class="v ok">✓ 753B · 0 err</span></div>
           <div class="r"><span class="l">Whole-chip gate</span><span class="v ok">✓ check-assert</span></div>
-          <div class="r"><span class="l">Buildable proof</span><span class="v">~$958 board</span></div>
+          <div class="r"><span class="l">Buildable proof</span><span class="v">~$1,000-class board</span></div>
           <div class="r"><span class="l">Routed fit + Fmax</span><span class="v ok">✓ 87.5% LUT · 46.5 MHz</span></div>
         </div>
       </div>
@@ -352,14 +352,14 @@
       <div class="gate">
         <div class="n">STEP 1</div>
         <h3>Whole-model fidelity</h3>
-        <p>The Q4_K operators are bit-exact to the k-quant reference; next is the <b>assembled end-to-end golden</b> — the full 753B forward reproducing the reference tokens through the Q4_K core, plus validation against the real published GGUF (mixed-type tensors).</p>
-        <div class="need">status · leaf-exact · whole-model golden in build</div>
+        <p>The Q4_K operators are bit-exact to the k-quant reference, and the <b>assembled end-to-end golden is done</b>: the whole-model forward is <b>bit-exact (1,155/1,155)</b>, and the dequant layer is <b>bitwise-equal to llama.cpp's own code on a real published GGUF</b> (104.6M weights). What stays open is scoped in §03: whole-runtime llama.cpp equality (out-of-contract by design) and the Q8_0 tensor class.</p>
+        <div class="need">status · whole-model golden done · real-GGUF dequant crosschecked</div>
       </div>
       <div class="gate">
         <div class="n">STEP 2</div>
         <h3>Measured fit → a demo on silicon</h3>
-        <p>The target part is named (XCKU3P), the proof is priced — a ~$958 dev board — and the routed fit + Fmax are measured (87.5% LUT, 46.5&nbsp;MHz). Next: that board running real weights → a measured tok/s.</p>
-        <div class="need">status · part named · Vivado routed fit next (§04)</div>
+        <p>The target part is named (XCKU3P), the proof is priced — a ~$1,000-class dev board — and the routed fit + Fmax are measured (87.5% LUT, 46.5&nbsp;MHz). Next: that board running real weights → a measured tok/s.</p>
+        <div class="need">status · routed fit + Fmax measured (§04) · board demo next</div>
       </div>
       <div class="gate">
         <div class="n">STEP 3</div>
@@ -386,7 +386,7 @@
     <div class="sechead"><span class="idx">07</span><h2>Honest limits</h2><span class="chip e">documented, not hidden</span></div>
     <div class="risks">
       <div class="risk"><div class="r">Not silicon yet</div><div class="t">Throughput / BOM figures are <b>roofline [EST]s</b>. The compute die itself <b>is now a real routed FPGA fit</b> (XCKU3P, 87.5% LUT, routed 46.5&nbsp;MHz after a bit-exact repipeline campaign) — the running board demo (§04, §06) is what turns tok/s into a measurement. Everything tagged <b>proven</b> above <b>is</b> reproducible from the repo.</div></div>
-      <div class="risk"><div class="r">Whole-model golden open</div><div class="t">The Q4_K <b>operators</b> are bit-exact to the k-quant reference; the <b>assembled 753B forward</b> and validation against the <b>real published GGUF</b> (mixed Q6_K/Q8_0/F16 tensors) are <b>in build, not done</b> — listed as open, not glossed.</div></div>
+      <div class="risk"><div class="r">Runtime equality scoped</div><div class="t">The <b>assembled 753B forward</b> is bit-exact to the golden (1,155/1,155) and the dequant layer is bitwise-equal to <b>llama.cpp's own code on a real published GGUF</b> (104.6M weights). What stays open is named: <b>whole-runtime llama.cpp numeric equality is out-of-contract by design</b> (fp32 accumulation order differs), and the Q8_0 tensor class awaits a file that contains one.</div></div>
       <div class="risk"><div class="r">Narrow by design</div><div class="t">This wins only where <b>frontier scale + must-run-offline</b> both bind. That intersection is the <b>intended niche</b>, not a bug — a Mac runs 70B; the cloud runs online; we run the full model, unplugged.</div></div>
       <div class="risk"><div class="r">One box, one seat</div><div class="t">A <b>personal appliance</b> (B=1), not a multi-user server. Batched/datacenter serving is a capability of the same silicon, not this product.</div></div>
     </div>
@@ -400,7 +400,7 @@
       <div class="brand">AIPU<b>·</b>local frontier-AI appliance</div>
       <div class="mono">Offline frontier-AI appliance · GLM-5.2 Q4_K · figures marked [EST] are roofline projections, not routed silicon</div>
     </div>
-    <p class="note">Every claim traces to the project's open verification record — items tagged <b>proven</b> are reproducible against <b>github.com/Wick-Lim/AIPU</b> (<span class="mono">make q4k</span>, <span class="mono">make formal</span>); items tagged <b>open</b> are named, in-build gaps. Throughput, BOM, and per-seat price are estimates until the FPGA demo lands. Built with an honest-gaps-documented ethos: nothing here is hidden.</p>
+    <p class="note">Every claim traces to the project's open verification record — items tagged <b>proven</b> are reproducible against <b>github.com/Wick-Lim/AIPU</b> (<span class="mono">make q4k</span>, <span class="mono">make formal</span>); items tagged <b>open</b> are named, documented gaps. Throughput, BOM, and per-seat price are estimates until the FPGA demo lands. Built with an honest-gaps-documented ethos: nothing here is hidden.</p>
   </div>
 </footer>
 
