@@ -59,7 +59,7 @@
   </div>
 
   <h2>① 메인보드 배치 (~130 × 110 mm)</h2>
-  <p class="note" style="margin:4px 0 10px">메모리 20개를 프로세서 둘레에 <b>보드 직실장</b>하고 광폭 버스(1280-bit)를 10–12층 HDI 보드에서 배선하는 구조 — 스마트폰 양산이 검증한 실장 방식이라, 표준 팹·조립 서비스로 프로토타입 제작이 가능합니다. <span style="color:#7d8c96">도면은 실치수 비례(1:1 축척 — 메모리 패키지 12.4×15mm, SoC 패키지 ~45×45mm 기준).</span></p>
+  <p class="note" style="margin:4px 0 10px">메모리 20개를 프로세서 둘레에 <b>보드 직실장</b>하고 광폭 버스(1280-bit)를 12층 HDI 보드(신호6·GND4·전원2)에서 배선하는 구조 — 스마트폰 양산이 검증한 실장 방식이라, 표준 팹·조립 서비스로 프로토타입 제작이 가능합니다. <span style="color:#7d8c96">도면은 실치수 비례(1:1 축척 — 메모리 패키지 12.4×15mm, SoC 패키지 ~50×50mm 기준).</span></p>
   <div class="panel">
   <svg viewBox="0 0 1060 960" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AIPU board top view">
     <defs>
@@ -146,9 +146,9 @@
       <text x="4" y="136" fill="#7d8c96" font-size="10">(스마트폰과 같은 실장 방식)</text>
       <text x="998" y="240" fill="#9aa39b" font-size="11" transform="rotate(90 998 370)">전원부 (VRM 다상)</text>
     </g>
-    <text x="410" y="248" fill="#9aa8b5" font-size="11" font-family="monospace">AIPU 패키지 ~45×45mm — 프로세서 단독</text>
+    <text x="410" y="248" fill="#9aa8b5" font-size="11" font-family="monospace">AIPU 패키지 ~50×50mm — 프로세서 단독</text>
     <text x="418" y="638" fill="#7d8c96" font-size="10">AIPU 프로세서 — FPGA 배치·배선 실측된 설계</text>
-    <text x="430" y="54" fill="#5d7a68" font-size="10">┈ 1280-bit HDI 배선 영역 (10–12층) ┈</text>
+    <text x="430" y="54" fill="#5d7a68" font-size="10">┈ 1280-bit HDI 배선 영역 (12층) ┈</text>
 
     <!-- dimensions -->
     <g stroke="#5a6a76" stroke-width="1">
@@ -219,7 +219,7 @@
       <line x1="470" y1="104" x2="300" y2="122"/><line x1="480" y1="104" x2="310" y2="130"/>
       <line x1="590" y1="104" x2="760" y2="122"/><line x1="600" y1="104" x2="770" y2="130"/>
     </g>
-    <text x="950" y="132" fill="#7d8c96" font-size="10">10–12층 HDI</text>
+    <text x="950" y="132" fill="#7d8c96" font-size="10">12층 HDI</text>
     <text x="66" y="166" fill="#7d8c96" font-size="10">1280-bit 메모리 버스가 이 HDI 층들에서 완결 — 임피던스 제어 + 바이트레인 길이매칭 (스마트폰 LPDDR 배선과 같은 규칙)</text>
 
     <rect x="430" y="176" width="200" height="22" rx="3" fill="#1a232b" stroke="#5a6a76"/>
@@ -308,7 +308,7 @@
     <table>
       <tr><th>품목</th><th>프로토타입 (본 문서)</th><th>양산형 (후속)</th></tr>
       <tr><td>메모리</td><td><b>LPDDR5X 24GB ×20</b> — 소매 유통 부품 (시세 변동), 특수 계약 불필요</td><td>LPDDR5X 32GB ×16 — 벤더 직거래, ~$1,500–1,900</td></tr>
-      <tr><td>실장</td><td><b>보드 직실장 + 10–12층 HDI</b> — 표준 팹·조립 서비스로 제작 가능</td><td>SoC 패키지 통합 (기판+조립 ~$120–220) + 8층 보드</td></tr>
+      <tr><td>실장</td><td><b>보드 직실장 + 12층 HDI</b> — 표준 팹·조립 서비스로 제작 가능</td><td>SoC 패키지 통합 (기판+조립 ~$120–220) + 8층 보드</td></tr>
       <tr><td>프로세서</td><td colspan="2"><b>동일 다이</b> (12–16nm, 메모리 PHY 1280-bit — 양산형은 1024-bit만 배선) · 양산 단가 ~$50–150</td></tr>
       <tr><td>저장/냉각/케이스</td><td colspan="2">M.2 NVMe 1TB ~$60 · 베이퍼챔버+팬/케이스/어댑터 ~$60–120</td></tr>
       <tr><td><b>합계 (양산 기준)</b></td><td></td><td><b>~$1,800–2,400</b></td></tr>
