@@ -12,7 +12,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AIPU">
 <meta property="og:title" content="AIPU — 어플라이언스 보드 개념 설계">
-<meta property="og:description" content="512GB LPDDR5X 통합 패키지 · ~80 tok/s [추정] · 40–60W · 120×80mm — 개념 설계 (추정치 명시).">
+<meta property="og:description" content="480GB LPDDR5X 상주 · ~110 tok/s [추정] · ~50–80W · 130×110mm — 전 부품 소매 조달 가능한 프로토타입 설계 (추정치 명시).">
 <meta property="og:url" content="https://wick-lim.github.io/AIPU/board.html">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%2314181F'/%3E%3Crect%20x='11'%20y='7'%20width='4.5'%20height='18'%20rx='1.2'%20fill='%23C27C34'/%3E%3C/svg%3E">
 </head>
@@ -47,20 +47,21 @@
 <div class="wrap">
   <p style="margin:0 0 26px;font-size:13px"><a href="./" style="color:#9aa39b;text-decoration:none">← AIPU 홈 (English)</a></p>
   <h1>AIPU — 개인용 프런티어 LLM 어플라이언스</h1>
-  <p class="sub">753B급 오픈 모델(GLM-5.2, 4-bit 양자화 ~467GB)을 <b>통째로 메모리에 올려</b> 오프라인으로 구동하는 단일 사용자 박스 — 개념 설계</p>
+  <p class="sub">753B급 오픈 모델(GLM-5.2, 4-bit 양자화 ~467GB)을 <b>통째로 메모리에 올려</b> 오프라인으로 구동하는 단일 사용자 박스 — 프로토타입 설계 (메모리·보드 전 부품 소매 조달 가능)</p>
 
   <div class="fixbar">
-    <div class="chip">메모리 <b>LPDDR5X 512GB</b> · 1024-bit · <b>~1.1TB/s</b></div>
+    <div class="chip">메모리 <b>LPDDR5X 480GB</b> · 1280-bit · <b>~1.5TB/s</b></div>
     <div class="chip">저장 <b>NVMe 1TB</b> · 부팅 시 모델 로드 ~70초</div>
-    <div class="chip">속도 <b>~70–95 tok/s</b> <span class="est">[추정]</span> — 상용 API급 체감</div>
-    <div class="chip">전력 <b>~40–60W</b> · 저소음</div>
+    <div class="chip">속도 <b>~110 tok/s</b> <span class="est">[추정]</span> — 상용 API급 체감</div>
+    <div class="chip">전력 <b>~50–80W</b> <span class="est">[추정]</span> · 저소음</div>
     <div class="chip">연결 <b>USB-C</b> 하나로 PC/폰과</div>
+    <div class="chip">부품 <b>전량 소매 유통</b> — 특수 조달 불필요 (프로세서 제외)</div>
   </div>
 
-  <h2>① 메인보드 배치 (120 × 80 mm)</h2>
-  <p class="note" style="margin:4px 0 10px">고속 광폭 메모리 버스(1024-bit)를 <b>SoC 패키지 내부에서 완결</b>하는 구조 — 보드에는 전원과 저속 I/O만 나와, 신용카드 두 장 크기로 작아집니다.</p>
+  <h2>① 메인보드 배치 (~130 × 110 mm)</h2>
+  <p class="note" style="margin:4px 0 10px">메모리 20개를 프로세서 둘레에 <b>보드 직실장</b>하고 광폭 버스(1280-bit)를 10–12층 HDI 보드에서 배선하는 구조 — 스마트폰 양산이 검증한 실장 방식이라, 표준 팹·조립 서비스로 프로토타입 제작이 가능합니다.</p>
   <div class="panel">
-  <svg viewBox="0 0 1060 700" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AIPU board top view">
+  <svg viewBox="0 0 1060 960" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AIPU board top view">
     <defs>
       <pattern id="fr4b" width="8" height="8" patternUnits="userSpaceOnUse">
         <rect width="8" height="8" fill="#0d2818"/>
@@ -71,137 +72,160 @@
       </marker>
     </defs>
 
-    <rect x="110" y="50" width="840" height="560" rx="12" fill="url(#fr4b)" stroke="#1e4a30" stroke-width="2"/>
+    <rect x="50" y="40" width="980" height="830" rx="12" fill="url(#fr4b)" stroke="#1e4a30" stroke-width="2"/>
     <g fill="#0e1114" stroke="#c9a227" stroke-width="2">
-      <circle cx="132" cy="72" r="7"/><circle cx="928" cy="72" r="7"/>
-      <circle cx="132" cy="588" r="7"/><circle cx="928" cy="588" r="7"/>
+      <circle cx="74" cy="64" r="7"/><circle cx="1006" cy="64" r="7"/>
+      <circle cx="74" cy="846" r="7"/><circle cx="1006" cy="846" r="7"/>
     </g>
 
-    <!-- SoC package -->
-    <rect x="200" y="95" width="560" height="434" rx="10" fill="#1a2129" stroke="#9aa8b5" stroke-width="2"/>
+    <!-- 1280-bit HDI routing region -->
+    <rect x="122" y="102" width="792" height="694" rx="14" fill="none" stroke="#33513f" stroke-dasharray="6 5"/>
 
-    <!-- DRAM stacks -->
+    <!-- SoC package (processor only) -->
+    <rect x="370" y="280" width="340" height="340" rx="10" fill="#1a2129" stroke="#9aa8b5" stroke-width="2"/>
+    <rect x="457" y="367" width="166" height="166" rx="5" fill="#131a21" stroke="#5fd38a" stroke-width="2"/>
+    <g font-family="monospace">
+      <text x="481" y="437" fill="#5fd38a" font-size="14" font-weight="bold">AIPU die</text>
+      <text x="465" y="459" fill="#9aa39b" font-size="10">LLM 추론 전용 프로세서</text>
+      <text x="471" y="475" fill="#9aa39b" font-size="10">메모리 PHY 1280-bit</text>
+    </g>
+
+    <!-- DRAM ring: 6 top + 6 bottom + 4 left + 4 right = 20, board-mounted -->
     <g fill="#101418" stroke="#d4b96a" stroke-width="1.4">
-      <rect x="214" y="109" width="80" height="90" rx="4"/><rect x="304" y="109" width="80" height="90" rx="4"/>
-      <rect x="395" y="109" width="80" height="90" rx="4"/><rect x="485" y="109" width="80" height="90" rx="4"/>
-      <rect x="576" y="109" width="80" height="90" rx="4"/><rect x="666" y="109" width="80" height="90" rx="4"/>
-      <rect x="214" y="425" width="80" height="90" rx="4"/><rect x="304" y="425" width="80" height="90" rx="4"/>
-      <rect x="395" y="425" width="80" height="90" rx="4"/><rect x="485" y="425" width="80" height="90" rx="4"/>
-      <rect x="576" y="425" width="80" height="90" rx="4"/><rect x="666" y="425" width="80" height="90" rx="4"/>
-      <rect x="230" y="222" width="98" height="84" rx="4"/><rect x="230" y="314" width="98" height="84" rx="4"/>
-      <rect x="632" y="222" width="98" height="84" rx="4"/><rect x="632" y="314" width="98" height="84" rx="4"/>
+      <rect x="190" y="120" width="113" height="93" rx="4"/><rect x="308" y="120" width="113" height="93" rx="4"/>
+      <rect x="426" y="120" width="113" height="93" rx="4"/><rect x="544" y="120" width="113" height="93" rx="4"/>
+      <rect x="662" y="120" width="113" height="93" rx="4"/><rect x="780" y="120" width="113" height="93" rx="4"/>
+      <rect x="190" y="690" width="113" height="93" rx="4"/><rect x="308" y="690" width="113" height="93" rx="4"/>
+      <rect x="426" y="690" width="113" height="93" rx="4"/><rect x="544" y="690" width="113" height="93" rx="4"/>
+      <rect x="662" y="690" width="113" height="93" rx="4"/><rect x="780" y="690" width="113" height="93" rx="4"/>
+      <rect x="142" y="240" width="93" height="113" rx="4"/><rect x="142" y="365" width="93" height="113" rx="4"/>
+      <rect x="142" y="490" width="93" height="113" rx="4"/><rect x="142" y="615" width="93" height="113" rx="4"/>
+      <rect x="745" y="240" width="93" height="113" rx="4"/><rect x="745" y="365" width="93" height="113" rx="4"/>
+      <rect x="745" y="490" width="93" height="113" rx="4"/><rect x="745" y="615" width="93" height="113" rx="4"/>
     </g>
     <g fill="#8f8360" font-size="9" font-family="monospace">
-      <text x="224" y="158">LP5X 32G</text><text x="314" y="158">LP5X 32G</text><text x="405" y="158">LP5X 32G</text>
-      <text x="495" y="158">LP5X 32G</text><text x="586" y="158">LP5X 32G</text><text x="676" y="158">LP5X 32G</text>
-      <text x="224" y="474">LP5X 32G</text><text x="314" y="474">LP5X 32G</text><text x="405" y="474">LP5X 32G</text>
-      <text x="495" y="474">LP5X 32G</text><text x="586" y="474">LP5X 32G</text><text x="676" y="474">LP5X 32G</text>
-      <text x="248" y="268">LP5X 32G</text><text x="248" y="360">LP5X 32G</text>
-      <text x="650" y="268">LP5X 32G</text><text x="650" y="360">LP5X 32G</text>
+      <text x="206" y="170">LP5X 24G</text><text x="324" y="170">LP5X 24G</text><text x="442" y="170">LP5X 24G</text>
+      <text x="560" y="170">LP5X 24G</text><text x="678" y="170">LP5X 24G</text><text x="796" y="170">LP5X 24G</text>
+      <text x="206" y="740">LP5X 24G</text><text x="324" y="740">LP5X 24G</text><text x="442" y="740">LP5X 24G</text>
+      <text x="560" y="740">LP5X 24G</text><text x="678" y="740">LP5X 24G</text><text x="796" y="740">LP5X 24G</text>
+      <text x="152" y="300">LP5X 24G</text><text x="152" y="425">LP5X 24G</text>
+      <text x="152" y="550">LP5X 24G</text><text x="152" y="675">LP5X 24G</text>
+      <text x="755" y="300">LP5X 24G</text><text x="755" y="425">LP5X 24G</text>
+      <text x="755" y="550">LP5X 24G</text><text x="755" y="675">LP5X 24G</text>
     </g>
 
-    <!-- die -->
-    <rect x="392" y="225" width="176" height="174" rx="5" fill="#131a21" stroke="#5fd38a" stroke-width="2"/>
-    <g font-family="monospace">
-      <text x="418" y="295" fill="#5fd38a" font-size="14" font-weight="bold">AIPU die</text>
-      <text x="410" y="317" fill="#9aa39b" font-size="10">LLM 추론 전용 프로세서</text>
-      <text x="416" y="333" fill="#9aa39b" font-size="10">메모리 PHY 1024-bit</text>
-    </g>
-
-    <!-- VRM -->
+    <!-- VRM column -->
     <g fill="#22303a" stroke="#4a5a66">
-      <rect x="880" y="100" width="60" height="40" rx="4"/><rect x="880" y="154" width="60" height="40" rx="4"/>
-      <rect x="880" y="208" width="60" height="40" rx="4"/><rect x="880" y="262" width="60" height="40" rx="4"/>
-      <rect x="880" y="316" width="60" height="40" rx="4"/><rect x="880" y="370" width="60" height="40" rx="4"/>
-      <rect x="880" y="424" width="60" height="40" rx="4"/><rect x="880" y="478" width="60" height="40" rx="4"/>
+      <rect x="920" y="110" width="60" height="40" rx="4"/><rect x="920" y="164" width="60" height="40" rx="4"/>
+      <rect x="920" y="218" width="60" height="40" rx="4"/><rect x="920" y="272" width="60" height="40" rx="4"/>
+      <rect x="920" y="326" width="60" height="40" rx="4"/><rect x="920" y="380" width="60" height="40" rx="4"/>
+      <rect x="920" y="434" width="60" height="40" rx="4"/><rect x="920" y="488" width="60" height="40" rx="4"/>
+      <rect x="920" y="542" width="60" height="40" rx="4"/><rect x="920" y="596" width="60" height="40" rx="4"/>
     </g>
 
     <!-- bottom connectors -->
     <g>
-      <rect x="200" y="548" width="70" height="36" rx="5" fill="#1a232b" stroke="#5a6a76"/>
-      <text x="209" y="570" fill="#c9a227" font-size="11" font-weight="bold">USB-C</text>
-      <rect x="292" y="548" width="58" height="36" rx="5" fill="#1a232b" stroke="#5a6a76"/>
-      <text x="299" y="570" fill="#c9a227" font-size="11" font-weight="bold">전원</text>
-      <rect x="372" y="554" width="38" height="24" rx="3" fill="#22303a" stroke="#4a5a66"/>
-      <text x="376" y="570" fill="#8fa0ab" font-size="9" font-family="monospace">OSC</text>
-      <rect x="560" y="545" width="240" height="44" rx="5" fill="none" stroke="#8fa0ab" stroke-dasharray="5 4"/>
-      <text x="572" y="563" fill="#8fa0ab" font-size="10">뒷면: M.2 NVMe 1TB (모델 보관)</text>
-      <text x="572" y="579" fill="#7d8c96" font-size="10">+ 전원부 일부</text>
+      <rect x="200" y="800" width="70" height="36" rx="5" fill="#1a232b" stroke="#5a6a76"/>
+      <text x="209" y="822" fill="#c9a227" font-size="11" font-weight="bold">USB-C</text>
+      <rect x="292" y="800" width="58" height="36" rx="5" fill="#1a232b" stroke="#5a6a76"/>
+      <text x="299" y="822" fill="#c9a227" font-size="11" font-weight="bold">전원</text>
+      <rect x="372" y="806" width="38" height="24" rx="3" fill="#22303a" stroke="#4a5a66"/>
+      <text x="376" y="822" fill="#8fa0ab" font-size="9" font-family="monospace">OSC</text>
+      <rect x="580" y="796" width="260" height="44" rx="5" fill="none" stroke="#8fa0ab" stroke-dasharray="5 4"/>
+      <text x="592" y="814" fill="#8fa0ab" font-size="10">뒷면: M.2 NVMe 1TB (모델 보관)</text>
+      <text x="592" y="830" fill="#7d8c96" font-size="10">+ 전원부 일부</text>
     </g>
 
     <!-- callouts -->
     <g stroke="#5a6a76" stroke-width="1" fill="none">
-      <path d="M104 130 L214 140"/>
-      <path d="M104 300 L392 310"/>
-      <path d="M104 420 L300 445"/>
+      <path d="M44 170 L190 170"/>
+      <path d="M44 440 L457 445"/>
+      <path d="M44 760 L200 770"/>
     </g>
     <g fill="#9aa39b" font-size="11">
-      <text x="4" y="118">LPDDR5X 32GB ×16</text>
-      <text x="4" y="133" fill="#7d8c96" font-size="10">SoC 패키지 위에 직접 실장</text>
-      <text x="4" y="148" fill="#7d8c96" font-size="10">(Apple M-Ultra와 같은 방식)</text>
-      <text x="4" y="288">AIPU 프로세서</text>
-      <text x="4" y="303" fill="#7d8c96" font-size="10">FPGA 배치·배선 실측된 설계</text>
-      <text x="4" y="408">1024-bit 버스는 패키지 내부</text>
-      <text x="4" y="423" fill="#7d8c96" font-size="10">→ 보드가 작고 단순해지는 이유</text>
-      <text x="958" y="200" fill="#9aa39b" font-size="11" transform="rotate(90 958 200)">전원부 (VRM 다상)</text>
+      <text x="4" y="150" fill="#cfd6cb">LPDDR5X 24GB ×20</text>
+      <text x="4" y="165" fill="#7d8c96" font-size="10">보드 직실장 — 소매 유통 부품</text>
+      <text x="4" y="180" fill="#7d8c96" font-size="10">(스마트폰과 같은 실장 방식)</text>
+      <text x="4" y="420" fill="#cfd6cb">AIPU 프로세서</text>
+      <text x="4" y="435" fill="#7d8c96" font-size="10">FPGA 배치·배선 실측된 설계</text>
+      <text x="4" y="740" fill="#cfd6cb">1280-bit 메모리 버스</text>
+      <text x="4" y="755" fill="#7d8c96" font-size="10">10–12층 HDI 보드 배선</text>
+      <text x="4" y="770" fill="#7d8c96" font-size="10">(점선 영역)</text>
+      <text x="998" y="240" fill="#9aa39b" font-size="11" transform="rotate(90 998 240)">전원부 (VRM 다상)</text>
     </g>
-    <text x="330" y="86" fill="#9aa8b5" font-size="11" font-family="monospace">AIPU 패키지 ~80×62mm — 프로세서 + 메모리 512GB 통합</text>
+    <text x="380" y="270" fill="#9aa8b5" font-size="11" font-family="monospace">AIPU 패키지 ~45×45mm — 프로세서 단독</text>
 
     <!-- dimensions -->
     <g stroke="#5a6a76" stroke-width="1">
-      <line x1="110" y1="640" x2="950" y2="640" marker-start="url(#dim)" marker-end="url(#dim)"/>
-      <line x1="985" y1="50" x2="985" y2="610" marker-start="url(#dim)" marker-end="url(#dim)"/>
+      <line x1="50" y1="905" x2="1030" y2="905" marker-start="url(#dim)" marker-end="url(#dim)"/>
+      <line x1="1046" y1="40" x2="1046" y2="870" marker-start="url(#dim)" marker-end="url(#dim)"/>
     </g>
-    <text x="505" y="662" fill="#8fa0ab" font-size="12" font-family="monospace">120 mm</text>
-    <text x="995" y="335" fill="#8fa0ab" font-size="12" font-family="monospace">80</text>
-    <text x="992" y="350" fill="#8fa0ab" font-size="12" font-family="monospace">mm</text>
+    <text x="505" y="930" fill="#8fa0ab" font-size="12" font-family="monospace">~130 mm</text>
+    <text x="1032" y="445" fill="#8fa0ab" font-size="12" font-family="monospace">~110</text>
+    <text x="1038" y="460" fill="#8fa0ab" font-size="12" font-family="monospace">mm</text>
   </svg>
   <div class="legend">
     <span><span class="sw" style="background:#1a2129;border:1px solid #9aa8b5"></span>SoC 패키지</span>
     <span><span class="sw" style="background:#131a21;border:1px solid #5fd38a"></span>프로세서 다이</span>
-    <span><span class="sw" style="background:#101418;border:1px solid #d4b96a"></span>메모리</span>
+    <span><span class="sw" style="background:#101418;border:1px solid #d4b96a"></span>메모리 (보드 위)</span>
     <span><span class="sw" style="background:#22303a;border:1px solid #4a5a66"></span>전원부</span>
     <span><span class="sw" style="background:none;border:1px dashed #8fa0ab"></span>뒷면 부품</span>
   </div>
   </div>
 
-  <h2>② 패키지 단면</h2>
+  <h2>② 실장 단면</h2>
   <div class="panel">
-  <svg viewBox="0 0 1060 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="package cross section">
-    <rect x="10" y="10" width="1040" height="220" rx="10" fill="#10151b" stroke="#2a3138"/>
+  <svg viewBox="0 0 1060 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="board cross section">
+    <rect x="10" y="10" width="1040" height="230" rx="10" fill="#10151b" stroke="#2a3138"/>
     <g fill="#3a444d">
-      <rect x="120" y="26" width="700" height="10"/>
-      <rect x="140" y="18" width="8" height="18"/><rect x="180" y="18" width="8" height="18"/><rect x="220" y="18" width="8" height="18"/>
-      <rect x="260" y="18" width="8" height="18"/><rect x="300" y="18" width="8" height="18"/><rect x="340" y="18" width="8" height="18"/>
-      <rect x="380" y="18" width="8" height="18"/><rect x="420" y="18" width="8" height="18"/><rect x="460" y="18" width="8" height="18"/>
-      <rect x="500" y="18" width="8" height="18"/><rect x="540" y="18" width="8" height="18"/><rect x="580" y="18" width="8" height="18"/>
-      <rect x="620" y="18" width="8" height="18"/><rect x="660" y="18" width="8" height="18"/><rect x="700" y="18" width="8" height="18"/>
-      <rect x="740" y="18" width="8" height="18"/><rect x="780" y="18" width="8" height="18"/>
+      <rect x="120" y="34" width="820" height="10"/>
+      <rect x="150" y="24" width="8" height="20"/><rect x="200" y="24" width="8" height="20"/><rect x="250" y="24" width="8" height="20"/>
+      <rect x="300" y="24" width="8" height="20"/><rect x="350" y="24" width="8" height="20"/><rect x="400" y="24" width="8" height="20"/>
+      <rect x="450" y="24" width="8" height="20"/><rect x="500" y="24" width="8" height="20"/><rect x="550" y="24" width="8" height="20"/>
+      <rect x="600" y="24" width="8" height="20"/><rect x="650" y="24" width="8" height="20"/><rect x="700" y="24" width="8" height="20"/>
+      <rect x="750" y="24" width="8" height="20"/><rect x="800" y="24" width="8" height="20"/><rect x="850" y="24" width="8" height="20"/>
+      <rect x="900" y="24" width="8" height="20"/>
     </g>
-    <rect x="120" y="40" width="700" height="14" rx="3" fill="#2c3640"/>
-    <text x="830" y="52" fill="#7d8c96" font-size="10">베이퍼챔버 냉각</text>
-    <rect x="300" y="58" width="340" height="6" fill="#4a4636"/>
-    <rect x="410" y="66" width="120" height="26" rx="3" fill="#131a21" stroke="#5fd38a"/>
-    <text x="428" y="84" fill="#5fd38a" font-size="10" font-family="monospace">AIPU die</text>
+    <text x="950" y="42" fill="#7d8c96" font-size="10">베이퍼챔버 냉각</text>
+
+    <!-- SoC: die + package substrate on the PCB -->
+    <rect x="470" y="50" width="120" height="28" rx="3" fill="#131a21" stroke="#5fd38a"/>
+    <text x="488" y="69" fill="#5fd38a" font-size="10" font-family="monospace">AIPU die</text>
+    <rect x="430" y="78" width="200" height="14" rx="3" fill="#274233"/>
+    <text x="640" y="90" fill="#7d8c96" font-size="10">SoC 패키지 (~45×45mm)</text>
+
+    <!-- DRAM packages mounted directly on the same PCB -->
     <g fill="#101418" stroke="#d4b96a">
-      <rect x="180" y="60" width="90" height="32" rx="3"/><rect x="286" y="60" width="90" height="32" rx="3"/>
-      <rect x="564" y="60" width="90" height="32" rx="3"/><rect x="670" y="60" width="90" height="32" rx="3"/>
+      <rect x="130" y="62" width="115" height="30" rx="3"/><rect x="265" y="62" width="115" height="30" rx="3"/>
+      <rect x="680" y="62" width="115" height="30" rx="3"/><rect x="815" y="62" width="115" height="30" rx="3"/>
     </g>
-    <text x="188" y="80" fill="#8f8360" font-size="9" font-family="monospace">LP5X ×16</text>
-    <rect x="160" y="94" width="620" height="18" rx="3" fill="#274233"/>
-    <text x="790" y="108" fill="#7d8c96" font-size="10">패키지 기판 — 1024-bit 배선이 여기서 완결</text>
+    <text x="140" y="82" fill="#8f8360" font-size="9" font-family="monospace">LP5X 24G ×20 — 보드 직실장</text>
+
+    <!-- solder balls -->
     <g fill="#c9a227">
-      <circle cx="190" cy="120" r="4"/><circle cx="230" cy="120" r="4"/><circle cx="270" cy="120" r="4"/><circle cx="310" cy="120" r="4"/>
-      <circle cx="350" cy="120" r="4"/><circle cx="390" cy="120" r="4"/><circle cx="430" cy="120" r="4"/><circle cx="470" cy="120" r="4"/>
-      <circle cx="510" cy="120" r="4"/><circle cx="550" cy="120" r="4"/><circle cx="590" cy="120" r="4"/><circle cx="630" cy="120" r="4"/>
-      <circle cx="670" cy="120" r="4"/><circle cx="710" cy="120" r="4"/><circle cx="750" cy="120" r="4"/>
+      <circle cx="150" cy="97" r="3"/><circle cx="185" cy="97" r="3"/><circle cx="220" cy="97" r="3"/>
+      <circle cx="285" cy="97" r="3"/><circle cx="320" cy="97" r="3"/><circle cx="355" cy="97" r="3"/>
+      <circle cx="450" cy="97" r="3"/><circle cx="485" cy="97" r="3"/><circle cx="520" cy="97" r="3"/><circle cx="555" cy="97" r="3"/><circle cx="590" cy="97" r="3"/><circle cx="615" cy="97" r="3"/>
+      <circle cx="700" cy="97" r="3"/><circle cx="735" cy="97" r="3"/><circle cx="770" cy="97" r="3"/>
+      <circle cx="835" cy="97" r="3"/><circle cx="870" cy="97" r="3"/><circle cx="905" cy="97" r="3"/>
     </g>
-    <text x="790" y="126" fill="#7d8c96" font-size="10">BGA — 전원·저속 I/O만</text>
-    <rect x="60" y="130" width="880" height="26" rx="3" fill="#0d2818" stroke="#1e4a30"/>
-    <text x="790" y="148" fill="#7d8c96" font-size="10">메인보드 8층 · 120×80mm</text>
-    <rect x="330" y="162" width="200" height="22" rx="3" fill="#1a232b" stroke="#5a6a76"/>
-    <text x="352" y="177" fill="#8fa0ab" font-size="10" font-family="monospace">M.2 NVMe (뒷면)</text>
-    <text x="60" y="212" fill="#5fd38a" font-size="11">넓고 빠른 배선은 전부 패키지 안 → 보드는 전원과 USB만 — 작고 조용한 박스가 되는 구조적 이유.</text>
+
+    <!-- HDI PCB with layer stack -->
+    <rect x="60" y="104" width="880" height="46" rx="3" fill="#0d2818" stroke="#1e4a30"/>
+    <g stroke="#1e4a30" stroke-width="1">
+      <line x1="66" y1="114" x2="934" y2="114"/><line x1="66" y1="122" x2="934" y2="122"/>
+      <line x1="66" y1="130" x2="934" y2="130"/><line x1="66" y1="138" x2="934" y2="138"/>
+    </g>
+    <g stroke="#c9a227" stroke-width="1.4">
+      <line x1="470" y1="104" x2="300" y2="122"/><line x1="480" y1="104" x2="310" y2="130"/>
+      <line x1="590" y1="104" x2="760" y2="122"/><line x1="600" y1="104" x2="770" y2="130"/>
+    </g>
+    <text x="950" y="132" fill="#7d8c96" font-size="10">10–12층 HDI</text>
+    <text x="66" y="166" fill="#7d8c96" font-size="10">1280-bit 메모리 버스가 이 HDI 층들에서 완결 — 임피던스 제어 + 바이트레인 길이매칭 (스마트폰 LPDDR 배선과 같은 규칙)</text>
+
+    <rect x="430" y="176" width="200" height="22" rx="3" fill="#1a232b" stroke="#5a6a76"/>
+    <text x="452" y="191" fill="#8fa0ab" font-size="10" font-family="monospace">M.2 NVMe (뒷면)</text>
+    <text x="60" y="226" fill="#5fd38a" font-size="11">특수 패키지 기판이 필요 없는 구조 — 표준 팹·조립 서비스(부품 위탁 포함)로 프로토타입 제작이 가능한 이유.</text>
   </svg>
   </div>
 
@@ -249,8 +273,8 @@
 
     <rect x="690" y="46" width="210" height="140" rx="8" fill="#131a21" stroke="#d4b96a"/>
     <text x="706" y="72" fill="#d4b96a" font-size="13" font-weight="bold">LPDDR5X PHY</text>
-    <text x="706" y="94" fill="#7d8c96" font-size="11" font-family="monospace">1024-bit</text>
-    <text x="706" y="114" fill="#cfd6cb" font-size="12" font-family="monospace">512GB · ~1.1TB/s</text>
+    <text x="706" y="94" fill="#7d8c96" font-size="11" font-family="monospace">1280-bit</text>
+    <text x="706" y="114" fill="#cfd6cb" font-size="12" font-family="monospace">480GB · ~1.5TB/s</text>
 
     <rect x="690" y="206" width="210" height="150" rx="8" fill="#131a21" stroke="#8fa0ab"/>
     <text x="706" y="232" fill="#8fa0ab" font-size="13" font-weight="bold">호스트 · 저장</text>
@@ -263,7 +287,7 @@
       <path d="M650 116 L690 116" marker-end="url(#ar2b)"/>
       <path d="M370 200 L410 200" marker-end="url(#ar2b)"/>
     </g>
-    <text x="652" y="106" fill="#7d8c96" font-size="10">1.1TB/s</text>
+    <text x="652" y="106" fill="#7d8c96" font-size="10">1.5TB/s</text>
   </svg>
   </div>
 
@@ -271,42 +295,41 @@
   <div class="panel">
     <table>
       <tr><th>항목</th><th>값</th><th>설명</th></tr>
-      <tr><td>출력 속도</td><td><b>~70–95 tok/s</b></td><td>모델 전체가 1.1TB/s 메모리에 상주 → 상용 API(초당 수십 토큰)급 체감. 네트워크·대기열 지연 없음, 시간대 무관하게 일정</td></tr>
+      <tr><td>출력 속도</td><td><b>~110 tok/s</b></td><td>모델 전체가 ~1.5TB/s 메모리에 상주 → 상용 API(초당 수십 토큰)급 체감. 네트워크·대기열 지연 없음, 시간대 무관하게 일정</td></tr>
       <tr><td>첫 응답</td><td>즉시</td><td>로컬 연산 — 왕복 지연 없음</td></tr>
       <tr><td>부팅</td><td>~70초</td><td>NVMe → 메모리 1회 로드, 이후 저장장치 미사용</td></tr>
-      <tr><td>전력</td><td><b>~40–60W</b></td><td>노트북 어댑터급. USB-PD 또는 DC. 베이퍼챔버 + 저소음 팬</td></tr>
+      <tr><td>전력</td><td><b>~50–80W</b></td><td>노트북 어댑터급. USB-PD 또는 DC. 베이퍼챔버 + 저소음 팬</td></tr>
       <tr><td>프라이버시</td><td>완전 오프라인</td><td>프롬프트/응답이 기기 밖으로 나가지 않음</td></tr>
     </table>
     <p class="note" style="margin:12px 0 0">속도는 순수 추측이 아니라 대역폭 루프라인에 <b>실측 입력</b>을 넣은 값입니다 — 전문가 합집합 계수 U(K)와 투기 디코딩(MTP) 수락률은 GLM-4.5-Air에서 실측 (U(2)=1.62, U(4)=2.65, U(8)=4.27; 위치별 수락률 0.87/0.60/0.32/…).</p>
   </div>
 
-  <h2>⑤ 부품 구성 개략 <span class="est">[추정 · 양산 기준]</span></h2>
+  <h2>⑤ 부품 구성 — 프로토와 양산형 <span class="est">[추정]</span></h2>
   <div class="panel">
     <table>
-      <tr><th>품목</th><th>수량</th><th>개략가</th></tr>
-      <tr><td>LPDDR5X 32GB</td><td>16</td><td>~$1,500–1,900</td></tr>
-      <tr><td>M.2 NVMe 1TB</td><td>1</td><td>~$60</td></tr>
-      <tr><td>AIPU SoC (양산 단가)</td><td>1</td><td>~$50–150</td></tr>
-      <tr><td>패키지 (기판 + 조립)</td><td>1</td><td>~$120–220</td></tr>
-      <tr><td>메인보드 8층 + 전원부</td><td>1식</td><td>~$50–90</td></tr>
-      <tr><td>냉각/케이스/어댑터</td><td>1식</td><td>~$60–120</td></tr>
-      <tr><td><b>합계</b></td><td></td><td><b>~$1,800–2,400</b></td></tr>
+      <tr><th>품목</th><th>프로토타입 (본 문서)</th><th>양산형 (후속)</th></tr>
+      <tr><td>메모리</td><td><b>LPDDR5X 24GB ×20</b> — 소매 유통 부품 (시세 변동), 특수 계약 불필요</td><td>LPDDR5X 32GB ×16 — 벤더 직거래, ~$1,500–1,900</td></tr>
+      <tr><td>실장</td><td><b>보드 직실장 + 10–12층 HDI</b> — 표준 팹·조립 서비스로 제작 가능</td><td>SoC 패키지 통합 (기판+조립 ~$120–220) + 8층 보드</td></tr>
+      <tr><td>프로세서</td><td colspan="2"><b>동일 다이</b> (12–16nm, 메모리 PHY 1280-bit — 양산형은 1024-bit만 배선) · 양산 단가 ~$50–150</td></tr>
+      <tr><td>저장/냉각/케이스</td><td colspan="2">M.2 NVMe 1TB ~$60 · 베이퍼챔버+팬/케이스/어댑터 ~$60–120</td></tr>
+      <tr><td><b>합계 (양산 기준)</b></td><td></td><td><b>~$1,800–2,400</b></td></tr>
     </table>
+    <p class="note" style="margin:12px 0 0">프로토타입의 요점은 가격이 아니라 <b>조달 경로</b>입니다 — 프로세서를 제외한 전 부품이 소매 유통이라, 실리콘만 확보되면 특수 계약·특수 패키징 없이 즉시 조립할 수 있습니다. 크기·집적도가 우선이 되는 양산형은 메모리를 패키지 안으로 옮겨 보드를 120×80mm로 줄입니다.</p>
   </div>
 
   <h2>⑥ 한눈 스펙</h2>
   <div class="panel">
     <table>
       <tr><td>구동 모델</td><td>GLM-5.2 (753B, 4-bit 양자화 Q4_K) — 디퀀트는 실제 GGUF의 자체 코드와, 전체 포워드는 골든 참조와 비트 단위 동일 (시뮬레이션 검증)</td></tr>
-      <tr><td>출력 속도</td><td>~70–95 tok/s <span class="est">[추정]</span> (적응형 투기 디코딩 포함)</td></tr>
-      <tr><td>메모리</td><td>LPDDR5X 512GB, 1024-bit, ~1.1TB/s (패키지 통합)</td></tr>
-      <tr><td>저장</td><td>NVMe 1TB (모델 보관)</td></tr>
-      <tr><td>크기</td><td>메인보드 120×80mm — 소형 셋톱 폼팩터</td></tr>
-      <tr><td>전력 / 소음</td><td>~40–60W / 저소음</td></tr>
+      <tr><td>출력 속도</td><td>~110 tok/s <span class="est">[추정]</span> (적응형 투기 디코딩 포함) — 양산형(1024-bit)은 ~80–100</td></tr>
+      <tr><td>메모리</td><td>LPDDR5X 480GB, 1280-bit, ~1.5TB/s — 24GB ×20 보드 직실장 (양산형: 512GB, 패키지 통합)</td></tr>
+      <tr><td>저장</td><td>NVMe 1TB (모델 보관 + KV 오버플로)</td></tr>
+      <tr><td>크기</td><td>메인보드 ~130×110mm — 소형 셋톱 폼팩터 (양산형 120×80mm)</td></tr>
+      <tr><td>전력 / 소음</td><td>~50–80W <span class="est">[추정]</span> / 저소음 (양산형 ~40–60W)</td></tr>
       <tr><td>연결</td><td>USB-C ×1 (데이터) + 전원</td></tr>
-      <tr><td>목표 가격대</td><td>~$3,500–5,000 <span class="est">[추정]</span></td></tr>
+      <tr><td>목표 가격대</td><td>~$3,500–5,000 <span class="est">[추정 · 양산 기준]</span></td></tr>
     </table>
-    <p class="note" style="margin:12px 0 0">본 문서는 개념 설계입니다. 성능·비용 수치는 대역폭 루프라인 추정치이며(U(K)·수락률 입력은 GLM-4.5-Air 실측), 프로세서 RTL은 시뮬레이션에서 전체 포워드가 골든 참조와 비트 단위 동일(1,155 테스트), 디퀀트 계층은 실제 공개 GGUF에서 llama.cpp 자체 디퀀트 코드와 비트 단위 동일(1.046억 가중치)함이 검증되었습니다. FPGA는 배치·배선(fit)까지 실측 — 고정 커밋에서 측정하고 이후 변경은 형식 등가 증명으로 유지 — 실보드 구동 데모는 다음 단계입니다.</p>
+    <p class="note" style="margin:12px 0 0">본 문서는 개념 설계입니다. 성능·비용 수치는 대역폭 루프라인 추정치이며(U(K)·수락률 입력은 GLM-4.5-Air 실측), 프로세서 RTL은 시뮬레이션에서 전체 포워드가 골든 참조와 비트 단위 동일(1,155 테스트), 디퀀트 계층은 실제 공개 GGUF 두 파일에서 llama.cpp 자체 디퀀트 코드와 비트 단위 동일(Q4_K/Q6_K/Q8_0, 3.77억 가중치)함이 검증되었습니다. FPGA는 배치·배선(fit)까지 실측 — 고정 커밋에서 측정하고 이후 변경은 형식 등가 증명으로 유지 — 실보드 구동 데모는 다음 단계입니다.</p>
   </div>
 </div>
 
