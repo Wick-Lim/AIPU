@@ -20,12 +20,14 @@
 MTP K=2, clk_en_ctrl idle-gate, flash_layout balance, fmax fixes, predictor-prefetch [measured no-op]).
 The perf multipliers for those levers are **[prior-FP8]** (branch `fp8`; Q4_K re-measure PENDING) — see the
 banner above. Numbers marked **[EST]** are roofline model estimates, not measured silicon. **Numeric
-honesty:** the Q4_K GEMM core is **bit-exact to the team's own ggml reference `tools/q4k_ref.py`** (a
-*self-referential* golden, not the real GGUF bytes or llama.cpp) — see [`COVERAGE.md`](COVERAGE.md) /
-[`FORMAL.md`](FORMAL.md) and the README verification table. Bit-exactness to the **real published
-UD-Q4_K_XL GGUF / llama.cpp is NOT validated** (OPEN): the file has never been downloaded, the RTL uses
-**bf16 activations + fp32 accumulate** while llama.cpp uses **Q8_K-quantized activations + integer dot** —
-a *different arithmetic contract*. Levers that change outputs are flagged **NOT bit-exact**.
+honesty:** the Q4_K GEMM core is **bit-exact to the team's own ggml reference `tools/q4k_ref.py`** —
+whose **dequant layer is now proven on real GGUF bytes** (376,586,240 weights — Q4_K/Q6_K/Q8_0,
+two real published GGUFs — bitwise-equal to llama.cpp's own dequant — [`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)) — see
+[`COVERAGE.md`](COVERAGE.md) / [`FORMAL.md`](FORMAL.md) and the README verification table. The
+**real 467 GB UD-Q4_K_XL file itself / the llama.cpp whole runtime are NOT validated**: the big file
+has never been downloaded, and the RTL uses **bf16 activations + fp32 accumulate** while llama.cpp
+uses **Q8_K-quantized activations + integer dot** — a *different arithmetic contract*
+(out-of-contract by design). Levers that change outputs are flagged **NOT bit-exact**.
 
 > **Q4_K vs FP8 (why the retarget helps the roofline).** UD-Q4_K_XL is **467 GB** (~38% smaller than the
 > 753 GB FP8 checkpoint; ~0.6 B/param avg vs ~1.0). The workload is **memory-bandwidth-bound**, so fewer
@@ -35,8 +37,10 @@ a *different arithmetic contract*. Levers that change outputs are flagged **NOT 
 > per-column `w_type` routing in `glm_matmul_q4k`, and `desc_wtype` in `weight_loader_q4k` (gates:
 > `make mixedtype` — q6k_prim, q8_0_prim, glm_matmul_mixed 32/32, weight_loader_q4k_mixed 192/192 incl. a
 > 24-tile mixed sequence; bit-exact to the same `tools/q4k_ref.py` reimpl golden), so the chip **can** now
-> consume a real UD-Q4_K_XL checkpoint's dynamic type mix (sensitive tensors at Q6_K/Q8_0/F16) — still
-> **not bit-verified against the real GGUF bytes**.
+> consume a real UD-Q4_K_XL checkpoint's dynamic type mix (sensitive tensors at Q6_K/Q8_0/F16). The
+> Q4_K/Q6_K/Q8_0 dequant layer is **bit-verified against real GGUF bytes**
+> ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)); the 467 GB GLM file itself has not been consumed
+> end-to-end.
 
 > **Naming note (storage backend).** The committed RTL identifiers — `flash_xbar`, `FLASH_LAT`,
 > `flash_req`, `flash_seq`, `flash_layout`, `flash_is_expert`, `flash_expert_id`, … — are kept
@@ -112,7 +116,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 | 6 | **Contextual activation sparsity in SwiGLU** | Low-rank predictor → fetch only active W_up cols / W_down rows | ~1.5–3× fewer routed bytes (~14→~5–9 GB); **NOT bit-exact** | **rtl-here** | high | ✅ |
 | 7 | **Dynamic top-k expert pruning (k_eff<8)** | Threshold-mask tiny renormalized gates in the router FSM | ~1.3–1.6× fewer routed bytes; cheapest big lever; **NOT bit-exact** | **rtl-here** | low | ✅ |
 | 8 | **Exact router-driven prefetch + K-token union** | Run cheap router GEMV for K spec tokens → exact union prefetch | Demand-stall 81%→~99% + ~1.5–2× byte-dedup; **bit-exact** | **rtl-here** | med | ✅ |
-| 9 | **Unmask + compress the hot-weight DDR5 read** | Point weight_decomp at hot path; amortize K×; +DDR5 channels | The *next* wall: the ~9 GB hot-set becomes DDR-bound (rung-② ~15–40 band) | **rtl-here** | med | ✅ |
+| 9 | **Unmask + compress the hot-weight DDR5 read** | Point weight_decomp at hot path; amortize K×; +DDR5 channels | The *next* wall: the ~11 GB hot-set touch becomes DDR-bound (rung-② ~15–40 band; canonical: R3_APPLIANCE_SPEC §2) | **rtl-here** | med | ✅ |
 | 10 | **IndexShare (DSA index once / 4 layers)** | Cache index-list; skip dsa_indexer on 3 of 4 layers (model-faithful) | At 1M ctx: index-read cut ~4× → keeps long-ctx NVMe-bound | **rtl-here** | med | ✅ |
 | 11 | **Parallel/pipelined DSA indexer** | Replace in-order 1-MAC dot with 128-lane reduction tree | At 1M ctx: ~0.05→~6 tok/s (kills O(S)·7-cyc drain); **bit-exact** | **rtl-here** | high | ✅ |
 | 12 | **MLA weight absorption (attend in 512-dim latent)** | Fold W_uk into q, W_uv into W_o; drop per-key up-projection | Removes ~3.2e5 per-key GEMMs/tok; **bit-exact** (matmul reassoc) | **rtl-here** | high | ✅ |
@@ -174,7 +178,7 @@ These touch `(1−h)·footprint`, `K`, or the bus itself.
   Both **NOT bit-exact** (quality knobs; must be validated against the accuracy contract). #7 is the cheapest
   big lever (a comparator+mask in the router).
 - **Hot-weight DDR5 second wall (#9)** — not today's wall, but bites once the first 3–4 NVMe/storage levers land;
-  the ~9 GB Q4_K hot-set (attention/dense/shared, DDR-resident) then becomes DDR-bound, set by DDR BW
+  the ~11 GB Q4_K hot-set touch (attention/dense/shared, DDR-resident; canonical: R3_APPLIANCE_SPEC §2) then becomes DDR-bound, set by DDR BW
   (rung-② ~15–40 band). Decomp+K-amortize+channels keep the post-NVMe-fix regime from re-stalling.
 - **Long-context faithful set (#10 IndexShare, #11 parallel indexer, #12 MLA absorption)** — at 1M ctx the
   O(S) indexer and per-key up-projection, *not* NVMe/storage, become the wall (in-order indexer ≈ 0.05 tok/s). These
@@ -284,7 +288,11 @@ consumers) + `k_cur` port + `pass_*` taps; new `src/spec_depth_adapt.v` saturati
 **output-invariant by construction** (spec==greedy for ANY depth schedule). Gates: `spec_depth_adapt`
 31,522; `spec_decode_seq`(K>1) 3,702 (K now 1/2/3/4/6/8); K=1 exact 621; `spec_chain_top` 4/4 incl.
 a new DRAFT_K=4 engine; `spec_batched_top` 8/8; `spec_decode_top` 18/18; new `make spec-adapt`
-Makefile gate. The only remaining unknown is the accept rate r — vLLM MTP sweep pending.)*
+Makefile gate. The accept rate r has since been **measured** (job B vLLM MTP sweep, GLM-4.5-Air:
+r₁=0.87 with steep per-position decay 0.87/0.60/0.32/0.13/0.04, A_eff plateau ~2.9 → the
+memory-bound optimum is **K=1–2** and the adaptive controller settles there on its own —
+[`H_MEASUREMENT.md`](H_MEASUREMENT.md) 3rd measurement; K≤5 stays as headroom for GLM-5.2's
+deeper-trained MTP).)*
 
 ---
 
@@ -293,7 +301,8 @@ Makefile gate. The only remaining unknown is the accept rate r — vLLM MTP swee
 The **product is the first row** (local, single-user box). The other two are *analyses of the same silicon*
 under deployments this product does not target — kept for honesty, not as the roadmap. All figures are
 **[EST]** roofline projections (per-token Q4_K footprint ~25 GB = 40B active × ~0.6 B/param, of which the
-**~14 GB routed-expert bytes are the NVMe wall** and the **~9 GB hot-set caches in DDR**).
+**~14 GB routed-expert bytes are the NVMe wall** and the **~11 GB hot-set touch caches in DDR** —
+canonical byte constants: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2).
 
 | Regime | Deployment | Bound by | tok/s (today → with levers) **[EST]** | Levers that apply |
 |--------|---------|----------|----------------------------------------|-------------------|
@@ -325,8 +334,10 @@ the spec multiplier `K` as **A/U(K)** (measured U above). See also
 rung-③ design point is now FULL RESIDENCY**: 512 GB LPDDR5X (16×32 GB, 1024-bit on-package, ~1.1 TB/s)
 holds the whole ~467 GB checkpoint — **h=1 by construction**, cold storage is one commodity M.2 NVMe
 (boot-load ~70 s), and the ONFI-64ch streaming tier is deleted from the primary SKU (pads stay on-die
-for the hybrid upside SKU). The residency-box effective band is **~76–95 tok/s [EST]** (the only
-remaining unknown is the accept rate r — vLLM MTP sweep pending). The h-curve menu above therefore
+for the hybrid upside SKU). The residency-box design point is **≈80 tok/s [measured-inputs EST]**
+(U(K) **and** the accept rate r both GLM-family measured — job B's vLLM MTP sweep put the
+memory-bound optimum at K=1–2; ~95 if GLM-5.2's deeper MTP hits its published accept depth —
+[`H_MEASUREMENT.md`](H_MEASUREMENT.md)). The h-curve menu above therefore
 applies to **rung ① / the hybrid upside SKU / >512 GB checkpoints**, not the primary rung-③ SKU; the
 **54–127** figure survives only as the hybrid-SKU-if-h≥0.75 note. U(K) is now **GLM-family measured**
 (GLM-4.5-Air: U(2)=1.60–1.64, U(4)=2.60–2.71, U(8)=4.19–4.41 — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)

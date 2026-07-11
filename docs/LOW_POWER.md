@@ -53,7 +53,7 @@ So per-token energy splits roughly (Q4_K, **~25 GB active bytes/token** = ~40B a
 | bucket | bytes/token | why | can we cut it? |
 |---|---|---|---|
 | **NVMe routed-expert bytes** | **~14 GB (the wall)** | top-8/256 experts/MoE-layer **change every token** and are streamed from the NVMe SSD on the streaming rungs (467 GB ≫ those rungs' DDR — can't all reside there; the rung-③ residency box holds all 467 GB in 512 GB LPDDR5X, so this row becomes a DRAM read — see the pivot note above) | **only** by moving fewer bytes or moving them less often |
-| DDR / cache / KV | **~9 GB hot-set** + latent-KV | attention/dense/shared working set that *can* cache in fast DDR (DDR4 rung-① / DDR5·HBM rung-②) | HBM (energy/bit), smaller footprint |
+| DDR / cache / KV | **~11 GB hot-set touch** + latent-KV (canonical: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2 — 25 − 14 GB; the earlier "~9 GB" was an undercount) | attention/dense/shared working set that *can* cache in fast DDR (DDR4 rung-① / DDR5·HBM rung-②) | HBM (energy/bit), smaller footprint |
 | **compute die** | ~80 GFLOP/token (bf16) | on a die that is mostly stalled on the expert stream | DVFS, gating, die-shrink (all done/free — see §4) |
 
 Although the routed experts are only ~56 % of the ~25 GB active bytes, they **dominate the energy**
@@ -239,7 +239,11 @@ so it stays on the output-preserving floor. GLM-U K-sweep: at r=0.9 tok/s platea
 adds nothing), at r=0.8 the optimum is K=2–3 → adaptive range **K∈[1..5]**. Gates: `spec_depth_adapt`
 31,522; `spec_decode_seq`(K>1) 3,702 (K 1/2/3/4/6/8); K=1 exact 621; `spec_chain_top` 4/4 incl. a new
 DRAFT_K=4 engine; `spec_batched_top` 8/8; `spec_decode_top` 18/18; new `make spec-adapt` Makefile gate.
-The remaining unknown is the accept rate r — vLLM MTP sweep pending.)*
+The accept rate r has since been **measured** (job B, vLLM MTP sweep on GLM-4.5-Air: r₁=0.87 with
+per-position decay 0.87/0.60/0.32/0.13/0.04, A_eff plateau ~2.9 → memory-bound optimum **K=1–2**,
+residency-box design point ≈80 tok/s [measured-inputs EST] —
+[`H_MEASUREMENT.md`](H_MEASUREMENT.md) 3rd measurement; the adaptive controller settles at that
+optimum on its own).)*
 
 ## 5. Already-built power wins (compute + idle)
 

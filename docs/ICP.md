@@ -10,7 +10,7 @@ frontier open-weight model (GLM-5.2, a 753B-param MoE in ~4-bit **Q4_K** — the
 ~0.5–1 tok/s; 90 GB DRAM @100 GB/s ~13–24; @200 GB/s ~25–47 — h/U first measured on an OLMoE proxy
 trace, since superseded by GLM-4.5-Air measured U(K), [`H_MEASUREMENT.md`](H_MEASUREMENT.md).
 Updated 2026-07: the rung-③ primary design point is now **full residency** — the whole ~467 GB
-checkpoint in 512 GB LPDDR5X, ~76–95 tok/s effective [EST]
+checkpoint in 512 GB LPDDR5X, design point ≈80 tok/s [measured-inputs EST]
 ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the earlier 225 GB-cache ~54–127 band survives only
 as the hybrid-SKU-if-h≥0.75 case. The FPGA fit itself is **measured**:
 routed on XCKU3P at 46.5 MHz, [`../fpga/`](../fpga/README.md).)*
@@ -18,9 +18,10 @@ routed on XCKU3P at 46.5 MHz, [`../fpga/`](../fpga/README.md).)*
 ---
 
 > **Positioning update (2026-07, v3 full-residency spec [EST]):** the rung-③ box
-> targets an effective **~76–95 tok/s [EST]** (deterministic ~71 base × the
-> adaptive spec-chain on GLM-4.5-Air-measured U(K); accept-rate r still
-> unmeasured — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — Opus/Gemini-Pro-class
+> targets a design point of **≈80 tok/s [measured-inputs EST]** (deterministic ~71 base × the
+> adaptive spec-chain on GLM-4.5-Air-measured U(K) **and** measured accept-rate r — job B's
+> vLLM MTP sweep; ~95 if GLM-5.2's deeper MTP hits its published accept depth —
+> [`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — Opus/Gemini-Pro-class
 > *per-user* output
 > speed, offline, no subscription, first-token latency without network/queue.
 > Same-bracket champion today is a $10k+ Mac Studio M3 Ultra 512GB at ~15–25
@@ -185,7 +186,7 @@ board bring-up is not).
 3. **Success metric = "would you pay per-seat for this?"** measured on *quality on confidential work +
    the confidentiality guarantee*, not on tok/s. (Even the prove-it rung's speed is enough to pilot —
    measured-proxy design points [EST] put the NVMe-only rung at ~0.5–1 tok/s and the funded box at
-   ~13–47, with the rung-③ full-residency box at ~76–95 ([`H_MEASUREMENT.md`](H_MEASUREMENT.md),
+   ~13–47, with the rung-③ full-residency box at ≈80 [measured-inputs EST] ([`H_MEASUREMENT.md`](H_MEASUREMENT.md),
    [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); the ~54–127 cache band is now the
    hybrid-SKU-if-h≥0.75 case) — because speed
    is not the sale — *provable air-gap / locality — it works unplugged* — is.)

@@ -10,10 +10,12 @@ FP8 E4M3 is the **datacenter-native** format (runs natively on H100-class silico
 k-quants (Q4_K etc.) are the **local-inference-native** format — what llama.cpp and every
 local device actually run. For a cost-constrained **local appliance**, Q4_K is the coherent
 target: ~half the memory footprint (the BOM is memory-dominated). The verifiable claim is
-scoped to our own ggml reimpl: the compute core is **bit-exact to `tools/q4k_ref.py`**
-(self-referential — **NOT** the real GGUF bytes / llama.cpp; that whole-file check is OPEN,
+scoped to our own ggml reimpl: the compute core is **bit-exact to `tools/q4k_ref.py`** — whose
+**dequant layer is now proven bitwise-equal to real GGUF bytes** (376,586,240 weights —
+Q4_K/Q6_K/Q8_0, two real published GGUFs — vs llama.cpp's own dequant —
+[`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)). The llama.cpp **whole-runtime** check stays out-of-contract,
 because the RTL uses bf16 activations + fp32 accumulate whereas llama.cpp uses Q8_K-quantized
-activations + an integer dot — a different arithmetic contract). The moat is **offline +
+activations + an integer dot — a different arithmetic contract. The moat is **offline +
 full-frontier + turnkey per-seat**, not GGUF bit-exactness.
 
 ## The numerics (leaf GEMM core + dequant — bit-exact to the ggml reference `q4k_ref.py`)

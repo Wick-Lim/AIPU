@@ -118,8 +118,9 @@ The Q4_K GEMM must therefore handle a **ragged final super-block** (and, within 
 32-weight sub-blocks).
 
 This is already proven by the committed `test/glm_matmul_q4k_tb.v` (`make q4k` →
-`glm_matmul_q4k` **160/160 checks, bit-exact vs the ggml Q4_K reference** — the
-self-referential `tools/q4k_ref.py`, **not** the real GGUF bytes / llama.cpp):
+`glm_matmul_q4k` **160/160 checks, bit-exact vs the ggml Q4_K reference** `tools/q4k_ref.py` —
+whose dequant layer is now proven bitwise-equal to real GGUF bytes,
+[`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md); llama.cpp whole-runtime stays out-of-contract):
 
 - The vectors (`tools/q4k_matmul_gen.py` → `build/q4k_vec.txt`) sweep
   **K ∈ {32, 64, 128, 200, 256, 288, 512, 600, 768}** with *distinct* per-(column,
@@ -164,7 +165,7 @@ q4k matmul TB + §2 elaboration). What remained **OPEN** for B5 at the time (sin
 > The product is a **local, single-user box** that runs **B=1** (one user, one sequence);
 > single-user interactive throughput (rung-dependent per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md):
 > **~5–8 tok/s [EST]** on the near-term prove-it FPGA today, **~15–40 tok/s [EST]** on the funded
-> custom board, **~76–95 [EST]** at volume (updated 2026-07: the rung-③ primary design point is now
+> custom board, **≈80 [measured-inputs EST]** at volume (updated 2026-07: the rung-③ primary design point is now
 > **512 GB full residency** — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)) — all
 > bandwidth-roofline projections **[EST]**; the **Vivado fit is
 > since MEASURED** — full place&route of `glm_q4k_system_cdc` on XCKU3P, routed Fmax 46.5 MHz,
@@ -172,7 +173,7 @@ q4k matmul TB + §2 elaboration). What remained **OPEN** for B5 at the time (sin
 > while **board bring-up is still open**, and the measured-proxy h/U design points refine the rung
 > numbers ([`H_MEASUREMENT.md`](H_MEASUREMENT.md): 90 GB DRAM + 100 GB/s → 13–24 tok/s; the
 > earlier 225 GB + 200 GB/s → 54–127 tok/s band survives only as the **hybrid-upside-SKU-if-h≥0.75**
-> case — the primary rung-③ point is full residency ~76–95, all [EST])) is the only metric that
+> case — the primary rung-③ point is full residency ≈80 [measured-inputs EST])) is the only metric that
 > matters for it. Batching B *different*
 > sequences is the *aggregate-serving* (datacenter) use of the **same** silicon — a legitimate
 > analysis of what the RTL *could* do batched, kept here as a secondary result, but **never**

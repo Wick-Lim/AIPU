@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #=============================================================================
 # tools/cov_run.sh -- Verilator structural code-coverage driver for the
-#                     GLM-5.2-FP8 accelerator (invoked by `make coverage`).
+#                     GLM-5.2 (UD-Q4_K_XL) accelerator (invoked by `make coverage`).
 #
 # For each (module | primary-src | full source list) in the WORKING SET below:
 #   1. verilate the SystemVerilog testbench + its RTL sources into a runnable
@@ -38,13 +38,13 @@ mkdir -p "$COVDIR"
 # ---- WORKING SET: "module | primary_src | tb + srcs" ----------------------
 # (source lists mirror the per-module combos in the Makefile `unittests` target)
 WORKING=(
-"fp8_e4m3|src/fp8_e4m3.vh|test/fp8_e4m3_tb.v"
-"glm_matmul_fp8|src/glm_matmul_fp8.v|test/glm_matmul_fp8_tb.v src/glm_matmul_fp8.v src/glm_fp_pipe.v"
+"glm_matmul_q4k|src/glm_matmul_q4k.v|test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v"
+"weight_loader_q4k|src/weight_loader_q4k.v|test/weight_loader_q4k_tb.v src/weight_loader_q4k.v src/glm_matmul_q4k.v"
+"moe_router_q4k|src/moe_router_q4k.v|test/moe_router_q4k_tb.v src/moe_router_q4k.v src/glm_matmul_q4k.v src/glm_act.v src/topk_select.v src/glm_fp_pipe.v"
 "glm_act|src/glm_act.v|test/glm_act_tb.v src/glm_act.v"
 "glm_softmax|src/glm_softmax.v|test/glm_softmax_tb.v src/glm_softmax.v src/glm_fp_pipe.v"
 "rope_interleave_unit|src/rope_interleave_unit.v|test/rope_interleave_unit_tb.v src/rope_interleave_unit.v"
 "sampler|src/sampler.v|test/sampler_tb.v src/sampler.v src/topk_select.v src/glm_softmax.v src/glm_fp_pipe.v"
-"weight_decomp|src/weight_decomp.v|test/weight_decomp_tb.v src/weight_decomp.v"
 "clk_en_ctrl|src/clk_en_ctrl.v|test/clk_en_ctrl_tb.v src/clk_en_ctrl.v"
 "clk_throttle|src/clk_throttle.v|test/clk_throttle_tb.v src/clk_throttle.v src/clk_en_ctrl.v"
 "icg_cell|src/icg_cell.v|test/icg_cell_tb.v src/icg_cell.v"
@@ -55,11 +55,11 @@ WORKING=(
 "kv_ecc_ring|src/kv_ecc_ring.v|test/kv_ecc_ring_tb.v src/kv_ecc_ring.v src/ecc_secded.v"
 )
 
-# weight_decomp_tb reads a python-generated FP8 vector (relative to repo root).
-if [ ! -f scratchpad/wd_vec.txt ]; then
-  mkdir -p scratchpad
-  python3 tools/fp8_gen.py gen scratchpad/wd_vec.txt >/dev/null 2>&1 || true
-fi
+# glm_matmul_q4k_tb / weight_loader_q4k_tb read python-generated Q4_K vectors
+# (paths relative to repo root; deterministic seeds -- see tools/q4k_matmul_gen.py).
+mkdir -p build
+python3 tools/q4k_matmul_gen.py >/dev/null                             # -> build/q4k_vec.txt
+python3 tools/q4k_matmul_gen.py 40 2 2 build/wlq4k_vec.txt >/dev/null  # -> build/wlq4k_vec.txt
 
 # pull "NN.N%" and "(a/b)" out of a verilator_coverage summary line, e.g.
 #   "  line      : 82.1% (   23/   28)"  ->  "82.1|23|28"

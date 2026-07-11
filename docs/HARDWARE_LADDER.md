@@ -12,8 +12,9 @@ set by **how much money is in the build**. So the plan is: **prove it works chea
 > and `h` now has measured-proxy values (OLMoE trace) — see [`H_MEASUREMENT.md`](H_MEASUREMENT.md).
 > *(Updated 2026-07: U(K) is now **GLM-family MEASURED** — GLM-4.5-Air MoE-gate trace, U(4)=2.60–2.71
 > — superseding the first-pass OLMoE-proxy U; the **adaptive spec-chain is adopted and RTL-landed**
-> (K∈[1..5]; at accept rate r=0.9 tok/s plateaus at K=4–5 — r itself still unmeasured, vLLM MTP sweep
-> pending). And the **rung-③ primary design point pivoted to full residency** — h=1 by construction
+> (K∈[1..5]); and r is now **MEASURED** too (job B vLLM MTP sweep, GLM-4.5-Air: r₁=0.87 with steep
+> per-position decay, A_eff plateau ~2.9 → memory-bound optimum **K=1–2**, residency design point
+> ≈80 tok/s [measured-inputs EST] — [`H_MEASUREMENT.md`](H_MEASUREMENT.md) 3rd measurement). And the **rung-③ primary design point pivoted to full residency** — h=1 by construction
 > there; h-curves stay relevant only for the hybrid upside SKU. See the pivot section below +
 > [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 > The **FPGA fit + routed Fmax are MEASURED**: Vivado ML 2026.1 full place&route of
@@ -28,8 +29,10 @@ set by **how much money is in the build**. So the plan is: **prove it works chea
 > 753 GB FP8 checkpoint). At ~0.6 B/param avg vs FP8's ~1.0, Q4_K reads **~1.6× fewer bytes/token**, so on
 > a bandwidth-bound box it is **~1.6× faster than FP8** at the same interface [EST]. "Bit-exact" on this
 > track means **bit-exact to our ggml-Q4_K reference `tools/q4k_ref.py`** — mixed-type Q6_K·Q8_0·F16
-> RTL consumers are **DONE** (`make mixedtype`); the whole-file / real published-GGUF checks are **OPEN** (see
-> [`../README.md`](../README.md)). FP8 is preserved on branch **`fp8`** + tag **`fp8-verified-baseline`**
+> RTL consumers are **DONE** (`make mixedtype`), and the reference's **dequant layer is proven on
+> real GGUF bytes — Q4_K/Q6_K/Q8_0** ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)); the
+> whole-runtime llama.cpp check is out-of-contract and the real 467 GB file has not been consumed
+> end-to-end (see [`../README.md`](../README.md)). FP8 is preserved on branch **`fp8`** + tag **`fp8-verified-baseline`**
 > ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
 
 ---
@@ -42,14 +45,16 @@ The workload is **NVMe/PCIe-bandwidth-bound**. The Q4_K compute die is small and
 token streams **~25 GB** of weights (~40B active params × ~0.6 B/param at Q4_K), split into two very
 different byte pools:
 
-- **~9 GB hot-set** (MLA projections all layers + shared expert + dense FFN + router + embed/LM-head).
-  These are the **same** bytes every token, so they **cache in the DDR working set** — read once, reused.
+- **~11 GB hot-set touch** (MLA projections all layers + shared expert + dense FFN + router +
+  embed/LM-head; resident hot partition ~17 GB — canonical byte constants:
+  [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2). These are the **same** bytes every token, so
+  they **cache in the DDR working set** — read once, reused.
 - **~14 GB routed-expert bytes** (top-8 of 256 experts per layer). These **change every token** with the
   router's choice, so they **cannot be cached** at a useful hit rate — routing entropy caps it, and the
   predictor-prefetch lever is a **MEASURED no-op** on the trace harness. They must be **streamed fresh
   from NVMe/Flash every token**. **This ~14 GB is the wall.**
 
-So the bit-exact roofline is `tok/s ≈ sustained NVMe/Flash streaming BW / ~14 GB`. The ~9 GB hot-set
+So the bit-exact roofline is `tok/s ≈ sustained NVMe/Flash streaming BW / ~14 GB`. The ~17 GB hot partition
 lives in DDR and is free after the first token; **DDR bandwidth only starts to matter once routed experts
 also hit in the DDR cache** — which the routing entropy above limits. **The streaming bandwidth is set by
 the number of PCIe lanes / NVMe drives (and, on the upper rungs, DDR5 channels / HBM stacks), which is set
@@ -65,14 +70,14 @@ add (our `ddr5_xbar`/`flash_xbar` already parameterize the channel count; the ce
 |---|---|---|---|---|---|---|---|
 | **① Prove-it (cheap)** | low-end FPGA (Kintex US+ **KU3P** class) + DDR4 hot-set cache | 1–2 NVMe (~7–14 GB/s) … striped ~14 drives (~100 GB/s) | **~0.5–1 … ~5–8** | **yes** (bit-exact throughout) | ~$1–2 k (floor) → higher w/ drive array | self / minimal | **now (the demo)** |
 | **② Custom board** | mid FPGA (Versal / Agilex / HBM-class US+) DDR5 multi-ch or HBM | DDR5 8–12 ch or HBM (~400 GB/s–1 TB/s) feeding the working set | **~15–40** | **contingent** — needs expert-cache hit rate *or* non-bit-exact pruning | ~$3–6 k | seed | post-raise |
-| **③ SoC / ASIC** | custom silicon — **primary (2026-07 pivot): 512 GB LPDDR5X full residency** (16×32 GB, 1024-bit on-package, ~1.1 TB/s; [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); HBM stays the long-range ceiling | whole ~467 GB checkpoint DRAM-resident; cold store = one M.2 NVMe (~70 s boot-load; no streaming tier) | **~76–95 residency band** (~120 HBM-ceiling aspirational) | **yes** (residency ⇒ h=1 by construction) | ~$1.8–2.4 k | Series B+ / volume | at scale |
+| **③ SoC / ASIC** | custom silicon — **primary (2026-07 pivot): 512 GB LPDDR5X full residency** (16×32 GB, 1024-bit on-package, ~1.1 TB/s; [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); HBM stays the long-range ceiling | whole ~467 GB checkpoint DRAM-resident; cold store = one M.2 NVMe (~70 s boot-load; no streaming tier) | **≈80 residency design point [measured-inputs EST]** (~95 if GLM-5.2 MTP hits published depth; ~120 HBM-ceiling aspirational) | **yes** (residency ⇒ h=1 by construction) | ~$1.8–2.4 k | Series B+ / volume | at scale |
 
 > **Update — measured-proxy design-point menu ([EST], MEASURED-PROXY h/U inputs;
 > [`H_MEASUREMENT.md`](H_MEASUREMENT.md), [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)):**
 > NVMe 1–2 (no multipliers) ~0.5–1 tok/s; 90 GB DRAM expert cache + 100 GB/s → 13–24;
 > 90 GB + 200 GB/s (ONFI 64ch) → 25–47; 225 GB + 200 GB/s → 54–127 (formerly the "100 tok/s" design
 > point — now the **hybrid-upside-SKU** case only, contingent on GLM h ≥ 0.75; the primary rung-③
-> point is **full residency, ~76–95 tok/s [EST]** — see the pivot section below).
+> point is **full residency, design point ≈80 tok/s [measured-inputs EST]** — see the pivot section below).
 > Measured residency-only h (OLMoE proxy): ~20% of pool cached → h=0.36–0.60; ~50% → 0.72–0.88
 > (LRU collapses below ~10%) — with the residency pivot these h-curves matter only for the hybrid SKU.
 > Spec-chain amortization is A/U(K), not ~2× — U(K) is now **GLM-Air MEASURED** (U(4)=2.60–2.71,
@@ -89,7 +94,7 @@ Each rung is **the same RTL** — whose **Q4_K GEMM core is bit-exact vs the ggm
 changes across rungs — **just the bandwidth the silicon can feed it.**
 
 ### ① Prove-it — the near-term goal
-A **low-end Kintex UltraScale+ (KU3P-class)** dev board, DDR4 holding the **~9 GB hot-set cache**, and an
+A **low-end Kintex UltraScale+ (KU3P-class)** dev board, DDR4 holding the **~17 GB resident hot partition**, and an
 NVMe/Flash array streaming the **~14 GB routed experts**. Throughput is set by that storage array, and it
 is **bit-exact at every point on the band**:
 
@@ -108,7 +113,7 @@ demo first, since a dev board's small DDR/Flash can't hold 467 GB — see
 A **custom PCB** (artwork + assembly outsourced) carrying a **mid-tier FPGA with DDR5 multi-channel or
 HBM** (Versal / Agilex / an HBM-class UltraScale+) + multiple NVMe over more PCIe lanes. DDR5 doubles
 per-channel BW vs DDR4; HBM gives ~460 GB/s/stack — either reaches **~400 GB/s–1 TB/s to the working
-set**. But note the **honesty knob**: that bandwidth feeds the DDR/HBM-resident **~9 GB hot-set** at full
+set**. But note the **honesty knob**: that bandwidth feeds the DDR/HBM-resident **hot partition (~17 GB; ~11 GB touched/token)** at full
 rate; the **~14 GB routed experts still change every token**, so **~15–40 tok/s [EST] is *contingent***,
 not free. You reach it only by either
 
@@ -149,9 +154,10 @@ the DRAM tier, so the hybrid's honest numbers are ~42 tok/s at 512-bit and
 to ~45). The new primary design point:
 
 - **LPDDR5X 512 GB (16×32 GB, 1024-bit, ~1.1 TB/s), whole checkpoint resident**
-  → **~76–95 tok/s [EST] effective band** (base ~71 × the adopted adaptive spec-chain, K∈[1..5];
-  the only remaining unknown is the accept rate r — vLLM MTP sweep pending), **deterministic —
-  no h dependence at all.**
+  → design point **≈80 tok/s [measured-inputs EST]** (base ~71 × the adopted adaptive spec-chain,
+  K∈[1..5]; U(K) **and** the accept rate r both GLM-family measured — job B's vLLM MTP sweep put
+  the memory-bound optimum at K=1–2; ~95 if GLM-5.2's deeper MTP hits its published accept depth),
+  **deterministic — no h dependence at all.**
 - **Deletes** the ONFI 64ch controller RTL (LDPC/bad-block) from the critical
   path and the 40–90 W NAND-read power (box → ~40–60 W). Cold storage = one
   commodity M.2 NVMe (boot-loads 467 GB in ~70 s; no streaming RTL).
@@ -165,6 +171,16 @@ to ~45). The new primary design point:
 - Full appliance concept spec (board 120×80 mm, on-substrate packaging, power
   v1→v3 history, clock/node/lane derivation, competitive bracket):
   [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).
+- **Execution order re-decided (2026-07-11): prototype-first.** A retail-parts
+  supply audit found 32 GB LPDDR5X packages are OEM/NDA-only while **24 GB
+  (9.6 Gbps) is buyable retail** — so the rung-③ build sequence now leads with
+  **v3-proto: 24 GB ×20, 1280-bit, 480 GB resident, PCB-HDI direct mount
+  (~130×110 mm board), ~1.54 TB/s → ~110 tok/s [EST]**, deferring both the
+  NDA procurement and the on-substrate-16-package packaging (the two hardest
+  non-silicon items) to the volume SKU. One die serves both (1280-bit superset;
+  volume SKU bonds 1024). The honest gate that does NOT move: the SoC tapeout
+  itself (LPDDR5X PHY IP + 12–16 nm NRE). Details:
+  [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §5c.
 
 <details><summary>v1 decision (2026-07, superseded — kept for the reasoning trail)</summary>
 
@@ -216,9 +232,11 @@ The rung-③ SoC's memory system is **decided**: **LPDDR5X 256 GB (8×32 GB pack
   ML 2026.1 PnR on XCKU3P, 46.5 MHz, campaign closed at 4.6× — the worst path is route-dominated, not
   arithmetic), but there is still **no running board**, so even rung ① is projected until the FPGA demo
   measures a real Fmax ÷ cyc_per_tok on hardware.
-- **Bit-exact ≠ real GGUF.** All of the above is bit-exact only to our ggml reimpl `tools/q4k_ref.py`;
-  mixed-type Q6_K/Q8_0/F16 RTL consumers are **DONE** (`make mixedtype`), but the whole-file and real
-  published-GGUF / llama.cpp checks are **OPEN** ([`../README.md`](../README.md)).
+- **Bit-exact scope.** All of the above is bit-exact to our ggml reimpl `tools/q4k_ref.py` — whose
+  dequant layer is now **proven on real GGUF bytes** ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md));
+  mixed-type Q6_K/Q8_0/F16 RTL consumers are **DONE** (`make mixedtype`). Still open/honest: the
+  llama.cpp **whole-runtime** check is out-of-contract, and the real 467 GB file has not been
+  consumed end-to-end ([`../README.md`](../README.md)).
 - **Separate the bit-exact band from the knobs.** Rung ① (~0.5–8 tok/s) is bit-exact throughout. Rung ②'s
   ~15–40 needs *either* a DDR-cached-expert hit rate (routing-entropy-limited; prefetch is a measured
   no-op) *or* non-bit-exact pruning — state which one when quoting it.

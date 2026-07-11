@@ -10,7 +10,7 @@ computer over a single USB-C cable.
 - [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) — the **performance ladder** (the anchor for every tok/s
   headline here). Throughput is set by **memory bandwidth**, which is set by the FPGA/silicon's IO +
   PHY, which is set by budget — so speed is **staged across rungs**: ① prove-it FPGA ~5–8 · ② funded
-  custom board ~15–40 · ③ SoC/ASIC at volume **~76–95 tok/s [EST]** (updated 2026-07 — the rung-③
+  custom board ~15–40 · ③ SoC/ASIC at volume design point **≈80 tok/s [measured-inputs EST]** (updated 2026-07 — the rung-③
   primary design point pivoted to **full residency**: 512 GB LPDDR5X holds the whole ~467 GB
   checkpoint; see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)). Read every tok/s in this doc as
   **rung-dependent** per that ladder.
@@ -46,7 +46,7 @@ subscription-free come as the *result*.
 |---|---|
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
 | **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp; the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype` — see §2) |
-| **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST] — updated 2026-07: these **streaming** points now apply to rung ① / the hybrid upside SKU / >512 GB checkpoints; the rung-③ primary is **full residency, ~76–95 tok/s [EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); spec multiplier = A/U(K), U now GLM-4.5-Air measured — U(4)=2.60–2.71, superseding the OLMoE proxy)* |
+| **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST] — updated 2026-07: these **streaming** points now apply to rung ① / the hybrid upside SKU / >512 GB checkpoints; the rung-③ primary is **full residency, design point ≈80 tok/s [measured-inputs EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); spec multiplier = A/U(K), U now GLM-4.5-Air measured — U(4)=2.60–2.71, superseding the OLMoE proxy)* |
 | **Power** | ~80–110 W at interactive throughput (self-powered; ~30 W throttled) [EST] |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
 | **Host** | thin driver + a local OpenAI-compatible endpoint → existing chat UIs / editors point at it |
@@ -115,8 +115,8 @@ with **one one-time setup**:
 
 - **One-time provisioning (factory/first setup):** the ~467 GB Q4_K model is written to the internal
   **NVMe SSD** (`flash_layout.py` — committed tool name; the offline expert→channel placement pass). Done once; survives power cycles.
-- **Every power-on (~1–2 s [EST]):** power → clocks/PLL lock → resets → DDR5 PHY training + NVMe
-  init → **`boot_loader` streams the ~9 GB resident hot-set (attention/dense/shared) NVMe→DDR5** → its `done` **releases
+- **Every power-on (a few s [EST]):** power → clocks/PLL lock → resets → DDR5 PHY training + NVMe
+  init → **`boot_loader` streams the ~17 GB resident hot partition (attention/dense/shared/embed/LM-head — canonical: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) NVMe→DDR5** → its `done` **releases
   inference** → USB device enumerates on the host. **Inference is gated by `boot_loader.done`, not
   by power-on.** (Full condition list + RTL detail: [`OPERATION_FLOW.md`](OPERATION_FLOW.md) §1.)
 - **Per request:** the host sends token IDs + position over USB-C; the box streams the demand
@@ -176,8 +176,9 @@ loading resident set → ready) so the app can show "warming up" instead of fail
   (`/v1/chat/completions`, streaming SSE), the exact RTL host protocol (`aipu_device.py`, mirrors
   `glm_q4k_system_cdc` + the boot-loader-done readiness gate), the **real GLM-5.2 BPE tokenizer** +
   a port of GLM's chat template, and host-side sampling — buildable/testable with **zero hardware**
-  against a mock backend (the Phase D2 first deliverable). *(The simulator backend still points at the
-  prior `glm_model_fp8` build path and is being retargeted to `glm_model_q4k`.)*
+  against a mock backend (the Phase D2 first deliverable). *(Honest note: the simulator backend is **fp8-era** — it still
+  hardcodes the removed `glm_model_fp8` build (now only on branch `fp8`), so it does not run on
+  `main`; a `glm_model_q4k` port is pending.)*
 
 **Not done (the gaps to a product):**
 - **Real-model full-scale fidelity** (PRODUCT_ROADMAP P1 — *the* gate: the real ~467 GB Q4_K weights
@@ -355,7 +356,7 @@ once the multi-million NRE amortizes over volume. Not now (no volume, no capital
 FPGA rungs prove product-market fit — the same verified RTL on every rung. *(Updated 2026-07: the
 rung-③ **primary** design point is now **full residency** — 512 GB LPDDR5X (16×32 GB, 1024-bit
 on-package substrate, ~1.1 TB/s) holding the whole ~467 GB checkpoint, cold store = one commodity
-M.2 NVMe (boot-load ~70 s), box ~40–60 W, board 120×80 mm, BOM ~$1.8–2.4 k, **~76–95 tok/s [EST]**;
+M.2 NVMe (boot-load ~70 s), box ~40–60 W, board 120×80 mm, BOM ~$1.8–2.4 k, design point **≈80 tok/s [measured-inputs EST]**;
 the ONFI streaming tier is deleted from the primary SKU (pads stay on-die for the hybrid upside
 SKU); HBM stays the long-range ceiling — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 

@@ -37,7 +37,7 @@ How to make the Q4_K compute die dramatically smaller (for a smaller / cheaper F
 lower $/unit + power for the rung-③ ASIC at volume — i.e. a cheaper, cooler **local single-user box**),
 ranked and phased. Grounded in the architecture's defining property. (Every lever cuts BOM/power; **none
 change the product's single-user interactive tok/s** — that speed is set by memory bandwidth and is
-therefore *rung-dependent* [~5–8 rung ① / ~15–40 rung ② / **~76–95 rung ③** (updated 2026-07 — the
+therefore *rung-dependent* [~5–8 rung ① / ~15–40 rung ② / **≈80 rung ③** (measured-inputs; updated 2026-07 — the
 rung-③ primary design point is now full residency, 512 GB LPDDR5X on-package; see
 [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)), all **[EST]**; see
 [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), and the measured-proxy design-point menu in

@@ -22,19 +22,22 @@
 > 클라우드'도 연결이 필요해 이 테스트를 통과 못 함). **해자는 조합**이다: 오프라인 + 풀 프런티어(753B) +
 > 어플라이언스/좌석 가격(`docs/USBC_PRODUCT_PLAN.md`).
 >
-> **해자의 정직한 범위 (반드시 좁게 읽을 것):** Q4_K **GEMM 코어**는 **독립 ggml-Q4_K 레퍼런스
-> (`tools/q4k_ref.py`, 팀 자체 `dequantize_row_q4_K` Python 재구현)에 대해 bit-exact**하다 —
-> 소형-충실 슬라이스에서 검증. 그러나 **실제 GGUF 바이트나 llama.cpp 런타임 산술에 대해서는 아직
-> bit-검증되지 않았고**, RTL 데이터패스는 **Q4_K 전용**이라 *동적* UD-Q4_K_XL 믹스가 일부 레이어에 실제로
-> 저장하는 **Q6_K / Q8_0 / F16 텐서를 아직 소비하지 못한다**. 따라서 주장은 *"우리 ggml-Q4_K 레퍼런스에
-> bit-exact한 순수-Q4_K GEMM 코어"*이지 *"다운로드하는 파일에 bit-exact"가 아니다.* 모든 tok/s·FPGA
-> fit·비용·LOI 수치는 **[EST]/[PENDING]** — 투영값이지 측정값이 아니다.
+> **해자의 정직한 범위 (반드시 좁게 읽을 것 — 2026-07 갱신):** Q4_K **GEMM 코어**는 **독립 ggml-Q4_K
+> 레퍼런스(`tools/q4k_ref.py`, 팀 자체 `dequantize_row_q4_K` Python 재구현)에 대해 bit-exact**하고,
+> 그 재구현은 이제 **실제 공개 GGUF 바이트의 dequant 계층에 대해 비트 단위로 증명**됐다
+> (376,586,096 가중치 — Q4_K/Q6_K/**Q8_0**, 실공개 GGUF 2개 — llama.cpp 자체 dequant와 전부 비트 동일 — `docs/GGUF_CROSSCHECK.md`, 커밋
+> 05639bf). *동적* UD-Q4_K_XL 믹스의 **Q6_K/Q8_0/F16 텐서도 RTL 소비자가 랜딩**됐다(`make
+> mixedtype`, 커밋 a730b37), 조립 forward의 **수치 golden**도 랜딩됐다(`make model-q4k` 1155/1155,
+> 커밋 b058f6f). 정직하게 남은 것: **llama.cpp 런타임 전체**(어텐션/누산 순서)와의 수치 동일성은
+> 계약 밖(out-of-contract), 467 GB GLM 파일
+> 자체의 end-to-end 구동은 미실시(D1). tok/s·비용·LOI 수치는 여전히 **[EST]/[PENDING]**
+> (FPGA fit만 MEASURED — `fpga/results/`).
 >
 > **제품 속도는 하드웨어 사다리로 단계화**된다(`docs/HARDWARE_LADDER.md`; 성능 = 메모리 대역폭 = 칩
 > IO/PHY = 자금): **① 저가 FPGA(KU3P급)+DDR4 ~5–8 tok/s [EST](지금, 동작 증명) · ② 시드 후
 > 커스텀보드(DDR5/HBM) ~15–40 [EST] · ③ 볼륨 ASIC ~40+ [EST]** (모두 B=1 싱글유저, 동일 bit-exact RTL).
-> *(갱신 2026-07: rung-③ 1차 설계점은 이제 **512GB LPDDR5X 완전 상주** — 실효 대역 **~76–95 tok/s
-> [EST]**; `docs/R3_APPLIANCE_SPEC.md` 참조.)*
+> *(갱신 2026-07: rung-③ 1차 설계점은 이제 **512GB LPDDR5X 완전 상주** — 설계점 **≈80 tok/s
+> [실측-입력 EST]** (U(K)·수락률 r 실측, GLM-5.2 MTP 공표 수준이면 ~95); `docs/R3_APPLIANCE_SPEC.md` 참조.)*
 > 이전의 평평한 ~25–40은 ②(자금-조달-후) 수치다. **main은 정확히 rung-①(FPGA 동작증명) 하나만 개발한다** —
 > rung-②③은 문서화된 로드맵이지 지금 main의 코드가 아니다. 예전 5-스테이지 스칼라 'TPU v2.0' 코어는
 > 저장소에서 **제거**됐다(git 히스토리 참조). 아래 완료 목록의 **배치 멀티시퀀스 트랙**
@@ -56,31 +59,27 @@
 > C7(`clk_gate_cluster` ICG+clk_en 유닛검증 완료 — MBIST 래퍼 + system-top scan stitch 잔여,
 > `mbist_ctrl`/`icg_cell`은 아직 `glm_q4k_system*`에 **미인스턴스**) · C10(P2 클로저 잔여).
 
-## ⚠️ 여전히 열린 갭 — "완료"가 아닌 **진짜 다음 단계** (증거 원장 기준)
+## ⚠️ 여전히 열린 갭 — **진짜 남은 것** (증거 원장 기준, 2026-07 재감사)
 
-> 아래 항목들은 위 완료 목록으로 **닫히지 않았다**. 정직하게 OPEN으로 유지한다.
+> **갱신 (2026-07):** 이 목록의 구 1·2·3·5번(B9 조립 수치 golden · B10 혼합타입 · D2 FPGA fit)은
+> **이후 커밋에서 닫혔다** — 폐쇄 증거는 아래 각 트랙 표(B9·B10·D2 행) 참조. 정직하게 **아직 열린**
+> 것은 다음이다.
 
-1. **조립된 Q4_K 모델의 end-to-end 수치 golden이 없다.** 조립-모델 TB(`glm_model_tb`, `mla_attn_tb`,
-   `glm_decoder_block_tb`, `mtp_head_tb`)는 **generic bf16/fp32 쌍둥이**(`src/glm_model.v` /
-   `mla_attn.v` / `glm_decoder_block.v` / `mtp_head.v` — 네 파일 모두 `grep -ic q4k`=0)에 대해 빌드된다.
-   조립된 Q4_K 경로(`glm_model_q4k` …)는 **spec 루프 안에서만** 돌고 그 레퍼런스는 *자기 자신도
-   `glm_model_q4k`*다(DUT-vs-DUT). ⇒ **조립 Q4_K forward가 ggml/llama.cpp와 수치적으로 일치한다고
-   주장하는 어서션이 없다.** → **신규 최우선 작업 (아래 B9)**.
-2. **MLA softmax 스케일이 위 갭 안에 있다.** `mla_attn_q4k`의 `1/sqrt(d_head)` 어텐션 스케일을 포함해
-   조립 어텐션의 수치 정확도는 어떤 golden에도 대조되지 않았다(spec==greedy 자기일관만). → **B9**.
-3. **혼합타입 Q6_K/Q8_0/F16 경로가 없다.** RTL은 **Q4_K 전용**(`grep -ril q6_k|q8_0|w_type src/`=0).
-   *동적* UD-Q4_K_XL 믹스는 일부 텐서를 Q6_K/Q8_0/F16로 저장하는데 `q4k_ref.py`엔 Python golden
-   (`dequantize_block_q6_K`/`q8_0`)만 있고 **RTL 소비자가 없다** ⇒ 실 체크포인트를 그대로 못 먹는다. →
-   **신규 작업 (아래 B10)**.
-4. **실체크포인트 검증 도구가 저장소에 없다.** 이전 FP8 `modal_validate.py`는 삭제된 트랙이었다. 조립-Q4_K
-   토큰 정합성을 llama.cpp/실 GGUF에 대조하는 것은 **OPEN #1 정합성 게이트**이며 (1)·(3)과 GPU/대용량
-   호스트에 의존. → **신규 작업 (아래 D1, no-GPU 범위 밖)**.
-5. **FPGA fit / Vivado 사인오프 미증명.** 저장소에 PnR/Fmax/LUT 결과 없음 — `docs/FPGA_DEMO_PLAN.md`는
-   계획이다(Vivado-blocked). → **신규 작업 (아래 D2, OSS 플로 밖)**.
-6. **P2 클로저 잔여.** `mbist_ctrl`/`icg_cell`이 `glm_q4k_system*`에 미인스턴스; DDR5/NVMe payload ECC +
-   BMC 재파라미터; PHY-클로저 loopback(바이트를 실제 die로 되먹임). → **C6·C7·C10**.
-7. **경제성/BOM/TCO·LOI는 미검증 계획 문서**다(`docs/BOM.md`, `docs/USBC_PRODUCT_PLAN.md`, `docs/ICP*.md`).
-   **LOI는 존재하지 않는다** — ICP 킷의 "서명된 비구속 LOI 1건"은 목표이지 증거가 아니다.
+1. **실체크포인트 end-to-end 검증(D1)이 여전히 OPEN #1 정합성 게이트다.** 조립-Q4_K 토큰 정합성을
+   llama.cpp/실 GGUF **런타임**에 대조하는 도구는 저장소에 없다(GPU/대용량 호스트 의존). 전제였던
+   B9(조립 수치 golden — `make model-q4k` 1155/1155)와 B10(혼합타입 — `make mixedtype`)은 닫혔고,
+   dequant 계층은 실 GGUF 바이트로 봉인됐다(`docs/GGUF_CROSSCHECK.md` — Q4_K/Q6_K/Q8_0 전부,
+   2026-07-11 Q8_0 확장 포함) — 남은 것은 **whole-runtime** 대조 자체다. llama.cpp 전체
+   런타임(어텐션/누산 순서) 수치 동일성은 계약 밖으로 유지.
+2. **P2 클로저 잔여.** `mbist_ctrl`/`icg_cell`이 `glm_q4k_system*`에 **여전히 미인스턴스**; DDR5/NVMe
+   payload ECC + BMC 재파라미터; PHY-클로저 loopback(바이트를 실제 die로 되먹임). → **C6·C7·C10**.
+3. **경제성/BOM/TCO·LOI는 미검증 계획 문서**다(`docs/BOM.md`, `docs/USBC_PRODUCT_PLAN.md`,
+   `docs/ICP*.md`). **LOI는 존재하지 않는다** — ICP 킷의 "서명된 비구속 LOI 1건"은 목표이지 증거가
+   아니다.
+4. **GLM-5.2 플래그십 자체의 r/U 확인 실측.** U(K)·수락률 r은 GLM-4.5-Air로 실측 완료
+   (`docs/H_MEASUREMENT.md` 2차·3차) — 플래그십 자체 확인만 남음. tok/s는 [실측-입력 EST] 유지.
+5. **풀config 기능 sim 불가침(구조적).** 753B 실형상은 elaborate-clean까지만 — LM-head GEMV
+   ~2.4e8 K-beat/token이라 기능 sim은 비현실적(변화 없음).
 
 ## FP8 감사 시점 발견 갭 (역사적 기록 — 대부분 Q4_K 커밋에서 폐쇄)
 
@@ -119,8 +118,8 @@
 | **B6** (완료) | `mla_attn_q4k` sparse per-row **union** 데이터패스 — row별 DSA 선택, distinct 키당 1회 `kc`+`W_uk`/`W_uv` fetch, row별 score/softmax/context 재인덱싱 | B2가 모든 행 bit-exact(3-row distinct-extent 포함); fetch == distinct union keys; dense TB byte-identical; line-81 caveat 제거 | XL |
 | **B7** (완료) | SWIN 디커플 — `mla_attn_q4k`의 `scores`/`probs`/`vstore`·`glm_softmax #(.LEN())`를 `SWIN=TOPK_ATTN`으로 재범위, `IDXW`/`kc_idx`는 full S_MAX(1M) 유지 | 기존 TB byte-identical @S_MAX=SWIN; S_MAX=64/SWIN=8 sparse TB가 golden 일치. 경고: SWIN=2048 `vstore`≈4.3 Gbit — scratch BRAM/pager 이동은 별도 단계 | XL |
 | **B8** (완료) | `spec_chain_top` 완전 승격 — `mn_*/tn_*/vn_*` pull 포트 승격(verify는 `spec_batched_top` 재사용, MTP는 `mtp_head_q4k` pull set), `em_*` embed pull, seed 규약을 numpy/fp64 MTP-chain 레퍼런스로 확정, `test/spec_chain_top_tb.v`(committed==greedy, K∈{2,3}) | `make spec-slow`가 `spec_chain_top` green; committed stream == 독립 greedy 레퍼런스; seed 헤더 기록. **DUT-vs-DUT 자기일관(수치 golden 아님)** | L |
-| **B9** (🔴 신규·OPEN·최우선) | **조립-Q4_K 수치 golden** — `glm_model_q4k`(+`mla_attn_q4k` `1/sqrt(d_head)` 스케일) 1토큰 forward를 **독립 ggml-Q4_K 조립 레퍼런스**(q4k_ref.py 확장)에 대조하는 TB. spec==greedy 자기일관을 넘어 조립 forward의 **수치** 일치를 어서트 | 슬라이스에서 조립 `glm_model_q4k` logits/argmax가 조립 ggml-Q4_K golden과 일치(X-clean); GAP #1 폐쇄 | XL |
-| **B10** (🔴 신규·OPEN) | **혼합타입 Q6_K/Q8_0/F16 소비자** — `q4k_ref.py`의 `dequantize_block_q6_K`/`q8_0`/f16 골든에 대응하는 RTL dequant 경로(레이어별 `w_type` 라우팅)로 *동적* UD-Q4_K_XL 믹스를 소비 | 혼합타입 GEMM 코어가 ggml 골든에 bit-exact; `grep -ril q6_k|q8_0 src/`>0; GAP #3 폐쇄 | XL |
+| **B9** (✅ **완료** — 커밋 b058f6f) | **조립-Q4_K 수치 golden** — `glm_model_q4k`(+`mla_attn_q4k` `1/sqrt(d_head)` 스케일) full forward를 **독립 조립 numpy 레퍼런스**(`tools/glm_model_q4k_ref.py`, 같은 `q4k_ref.py` dequant 임포트)에 대조 | **닫힘**: `make model-q4k` **1155/1155** bit-exact (logits+argmax+h_state 바이트 동일; `model-q4k-acthw` 1155/1155로 ACT_HW 결과 불변까지) — GAP #1 폐쇄 | XL |
+| **B10** (✅ **완료** — 커밋 a730b37) | **혼합타입 Q6_K/Q8_0/F16 소비자** — `q4k_mixed.vh` dequant 프리미티브 + `glm_matmul_q4k` per-column `w_type` 라우팅 + `weight_loader_q4k` `desc_wtype`으로 *동적* UD-Q4_K_XL 믹스 소비 | **닫힘**: `make mixedtype` — `q6k_prim`+`q8_0_prim`+`glm_matmul_mixed` **32/32** + `weight_loader_q4k_mixed` **192/192** (4타입 전부 ggml-reimpl 골든에 bit-exact, 24-tile 혼합 시퀀스 포함) — GAP #3 폐쇄 | XL |
 
 ## Track C — 제품화 / DFT / formal (no GPU)
 
@@ -141,8 +140,8 @@
 
 | # | 작업 | 수락 기준 | 비고 |
 |---|------|-----------|------|
-| **D1** (🔴 OPEN·#1 정합성 게이트) | **실체크포인트 검증** — 실 753B GLM(llama.cpp/실 GGUF)의 next-token argmax를 우리 데이터패스에 대조. B9(조립 golden)·B10(혼합타입)에 의존 | 코퍼스에서 argmax 일치. **저장소에 도구 없음 — 신규 필요**(FP8 `modal_validate.py`는 삭제된 트랙) | GPU/대용량 호스트 |
-| **D2** (🔴 OPEN) | **FPGA fit / Vivado 사인오프** — rung-① 저가 FPGA에서 PnR/Fmax/LUT/타이밍 클로저 | 실 비트스트림 + Fmax/자원 리포트; `docs/FPGA_DEMO_PLAN.md`(현재 계획, Vivado-blocked) | Vivado/벤더IP |
+| **D1** (🔴 OPEN·#1 정합성 게이트) | **실체크포인트 검증** — 실 753B GLM(llama.cpp/실 GGUF)의 next-token argmax를 우리 데이터패스에 대조. 전제 B9·B10은 **완료**; dequant 계층은 실 GGUF 바이트로 봉인(`docs/GGUF_CROSSCHECK.md` — Q4_K/Q6_K/Q8_0 총 376,586,096 가중치 비트 동일). 남은 것: whole-runtime 대조 자체 | 코퍼스에서 argmax 일치. **저장소에 whole-runtime 대조 도구 없음 — 신규 필요** | GPU/대용량 호스트 |
+| **D2** (✅ **완료 — MEASURED**, 커밋 bc8176d→c1c622d→69a32f7) | **FPGA fit / Vivado 사인오프** — XCKU3P에서 실 Vivado synth + full PnR: **142.3K LUT (87.5%)**, ~100K FF, 421 DSP, hold met, routed Fmax **10.2→17.2→46.5 MHz** (bit-exact 재파이프라인 3라운드, 캠페인 4.6×로 종료 — 잔여 worst path는 라우팅 지배) | **닫힘**: `bash fpga/run_fit.sh` · 리포트 `fpga/results/` · `fpga/README.md` (비트스트림/보드 브링업은 rung-① 데모 잔여 — 보드+핀 XDC 필요) | Vivado/벤더IP |
 
 ## Quick wins — no GPU
 
@@ -153,8 +152,10 @@
 - [x] **ECC/MBIST 언블록:** reg-array 분류 → *docs/P2_MEMORY_MAP.md* (**C2**)
 - [x] **unbounded ddr5 증명:** connect-bind lift(`make formal-ind`) → *test/formal/ddr5_xbar_ind_fv.v*, *docs/FORMAL.md* (**C5**)
 - [x] **CI 부트스트랩:** `.github/workflows/` 존재
-- [ ] **🔴 조립-Q4_K 수치 golden(B9):** GAP #1 폐쇄 — spec==greedy 자기일관을 넘어 조립 forward 수치 대조
-- [ ] **🔴 혼합타입 소비자(B10):** GAP #3 — Q6_K/Q8_0/F16 RTL dequant 경로
+- [x] **조립-Q4_K 수치 golden(B9):** GAP #1 폐쇄 — `make model-q4k` 1155/1155 (`tools/glm_model_q4k_ref.py`, 커밋 b058f6f)
+- [x] **혼합타입 소비자(B10):** GAP #3 폐쇄 — `make mixedtype` 32/32 + 192/192 (`q4k_mixed.vh` + `w_type`, 커밋 a730b37)
+- [x] **FPGA fit(D2):** XCKU3P 실측 — 142.3K LUT/87.5%, routed Fmax 46.5 MHz (`fpga/results/`, 커밋 69a32f7)
+- [x] **GGUF 교차검증:** dequant 계층을 실 GGUF 바이트로 봉인 — Q4_K/Q6_K/Q8_0 총 376,586,096 가중치 비트 동일, 실파일 2개 (`docs/GGUF_CROSSCHECK.md`)
 - 문서 정합화: `make all` = **`unittests synth-glm formal`**(Makefile:26) — GLM 동작증명 게이트. `q_lora/kv_lora` = **2048/512**(q_lora safetensors-CONFIRMED, kv_lora **[PENDING]**).
 
 ## 재조준 타임라인 (no-GPU 트랙)
@@ -175,9 +176,15 @@ WEEKS 4-8 — XL 구조 (완료)
   Track B:  B8 spec_chain → B6 sparse union(B2 게이트) → B7 SWIN 디커플
   Track C:  C6 payload/KV ECC(부분) ; C7 MBIST+ICG+scan(부분) ; C10 P2 클로저(부분)
 
-NEXT (🔴 OPEN — 아직 시작 전, 진짜 다음 단계)
-  Track B:  B9 조립-Q4_K 수치 golden(GAP#1) → B10 혼합타입 Q6_K/Q8_0/F16(GAP#3)
-  Track D:  D1 실체크포인트 검증(GPU) ; D2 FPGA/Vivado fit
+DONE (이후 커밋에서 완료)
+  Track B:  B9 조립-Q4_K 수치 golden(GAP#1, make model-q4k 1155/1155) ;
+            B10 혼합타입 Q6_K/Q8_0/F16(GAP#3, make mixedtype)
+  Track D:  D2 FPGA/Vivado fit — XCKU3P MEASURED (87.5% LUT, routed 46.5 MHz)
+  검증:      GGUF 교차검증 — dequant 계층 실바이트 봉인 (docs/GGUF_CROSSCHECK.md)
+
+NEXT (🔴 OPEN — 진짜 다음 단계)
+  Track D:  D1 실체크포인트 whole-runtime 검증(GPU) — 전제 B9·B10은 닫힘
+  Track C:  C6/C7/C10 P2 클로저 잔여 (mbist/icg 미인스턴스 등)
 ```
 
 **게이트 관계:** B9(조립 golden)가 D1(실체크포인트)의 전제 · B10(혼합타입)도 D1 전제 · B2가 B6 게이트 ·
@@ -185,11 +192,11 @@ B6는 B7보다 먼저 · C1+C2가 C6/C7 게이트.
 
 ## 리스크 & 미지수 (no-GPU 범위)
 
-- **🔴 조립-Q4_K 수치 golden 부재가 최대 미지수(B9).** 지금은 조립 Q4_K가 spec 루프 안에서만, 그것도
-  자기 자신을 레퍼런스로(DUT-vs-DUT) 돈다 — 조립 forward가 ggml/llama.cpp와 수치적으로 맞는다는 증거가
-  **없다**. "spec==greedy 통과"를 "수치 정확"으로 오독하지 말 것.
-- **🔴 Q4_K 전용 한계(B10).** 실 UD-Q4_K_XL 믹스의 Q6_K/Q8_0/F16 텐서를 못 먹는다 — 실체크포인트를 그대로
-  돌리려면 혼합타입 RTL 경로가 선행돼야 한다.
+- **(해소됨 — B9 완료)** ~~조립-Q4_K 수치 golden 부재~~ → `make model-q4k` 1155/1155 (조립 forward가
+  독립 numpy 골든과 bit-exact). 남은 오독 주의: 이 골든도 **우리 reimpl 기준**이며 llama.cpp
+  whole-runtime 대조(D1)는 여전히 OPEN.
+- **(해소됨 — B10 완료)** ~~Q4_K 전용 한계~~ → 혼합타입 Q6_K/Q8_0/F16 RTL 소비자 랜딩(`make
+  mixedtype`). 실체크포인트 end-to-end 구동(D1)만 남음.
 - **B6 sparse union 순서 민감성 (진짜 XL).** serial fp32 softmax/context 체인은 순서 의존적. 잘못된
   per-row gather 순서는 저비트 mismatch만 내서 노이즈로 오독하기 쉬움 — DSA emit 순서가 정확한 계약.
 - **B7 SWIN 디커플이 메모리 재구조화를 과소평가.** `vstore`가 SWIN=2048서 ~4.3 Gbit — flop으로 비현실적.
@@ -210,9 +217,11 @@ B6는 B7보다 먼저 · C1+C2가 C6/C7 게이트.
    `fp8-verified-baseline`에 보존. 현재 top은 `glm_q4k_system_cdc` → `glm_q4k_system` → `glm_q4k_soc`.
 2. **`make synth`(레거시 `-top TPU`)는 제거됨.** 현재 게이트는 `make synth-glm`(`glm_q4k_system_cdc`
    전체칩 elaborate + `check -assert`, Makefile:357)이고 `make all`(Makefile:26)에 편입.
-3. **bit-exact 범위는 좁다.** `glm_matmul_q4k`(160)·`q4k_prim`(18)만 ggml-Q4_K 레퍼런스에 **bit-exact**;
-   `swiglu_expert_q4k`(240)은 **functional**; `moe_router_q4k`(40)은 **structural 불변식**. 모두 실 GGUF가
-   아니라 **`tools/q4k_ref.py`(팀 자체 ggml 재구현)** 기준.
+3. **bit-exact 범위는 좁다.** `glm_matmul_q4k`(160)·`q4k_prim`(18)이 ggml-Q4_K 레퍼런스에
+   **bit-exact**(+ 혼합타입 `make mixedtype`, 조립 forward `make model-q4k` 1155);
+   `swiglu_expert_q4k`(240)은 **functional**; `moe_router_q4k`(40)은 **structural 불변식**. 골든은
+   **`tools/q4k_ref.py`(팀 자체 ggml 재구현)** 기준 — 단, 그 재구현의 dequant 계층은 이제 **실
+   GGUF 바이트로 비트 단위 증명**됨(`docs/GGUF_CROSSCHECK.md`; llama.cpp whole-runtime은 계약 밖).
 4. **`h_mtp`는 Q4_K MTP 전용.** `src/mtp_head_q4k.v`만 포트 있음 — `src/mtp_head.v`(bf16)엔 없음. bf16 체인
    레퍼런스는 추가 필요.
 5. **`spec_chain_top`은 B8로 완전 승격됨**(pull 포트 전부, seed 헤더, `test/spec_chain_top_tb.v`,
@@ -225,7 +234,9 @@ B6는 B7보다 먼저 · C1+C2가 C6/C7 게이트.
    no golden). *(마이너: 해당 파일과 `configs/full_glm52.vh`에 `mla_attn_fp8`/`glm_model_fp8` stale 주석 잔존
    — 코드는 `glm_model_q4k`를 인스턴스화.)*
 9. **문서 tok/s 사다리는 전부 [EST]** — 저가 FPGA ~5–8 / 커스텀보드 ~15–40 / 볼륨 ASIC ~40+
-   *(갱신 2026-07: rung-③ 1차는 완전 상주 ~76–95 [EST] — `docs/R3_APPLIANCE_SPEC.md`)*
-   (`docs/HARDWARE_LADDER.md`). 실 753B 라우팅 트레이스 + 실측 NVMe/PCIe 대역폭 전까지 측정값 아님.
+   *(갱신 2026-07: rung-③ 1차는 완전 상주, 설계점 ≈80 [실측-입력 EST] — U(K)·수락률 r 모두
+   GLM-계열 실측(`docs/H_MEASUREMENT.md` 잡 B), GLM-5.2 MTP가 공표 수준이면 ~95 —
+   `docs/R3_APPLIANCE_SPEC.md`)* (`docs/HARDWARE_LADDER.md`). GLM-5.2 플래그십 자체 트레이스 +
+   실측 대역폭 전까지 측정값 아님.
 10. **"모든 dim은 param bump" 과소평가** — `mla_attn_q4k` scratch를 S_MAX(1M)로 사이징 → SWIN 디커플
     필요(B7). RTL default(`S_MAX=8` 등)는 slice 값.

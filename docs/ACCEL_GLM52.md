@@ -394,7 +394,10 @@ fp32 MAC → bf16); the activation×activation QK^T and A·V are **bf16** (`glm_
 ## 6. Correctness & quantization + golden methodology
 
 This is the honest verification picture. Read "golden" carefully — the goldens are **the team's
-own** references, never the real GGUF bytes or llama.cpp.
+own** references, whose **dequant layer is now proven bitwise-equal to real GGUF bytes**
+(376,586,240 weights — Q4_K/Q6_K/Q8_0, two real published GGUFs — vs llama.cpp's own
+`dequantize_row_*` — [`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)); llama.cpp **whole-runtime**
+equality stays out-of-contract.
 
 **(a) The bit-exact-vs-ggml results — the Q4_K weight math + the Q6_K/Q8_0/F16 mix.**
 `tools/q4k_ref.py` is an independent reimplementation of ggml's `dequantize_row_q4_K` + the Q4_K
@@ -612,16 +615,18 @@ Throughput and power are explicitly secondary to correctness, and every number h
 **[EST]/[SYS-EST]**, never measured on silicon. Qualitatively: the design is
 **NVMe/PCIe-bandwidth-bound**, not compute-bound — per token only ~40B params are active, but
 they weigh **~25 GB in Q4_K** (~0.6 B/param), of which the **~14 GB of routed experts** (top-8,
-changing every token) must stream from NVMe/Flash each token (~170 MB Q4_K per MoE layer; the ~9
-GB hot-set of attention/dense/shared can cache in DDR). So expert streaming bandwidth and batching
+changing every token) must stream from NVMe/Flash each token (~170 MB Q4_K per MoE layer; the ~11
+GB per-token hot-set touch of attention/dense/shared can cache in DDR — canonical byte constants:
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2). So expert streaming bandwidth and batching
 (amortizing each expert load across a token batch / the union-of-experts fetch) dominate
 throughput; the DSA 2048-key FLOP cap keeps attention compute constant at long context, shifting
 the 1M bottleneck to latent-cache bandwidth (the indexer's O(S) pass) rather than attention FLOPs.
 Power follows the same story — NVMe/DDR traffic for expert + cache movement dwarfs the PE-array
 energy. The tok/s is **rung-dependent** (bandwidth set by IO pins/PHYs → budget): roughly
 **~5–8 tok/s on the prove-it FPGA (rung ①) → ~15–40 on the funded custom board (rung ②) →
-~76–95 on the full-residency rung-③ appliance** (whole checkpoint in 512 GB LPDDR5X — see
-[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); the only remaining unknown is the accept rate r)
+≈80 on the full-residency rung-③ appliance** (whole checkpoint in 512 GB LPDDR5X — see
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); U(K) and the accept rate r are both GLM-family
+measured, ~95 if GLM-5.2's deeper MTP hits its published accept depth)
 with **~9 → ~3 J/token**, all **[EST]** until a running board —
 see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md). A routed PPA
 result **is now in-repo**: Vivado ML 2026.1 real synth + full place&route of `glm_q4k_system_cdc`
@@ -653,9 +658,10 @@ result-invariant resource knob (`glm_act` HW_LANES serialization).
 > [`H_MEASUREMENT.md`](H_MEASUREMENT.md)). **(2) The primary rung-③ design point pivoted to
 > FULL RESIDENCY** — 512 GB LPDDR5X holds the whole ~467 GB image, so **h=1 by construction**
 > and h stops being a product-deciding variable (h-curves stay relevant only for the hybrid-SKU
-> decision); the rung-③ effective band is **~76–95 tok/s [EST]** and the only remaining unknown
-> is the accept rate r (vLLM MTP sweep pending) — see
-> [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The streaming design-point menu above stays
+> decision); the rung-③ design point is **≈80 tok/s [measured-inputs EST]** — the accept rate r
+> is now **measured** too (job B, vLLM MTP sweep on GLM-4.5-Air: r₁=0.87, steep per-position
+> decay, A_eff plateau ~2.9 → memory-bound optimum K=1–2; ~95 if GLM-5.2's deeper MTP hits its
+> published accept depth) — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The streaming design-point menu above stays
 > relevant only for rung ① / the hybrid upside SKU / >512 GB checkpoints; "54–127" survives
 > only as the hybrid-SKU-if-h≥0.75 note. Adaptive draft depth (K∈[1..5]; the GLM-U K-sweep
 > plateaus at K=4–5 at r=0.9) is adopted and RTL-landed (`make spec-adapt`, §6c). GLM-5.2's

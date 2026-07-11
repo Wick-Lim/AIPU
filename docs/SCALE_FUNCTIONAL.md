@@ -21,8 +21,10 @@
 Consistent with the honest ledger in [`../README.md`](../README.md): the bit-exact datapath results on
 Q4_K are the **GEMM core** (`glm_matmul_q4k`, bit-exact to the independent ggml-Q4_K reference
 `tools/q4k_ref.py`) and, since closed, the **assembled full forward** (`make model-q4k`, 1155/1155
-bit-exact vs the assembled numpy reference `tools/glm_model_q4k_ref.py`) — **not** the real GGUF bytes
-or llama.cpp in either case. Everything else is scoped below.
+bit-exact vs the assembled numpy reference `tools/glm_model_q4k_ref.py`). The reference itself is now
+**proven bitwise-equal to real GGUF bytes at the dequant layer** (376.6M weights, Q4_K/Q6_K/Q8_0 vs
+llama.cpp's own dequant — [`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)); llama.cpp **whole-runtime**
+equality stays out-of-contract. Everything else is scoped below.
 
 ---
 
@@ -53,8 +55,9 @@ The whole-chip Q4_K top `glm_q4k_system_cdc` passes the yosys structural gate (`
    *assembled* `glm_model_q4k` full forward at the committed slice **bit-exact vs the assembled
    numpy golden** (`tools/glm_model_q4k_ref.py`, which imports the same `q4k_ref.py` dequant) —
    **1155/1155** on logits + argmax + h_state, plus `make model-q4k-acthw` (1155/1155, the ACT_HW
-   resource knob result-invariant). Still the team's own reimplementation — **bit-exactness to the
-   real GGUF bytes / llama.cpp remains OPEN.** (The per-unit *numeric* TBs `glm_model_tb` /
+   resource knob result-invariant). The reimplementation's dequant layer is since **proven on real
+   GGUF bytes** ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)); **llama.cpp whole-runtime equality
+   remains out-of-contract.** (The per-unit *numeric* TBs `glm_model_tb` /
    `mla_attn_tb` / `glm_decoder_block_tb` / `mtp_head_tb` still build against the generic bf16/fp32
    twins, but the assembled Q4_K path now has its own gate.)
 2. **Real-dims operator sweep on Q4_K — PENDING.** The Q4_K unit TBs run at the slice (table above).
@@ -158,7 +161,7 @@ bandwidth the silicon can feed it changes:
 - **~5–8 tok/s [EST]** on the near-term prove-it FPGA (rung ①) — slow but real + Q4_K bit-exact to the
   ggml reference.
 - **~15–40 tok/s [EST]** on the funded custom board (rung ②) — the interactive product.
-- **~76–95 tok/s [EST]** at volume (rung ③ SoC/ASIC — updated 2026-07: the primary rung-③ design
+- **≈80 tok/s [measured-inputs EST]** at volume (pre-measurement band ~76–95; rung ③ SoC/ASIC — updated 2026-07: the primary rung-③ design
   point is now **512 GB LPDDR5X full residency**, see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).
 
 The full model is the ~467 GB `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL` checkpoint (753B params, ~40B
@@ -179,7 +182,7 @@ tok/s stays [EST].
 > *(Updated 2026-07: U(K) is since **GLM-family MEASURED** — GLM-4.5-Air traced via MoE-gate hooks
 > on an H100, U(4)=2.60–2.71 — superseding the OLMoE-proxy U above (OLMoE stays as the first-pass
 > history), and the primary rung-③ design point pivoted to **512 GB LPDDR5X full residency,
-> ~76–95 tok/s [EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the streaming rows above
+> design point ≈80 tok/s [measured-inputs EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the streaming rows above
 > (ONFI 64ch / the 225 GB-cache 54–127 band) now apply to rung ① / the hybrid-upside SKU (h ≥ 0.75)
 > / >512 GB checkpoints, not the primary SKU.)*
 
@@ -199,11 +202,12 @@ Q4_K scale confidence today rests on three legs, scoped to what is actually chec
 3. **Assembled forward pass** — **bit-exact vs the assembled numpy golden** at the committed slice
    (`make model-q4k` 1155/1155 + `model-q4k-acthw` 1155/1155 — item 1, since closed), plus
    **spec==greedy** self-consistency (`spec_decode_top` 18/18; larger loops via `make spec-slow`).
-   Bit-exactness to the real GGUF bytes / llama.cpp remains open.
+   The golden's dequant layer is proven on real GGUF bytes; llama.cpp whole-runtime stays out-of-contract.
 
 **Honestly capped.** Full-config *functional* sim remains infeasible (LM head ~2.38e8 K-beats/token);
 it is covered structurally by leg 1, not by a run. The prior FP8 track additionally had a real-dims
 operator sweep and a real-tensor checkpoint validation — both on branch `fp8`, neither re-established on
-Q4_K. The assembled-model end-to-end numeric golden is since **closed** (`make model-q4k`, item 1); the
-largest remaining open items are **bit-exactness to the real GGUF bytes / llama.cpp** (the golden is the
-team's own numpy reimplementation) and the **real-dims Q4_K operator sweep** (item 2).
+Q4_K. The assembled-model end-to-end numeric golden is since **closed** (`make model-q4k`, item 1) and
+the golden's **dequant layer is since proven on real GGUF bytes** ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md));
+the largest remaining open items are the **real-dims Q4_K operator sweep** (item 2) and the **batched
+PE_M>1 Q4_K golden** (item 3) — llama.cpp whole-runtime equality stays out-of-contract by design.

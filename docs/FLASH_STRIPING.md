@@ -25,7 +25,7 @@ token, ~22 MB/expert (Q4_K, ~0.6 B/param avg [EST])**, plus the always-read shar
 MLA/attention weights, embeddings and the DSA index. In roofline terms (see the ledger in
 [`../README.md`](../README.md)) a token touches **~25 GB of weights**, of which the **~14 GB of
 routed experts (top-8, and they *change* every token) is the wall that must stream from
-NVMe/Flash** — the ~9–11 GB hot-set (attention / dense / shared) can live cache-resident in DDR.
+NVMe/Flash** — the ~11 GB hot-set touch (attention / dense / shared; resident partition ~17 GB — canonical: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) can live cache-resident in DDR.
 The **~467 GB of Q4_K weights** live on the NVMe SSD; fast DDR is the working cache (hit rate `h`;
 DDR4 on the prove-it rung, DDR5/HBM once funded — see
 [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); the Q4_K die computes.
@@ -180,7 +180,7 @@ striping keeps the single-user product (`B=1`) balanced — *that* is this box; 
 
 Per the honest Q4_K roofline (ledger in [`../README.md`](../README.md)), single-user decode is
 memory-bandwidth-bound: **tok/s ≈ (sustained storage BW) / (~14 GB routed-expert stream/token)**,
-*assuming the ~9–11 GB hot-set (attention / dense / shared) is DDR-cache-resident* so only the
+*assuming the ~11 GB hot-set touch (attention / dense / shared; ~17 GB resident) is DDR-cache-resident* so only the
 ~14 GB of top-8 routed experts must stream from NVMe/Flash each token. Because tok/s is then linear
 in realized aggregate NVMe BW, striping the routed-expert stream across drives/lanes is the lever:
 
@@ -196,7 +196,7 @@ in realized aggregate NVMe BW, striping the routed-expert stream across drives/l
 > the table above is the cache-free striping floor. Adding a DRAM expert cache on top of the stream:
 > 90 GB cached + 100 GB/s → ~13–24 tok/s; 90 GB + 200 GB/s (ONFI 64ch) → ~25–47;
 > 225 GB + 200 GB/s → ~54–127 (formerly the "100 tok/s" design point — now the **hybrid-upside-SKU**
-> case only, contingent on GLM h ≥ 0.75; the primary rung-③ point is **full residency, ~76–95 tok/s
+> case only, contingent on GLM h ≥ 0.75; the primary rung-③ point is **full residency, design point ≈80 tok/s
 > [EST]** — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)). Measured residency-only h (OLMoE
 > proxy): ~20% of pool cached → 0.36–0.60; ~50% → 0.72–0.88 (LRU collapses below ~10%) — with the
 > residency pivot these h-curves matter only for the hybrid SKU. Any spec-chain multiplier `K` on
@@ -256,9 +256,10 @@ placement strategy here rides the same curve.
   land below the roofline (achievable-vs-peak BW, cache-`h` optimism, second-order walls).
 - **Striping is a *placement* choice and does not touch numerics** — it is entirely
   format-agnostic (address→bytes), so this whole doc holds under Q4_K unchanged. On the compute
-  side, the Q4_K **GEMM core / primitives are bit-exact only to the team's own ggml-Q4_K reference**
-  (`tools/q4k_ref.py`) — a **self-referential** check, **not** the real downloaded GGUF bytes or
-  llama.cpp's runtime arithmetic; the **assembled end-to-end Q4_K model golden is DONE**
+  side, the Q4_K **GEMM core / primitives are bit-exact to the team's own ggml-Q4_K reference**
+  (`tools/q4k_ref.py`) — whose dequant layer is now **proven bitwise-equal to real GGUF bytes**
+  ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)); llama.cpp's whole-runtime arithmetic stays
+  out-of-contract; the **assembled end-to-end Q4_K model golden is DONE**
   (`make model-q4k` 1155 + `make model-q4k-acthw` 1155); see the honest proof scope in
   [`../README.md`](../README.md).
 

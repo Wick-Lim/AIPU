@@ -15,8 +15,10 @@
 > [README](../README.md) *What's proven* table). `make q4k` proves the Q4_K **GEMM core**
 > (`glm_matmul_q4k`) **bit-exact to the team's own ggml-Q4_K reference** (`tools/q4k_ref.py`) — **not**
 > "bit-exact to the real UD-Q4_K_XL file": the RTL now also consumes **Q6_K/Q8_0/F16** (per-column
-> `w_type` routing, `make mixedtype`, bit-exact to the same reference) but is never checked against the
-> real GGUF bytes or llama.cpp arithmetic. The **assembled** `glm_model_q4k` now has an **end-to-end
+> `w_type` routing, `make mixedtype`, bit-exact to the same reference), and that reference's **dequant
+> layer is now proven bitwise-equal to real GGUF bytes** (376,586,240 weights — Q4_K/Q6_K/Q8_0, two
+> real published GGUFs — vs llama.cpp's own dequant — [`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md));
+> llama.cpp **whole-runtime** arithmetic stays out-of-contract. The **assembled** `glm_model_q4k` now has an **end-to-end
 > numeric golden** — `make model-q4k`: full forward vs the numpy reference `tools/glm_model_q4k_ref.py`,
 > ALL 1155 tests bit-exact (logits+argmax+h_state; plus `make model-q4k-acthw` through the ACT_HW=1
 > datapath) — but that golden is still our own numpy reimpl, NOT llama.cpp/GGUF. The **FPGA fit is
@@ -61,8 +63,10 @@ scale, robustly, and ship it.*
 > (measured U(4)=2.25–2.64), not ~2×. All still [EST]; h/U are proxy measurements — see also
 > [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md).)* *(Updated 2026-07: the **rung-③ primary
 > design point is now FULL RESIDENCY** — 512 GB LPDDR5X (~1.1 TB/s) holds the whole ~467 GB
-> checkpoint, h=1 by construction, effective band **~76–95 tok/s [EST]** (the one remaining unknown
-> is the accept rate r, unmeasured) — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
+> checkpoint, h=1 by construction, design point **≈80 tok/s [measured-inputs EST]** (U(K) **and**
+> the MTP accept rate r both GLM-family measured — job B's vLLM MTP sweep: r₁=0.87, per-position
+> decay, memory-bound optimum K=1–2; ~95 if GLM-5.2's deeper MTP hits its published accept depth —
+> [`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
 > streaming design-point menu above stays true and active for rung ①, the hybrid upside SKU, and
 > \>512 GB checkpoints — but "54–127" is no longer the rung-③ design point. U(K) is now
 > **GLM-family measured** — GLM-4.5-Air traced via MoE-gate hooks
@@ -94,7 +98,7 @@ scale, robustly, and ship it.*
 | Verification | bounded BMC (7 controllers + 1 ECC-ring) + 5 lifted to unbounded k-induction (`make formal`/`formal-ind`); directed TBs at slice; verilator line/toggle/branch coverage (`make coverage`) | coverage *closure*, constrained-random regression, gate-level sim, production-width formal |
 | Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`) — but `mbist_ctrl`/`icg_cell` **not yet instantiated** in `glm_q4k_system*` | full ECC/recovery, CDC sign-off, reset/init hardening, DFT/scan closed |
 | Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 142,320 LUT (87.5%), ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over bit-exact repipeline rounds, **campaign CLOSED at 4.6×** — the worst path is now route-dominated (wide-bus wiring at 87% utilization), physical work not arithmetic (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | **bitstream** on a board — the Fmax campaign is closed at 46.5 MHz (in the bring-up demo's target band; 200 MHz-class is rung-②/③ work) (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
-| Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend being retargeted from the prior `glm_model_fp8` path to `glm_model_q4k`) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
+| Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend is fp8-era — it still hardcodes the removed `glm_model_fp8` build and does not run on `main`; a `glm_model_q4k` port is pending) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
 ---

@@ -66,7 +66,7 @@ Custom PCB (outsourced artwork + assembly) carrying a **mid FPGA with DDR5 multi
 DDR + multi-NVMe. This is the actual **shippable single-user box** at ~15–40 tok/s [EST]
 (measured-proxy design points: ~13–24 at 90 GB DRAM + 100 GB/s, ~25–47 at 200 GB/s —
 [`H_MEASUREMENT.md`](H_MEASUREMENT.md); the ~54–127 @ 225 GB + 200 GB/s cache band now belongs to
-the rung-③ hybrid SKU — the rung-③ primary is full residency at ~76–95 tok/s [EST],
+the rung-③ hybrid SKU — the rung-③ primary is full residency at a design point of ≈80 tok/s [measured-inputs EST],
 [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).
 
 | Line | Part | ~Cost | Note |
@@ -89,7 +89,7 @@ board revisions. Amortized over units, negligible per-seat at any real volume.
 
 > **(updated 2026-07: the rung-③ primary design point pivoted to FULL RESIDENCY** — 512 GB LPDDR5X
 > (16×32 GB, 1024-bit on-package, ~1.1 TB/s) holds the whole ~467 GB checkpoint; cold storage = one
-> commodity M.2 NVMe (boot-load ~70 s); **~76–95 tok/s effective [EST]**; box ~40–60 W; board
+> commodity M.2 NVMe (boot-load ~70 s); design point **≈80 tok/s [measured-inputs EST]**; box ~40–60 W; board
 > 120×80 mm; **BOM ~$1.8–2.4 k** — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
 > HBM/streaming shape below survives as the **hybrid upside SKU** (if GLM h≥0.75) and the
 > >512 GB-checkpoint fallback.)
@@ -148,7 +148,7 @@ All figures **[EST]**.
   quote, ASIC NRE is a wide band. Treat as ranges, not commitments.
 - Rung-② tok/s (~15–40) is the funded number (measured-proxy design points ~13–47 —
   [`H_MEASUREMENT.md`](H_MEASUREMENT.md); the ~54–127 225 GB-cache band is now the rung-③ hybrid-SKU
-  case, the rung-③ primary being full residency at ~76–95 [EST] —
+  case, the rung-③ primary being full residency at ≈80 [measured-inputs EST] —
   [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the **near-term demo (rung ①) is
   reduced-config** (GLM-scale NVMe-only streaming ~0.5–1 tok/s [EST]).
 - BOM is **memory/storage/board-dominated**; the FPGA is a minority. "Cheaper box" means "less bandwidth"

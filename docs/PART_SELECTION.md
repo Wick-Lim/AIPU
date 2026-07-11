@@ -78,14 +78,16 @@ KU3P; a product board wanting ≥30% headroom points at KU5P-class or config tri
 
 ## 2. DDR4 — bandwidth + capacity
 
-- **Bandwidth target.** Every token reads the **~19 GB bit-exact hot-weight set** from DDR
-  (~28 GB raw, reduced ~1.5× by the bit-exact levers — `weight_decomp` + MLA weight-absorption),
-  while the **~16 GB of routed experts** (top-8, *change every token*) stream from NVMe/PCIe.
+- **Bandwidth target.** Every token reads the **~11 GB hot-set touch** from DDR (resident hot
+  partition ~17 GB; canonical byte constants: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2 —
+  the earlier "~19 GB / ~28 GB raw" figures here were FP8-era counts; the bit-exact levers
+  `weight_decomp` + MLA weight-absorption reduce the touched bytes further ~1.3–1.5×),
+  while the **~14 GB of routed experts** (top-8, *change every token*) stream from NVMe/PCIe.
   `tok/s ≈ DDR_BW / hot_footprint`, capped by `NVMe_BW / routed_footprint`
   ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md); all tok/s **[EST]**).
   - DDR4-3200 = **25.6 GB/s per 64-bit channel**.
   - 3 channels ≈ **~77 GB/s**  ·  4 channels ≈ **~102 GB/s** (the doc's ~100 GB/s rung-① target).
-- **Capacity.** The ~19 GB hot set must be **resident** → **≥ 24 GB**; leave room for an
+- **Capacity.** The ~17 GB resident hot partition must be **resident** → **≥ 24 GB**; leave room for an
   expert cache → **32–48 GB** (routing entropy caps expert-cache benefit for bit-exact — see
   the ledger — so the cache trades capacity for a bounded hit-rate, not a guaranteed speedup).
   - e.g. **16 GB × 3 ch = 48 GB** (~77 GB/s)  or  **8 GB × 4 ch = 32 GB** (~102 GB/s).
@@ -95,7 +97,7 @@ KU3P; a product board wanting ≥30% headroom points at KU5P-class or config tri
 *(This is the tier — DDR4-many-channels — that rung ② may swap for DDR5-fewer-channels or
 HBM to reach ~15–40 tok/s (measured-proxy design points: ~13–47 —
 [`H_MEASUREMENT.md`](H_MEASUREMENT.md); the ~54–127 @225 GB-cache band now belongs to the
-rung-③ hybrid SKU, the rung-③ primary being full residency at ~76–95 tok/s [EST] —
+rung-③ hybrid SKU, the rung-③ primary being full residency at ≈80 tok/s [measured-inputs EST] —
 [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); same bit-exact Q4_K RTL, only the bandwidth
 changes.)*
 
@@ -128,7 +130,7 @@ DDR routing, the core of the layout difficulty.
 | Part | Minimum info required to confirm | Source |
 |---|---|---|
 | **FPGA** | LUT/DSP/BSRAM/URAM utilization + ≥30% headroom → smallest device; DDR4 channels + PCIe lanes = bank/transceiver budget | **①a Q4_K fit measurement — [MEASURED] (XCKU3P: 87.5% LUT, 421 DSP, 46.5 MHz)** |
-| **DDR4** | target tok/s → required BW → channels × speed; hot set ~19 GB → capacity ≥ 32 GB | roofline ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
+| **DDR4** | target tok/s → required BW → channels × speed; resident hot partition ~17 GB → capacity ≥ 24–32 GB | roofline ([`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
 | **NVMe** | reduced-config image size → capacity; Gen3 vs Gen4 → bandwidth | FPGA PCIe generation |
 | **Power** | after the three above: each rail's voltage × max current → PMIC selection | FPGA/DDR/NVMe datasheets |
 

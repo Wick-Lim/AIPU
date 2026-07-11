@@ -9,10 +9,11 @@ Chain:  RTL == q4k_ref   (existing 1155-test + unit gates)
       => RTL == the real GGUF dequant, end of the self-referential caveat.
 
 Method: parse a real GGUF (gguf-py, from the llama.cpp repo), pull every
-Q4_K / Q6_K tensor's RAW block bytes, dequantize each with
+Q4_K / Q6_K / Q8_0 tensor's RAW block bytes, dequantize each with
   (A) tools/q4k_ref.py            (our reimpl -- numpy)
-  (B) llama.cpp's own dequantize_row_q4_K / _q6_K (dequant_dump, linked
-      against the built libggml -- the exact code llama.cpp executes)
+  (B) llama.cpp's own dequantize_row_q4_K / _q6_K / _q8_0 (dequant_dump,
+      linked against the built libggml -- the exact code llama.cpp executes;
+      build it with tools/build_dequant_dump.sh)
 and compare fp32 outputs BITWISE (np.uint32 view equality, not tolerance).
 
 usage: python3 tools/gguf_crosscheck.py <model.gguf> <llamacpp_dir>
@@ -28,6 +29,7 @@ sys.path.insert(0, os.path.join(REPO, "tools"))
 import q4k_ref  # noqa: E402
 
 Q4K_BS, Q6K_BS = 144, 210  # bytes per 256-weight super-block
+Q80_BS = 34                # bytes per 32-weight Q8_0 block (fp16 d + 32 int8)
 
 
 def ref_dequant_q4k(raw: bytes) -> np.ndarray:
@@ -54,6 +56,16 @@ def ref_dequant_q6k(raw: bytes) -> np.ndarray:
     return np.concatenate(out).astype(np.float32)
 
 
+def ref_dequant_q8_0(raw: bytes) -> np.ndarray:
+    out = []
+    for off in range(0, len(raw), Q80_BS):
+        b = raw[off:off + Q80_BS]
+        d_h = int.from_bytes(b[0:2], "little")
+        qs = np.frombuffer(b[2:34], dtype=np.int8)  # golden expects signed qs
+        out.append(q4k_ref.dequantize_block_q8_0(d_h, qs))
+    return np.concatenate(out).astype(np.float32)
+
+
 def main():
     gguf_path, llamacpp = sys.argv[1], sys.argv[2]
     sys.path.insert(0, os.path.join(llamacpp, "gguf-py"))
@@ -62,17 +74,22 @@ def main():
     dump = os.path.join(llamacpp, "dequant_dump")
     rd = GGUFReader(gguf_path)
 
-    totals = {"Q4_K": [0, 0], "Q6_K": [0, 0]}   # tensors, weights
+    refs = {"Q4_K": ("q4_k", ref_dequant_q4k),
+            "Q6_K": ("q6_k", ref_dequant_q6k),
+            "Q8_0": ("q8_0", ref_dequant_q8_0)}
+    totals = {k: [0, 0] for k in refs}          # tensors, weights
     mismatches = 0
     for t in rd.tensors:
         ttype = T(t.tensor_type).name
-        if ttype not in ("Q4_K", "Q6_K"):
+        if ttype not in refs:
             continue
         raw = bytes(t.data.tobytes())
-        kind = "q4_k" if ttype == "Q4_K" else "q6_k"
-        ours = ref_dequant_q4k(raw) if ttype == "Q4_K" else ref_dequant_q6k(raw)
+        kind, ref_fn = refs[ttype]
+        ours = ref_fn(raw)
 
-        rin, rout = "/tmp/xchk_in.bin", "/tmp/xchk_out.bin"
+        # PID-unique temp names: two concurrent crosschecks must not share files
+        rin = f"/tmp/xchk_{os.getpid()}_in.bin"
+        rout = f"/tmp/xchk_{os.getpid()}_out.bin"
         with open(rin, "wb") as f:
             f.write(raw)
         subprocess.run([dump, kind, rin, rout], check=True,

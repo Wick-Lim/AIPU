@@ -92,8 +92,9 @@ product fronts an **NVMe/PCIe** backend, not a NAND die.) L0′/L2 now give the 
 the correctness-demo speed of the tiny slice, **not** a GLM-5.2 product number (never conflate the
 two). On this rung the target is
 **~5–8 tok/s [EST]**, set by the sustained weight bandwidth the board can feed (~100 GB/s): the ~14 GB
-of per-token **routed experts** stream from NVMe (the wall — they change every token) while the ~9 GB
-hot set (attention / dense / shared) caches in **DDR4**. The funded custom board (rung-②, DDR5/HBM) is
+of per-token **routed experts** stream from NVMe (the wall — they change every token) while the ~11 GB
+per-token hot-set touch (attention / dense / shared; canonical byte constants:
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) caches in **DDR4**. The funded custom board (rung-②, DDR5/HBM) is
 where the **~15–40 tok/s [EST]** interactive product lands, and rung-③ (SoC/ASIC at volume) reaches
 **~40+ [EST]** — all the *same* verified RTL, only the memory bandwidth the silicon can feed it changes.
 
@@ -112,8 +113,10 @@ where the **~15–40 tok/s [EST]** interactive product lands, and rung-③ (SoC/
 > saturation).
 >
 > **Updated 2026-07:** the **rung-③ primary design point pivoted to FULL RESIDENCY** — 512 GB
-> LPDDR5X (~1.1 TB/s) holds the whole ~467 GB checkpoint, effective band **~76–95 tok/s [EST]**
-> (only the accept rate r unmeasured) — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
+> LPDDR5X (~1.1 TB/s) holds the whole ~467 GB checkpoint, design point **≈80 tok/s [measured-inputs
+> EST]** (U(K) **and** the MTP accept rate r both GLM-family measured — the vLLM MTP sweep, job B,
+> put the memory-bound optimum at K=1–2; ~95 if GLM-5.2's deeper MTP hits its published accept
+> depth — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
 > streaming menu above — including the 54–127 point — now applies to **rung ① (this demo box: NVMe
 > streaming IS how it works), the hybrid upside SKU, and >512 GB checkpoints**, not the rung-③
 > primary SKU; h matters only for the hybrid-SKU decision (residency ⇒ h=1 by construction). U(K)
@@ -138,11 +141,13 @@ where the **~15–40 tok/s [EST]** interactive product lands, and rung-③ (SoC/
 
 > **Weight-image honesty (per [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md)):** `tools/ckpt_pack_q4k.py`
 > round-trips its gen → pack → unpack against a **synthetic tiny GGUF it fabricates in-memory**, proven
-> bit-exact vs the ggml dequant mirrors in `tools/q4k_ref.py` — **not** against the real 467 GB
-> published GGUF (never downloaded) and **not** through llama.cpp. The RTL weight path now has
-> **mixed-type Q6_K/Q8_0/F16 consumers (DONE — `make mixedtype`)**, so a real **UD-Q4_K_XL**
-> checkpoint's higher-precision tensors have RTL consumers — but bit-exactness vs the file people
-> download (the real GGUF bytes, through llama.cpp) is still **not** validated.
+> bit-exact vs the ggml dequant mirrors in `tools/q4k_ref.py` — and those mirrors are now themselves
+> **proven bitwise-equal to real GGUF bytes at the dequant layer** (376,586,240 weights —
+> Q4_K/Q6_K/Q8_0 across two real published GGUFs — vs llama.cpp's own `dequantize_row_*` —
+> [`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)). The RTL weight path has **mixed-type Q6_K/Q8_0/F16
+> consumers (DONE — `make mixedtype`)**. Still honest and open: the real 467 GB UD-Q4_K_XL file has
+> not been downloaded/consumed end-to-end, and llama.cpp **whole-runtime** numeric equality is
+> out-of-contract.
 
 ## Why this is the investable lever
 

@@ -1,9 +1,14 @@
-# GLM-5.2-FP8 accelerator -- Verilog build / simulation / synth / formal
+# GLM-5.2 (UD-Q4_K_XL) accelerator -- Verilog build / simulation / synth / formal
 #
 #   make all        -> the GLM prove-it gate: unittests + synth-glm + formal
+#                      + model-q4k-smoke + resident + resident-equiv + full-elab
 #   make unittests  -> build + run EVERY per-unit TB (ALL N TESTS PASSED each)
 #   make synth-glm  -> yosys elaborate + `check -assert` the whole product top
 #   make formal     -> BMC of the memory-system controllers
+#   make expert-cache -> expert-cache prefetch + replacement-policy TBs on the
+#                      real GLM decode routing trace (minutes-long; standalone)
+#   make full-elab  -> 753B-shape elaboration of glm_model_q4k (iverilog -tnull)
+#   make release-gate -> every gate in the repo (unittests..formal-ind; HOURS)
 #   make lint       -> verilator --lint-only on the GLM top (diagnostic; not yet
 #                      -Wall clean -- informational, NOT part of `all`)
 #   make coverage   -> verilator --coverage-line/-toggle structural coverage of
@@ -19,11 +24,20 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt formal formal-ind lint host-test synth-glm fit-harness cdc coverage resident resident-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test synth-glm fit-harness cdc coverage resident resident-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
-# TB, the whole-chip structural sign-off, and the memory-controller formal proofs.
-all: unittests synth-glm formal
+# TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
+# the assembled-forward smoke, the RESIDENT refill gate + its equivalence proof, and
+# the 753B-shape elaboration.  (model-q4k-smoke also runs inside `unittests`; listing
+# it here keeps `all` covering it even if the unittests tail changes.)
+all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab
+
+# `release-gate` is the full pre-release battery: every simulation, structural,
+# CDC and formal gate in the repo.  HOURS-long (model-q4k / spec-slow / expert-cache
+# are minutes-to-hours each in iverilog); run before cutting a release.
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv expert-cache full-elab synth-glm cdc formal formal-ind
+	@echo "release-gate: ALL gates passed"
 
 
 # Build + run every per-unit TB.  attention_unit additionally needs softmax_unit.
@@ -63,9 +77,6 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_matmul_pipe_sim test/glm_matmul_pipe_tb.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
 	@printf '[%s] ' "glm_matmul_pipe"; $(VVP) $(BUILD_DIR)/glm_matmul_pipe_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_matmul_pipe"; exit 1; }
-	@# own (x,pos,s_len) with S_MAX>TOPK, + fetch-sharing (one weight/kc fetch per distinct key).
-	@# its OWN KV window (routed by kc_seq) yet SHARES the query-side weight fetch. Bit-exact vs
-	@# each row attends its OWN KV window (kc_seq routed model->decoder->mla->cache), per-row
 	@# spec_decode_top: MTP speculative-decode loop (glm_model_q4k + mtp_head_q4k + spec_decode_seq); spec==greedy.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_decode_top_sim test/spec_decode_top_tb.v src/spec_decode_top.v src/glm_model_q4k.v src/mtp_head_q4k.v src/spec_decode_seq.v src/glm_decoder_block_q4k.v src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v src/glm_fp_pipe.v
 	@printf '[%s] ' "spec_decode_top"; $(VVP) $(BUILD_DIR)/spec_decode_top_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -74,7 +85,6 @@ unittests:
 	@#   scenarios) and are minutes-long in iverilog -- moved to `make spec-slow` so the
 	@#   fast `unittests` path completes (same rationale as `bcov`). They still gate on
 	@#   spec==greedy; run them via `make spec-slow`.
-	@# per sequence (feed argmax back, extent/pos grow, decode-token KV written to kv_mem and attended),
 	@# expert_cache_ctrl: MoE expert-weight HBM cache controller (tag/LRU/miss-DMA), single-package system PoC.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/expert_cache_ctrl_sim test/expert_cache_ctrl_tb.v src/expert_cache_ctrl.v
 	@printf '[%s] ' "expert_cache_ctrl"; $(VVP) $(BUILD_DIR)/expert_cache_ctrl_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -294,10 +304,11 @@ model-q4k-acthw:
 # TBs (q6k_prim / q8_0_prim) + the integrated mixed-column GEMM (glm_matmul_mixed) that
 # drives one tile whose PE_N columns carry different w_type -- exercising the w_type mux,
 # all four decoders, the high-precision buses, and accumulator reset.  All bit-exact to
-# tools/q4k_ref.py via the tools/q4k_mixed_gen.py goldens, plus weight_loader_q4k_mixed
-# which proves the LOADER's mixed-type DMA feed (not just the GEMM front-end) bit-exact
-# over a mixed sequence of consecutive different-type tiles.  Folded into `q4k` above (hence
-# `unittests`); runnable standalone as `make mixedtype`.  Expected: 91220 / 10816 / 32 / 192.
+# tools/q4k_ref.py via the tools/q4k_mixed_gen.py goldens, plus weight_loader_q4k (the
+# pure-Q4_K loader->GEMM feed) and weight_loader_q4k_mixed which proves the LOADER's
+# mixed-type DMA feed (not just the GEMM front-end) bit-exact over a mixed sequence of
+# consecutive different-type tiles.  Folded into `q4k` above (hence `unittests`);
+# runnable standalone as `make mixedtype`.  Expected: 91220 / 10816 / 32 / 160 / 192.
 mixedtype:
 	@mkdir -p $(BUILD_DIR)
 	@# emit + self-test the goldens (s8 / per-type dequant / mixed GEMM + prim vectors);
@@ -316,13 +327,20 @@ mixedtype:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_matmul_mixed_sim test/glm_matmul_mixed_tb.v src/glm_matmul_q4k.v
 	@printf '[%s] ' "glm_matmul_mixed"; $(VVP) $(BUILD_DIR)/glm_matmul_mixed_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_matmul_mixed"; exit 1; }
+	@# weight_loader_q4k: the LOADER's pure-Q4_K feed -- storage-layout image -> header
+	@# (d/dmin/scales) super-block packing + 4-bit code stream -> glm_matmul_q4k pull,
+	@# bit-exact vs the ggml Q4_K golden (tools/q4k_ref.py via tools/q4k_matmul_gen.py).
+	@python3 tools/q4k_matmul_gen.py 40 2 2 build/wlq4k_vec.txt >/dev/null   # -> build/wlq4k_vec.txt
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/weight_loader_q4k_sim test/weight_loader_q4k_tb.v src/weight_loader_q4k.v src/glm_matmul_q4k.v
+	@printf '[%s] ' "weight_loader_q4k"; $(VVP) $(BUILD_DIR)/weight_loader_q4k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: weight_loader_q4k"; exit 1; }
 	@# weight_loader_q4k_mixed: the LOADER's mixed-type DMA feed (Q6_K/Q8_0/F16 per-type
 	@# header packing + code stream + desc_wtype geometry) driving glm_matmul_q4k, over a
 	@# MIXED SEQUENCE of consecutive different-type tiles, bit-exact vs q4k_ref matmul.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/weight_loader_q4k_mixed_sim test/weight_loader_q4k_mixed_tb.v src/weight_loader_q4k.v src/glm_matmul_q4k.v
 	@printf '[%s] ' "weight_loader_q4k_mixed"; $(VVP) $(BUILD_DIR)/weight_loader_q4k_mixed_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: weight_loader_q4k_mixed"; exit 1; }
-	@echo "mixedtype: Q6_K/Q8_0/F16 prim TBs + mixed-column GEMM + loader->GEMM mixed-feed passed (bit-exact vs q4k_ref)"
+	@echo "mixedtype: Q6_K/Q8_0/F16 prim TBs + mixed-column GEMM + loader->GEMM pure-Q4_K and mixed feeds passed (bit-exact vs q4k_ref)"
 
 # spec-slow: the speculative-decode top harnesses. They run the full model forward
 #   many times (K x accept/reject/mixed scenarios) -> minutes-long in iverilog, so they
@@ -350,6 +368,27 @@ spec-adapt:
 	@printf '[%s] ' "spec_depth_adapt"; $(VVP) $(BUILD_DIR)/spec_depth_adapt_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_depth_adapt"; exit 1; }
 
+# expert-cache: the two product-relevant expert-cache TBs (recipes restored from
+# cbef69d, which removed them with the FP8-only `cache-study` target -- these two
+# exercise the KEPT product RTL src/expert_cache_pf.v + src/expert_cache_ctrl.v):
+#   expert_cache_pf_tb        -- demand-identical prefetch overlay + GLM-scale
+#                                prefetch stall-cut study (623 checks, ~17 min).
+#   expert_cache_pf_policy_tb -- LRU vs FREQ replacement on the REAL decode
+#                                routing trace tools/glm_trace.hex (~4 min).
+# Minutes-long in iverilog -> standalone (in `release-gate`, not `unittests`).
+# (test/expert_prefetch_top_tb.v is study-only and ~11 min -- not wired; run by hand.)
+expert-cache:
+	@mkdir -p $(BUILD_DIR)
+	@# regenerate the routing trace (deterministic seed) so the target is self-contained.
+	@python3 tools/route_trace.py --dump >/dev/null
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/expert_cache_pf test/expert_cache_pf_tb.v src/expert_cache_pf.v src/expert_cache_ctrl.v
+	@printf '[%s] ' "expert_cache_pf"; $(VVP) $(BUILD_DIR)/expert_cache_pf | grep -E 'ALL [0-9]+ TESTS PASSED|stall cut' \
+	    || { echo "FAILED: expert_cache_pf"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/expert_cache_pf_policy test/expert_cache_pf_policy_tb.v src/expert_cache_pf.v
+	@printf '[%s] ' "cache-policy(LRU vs FREQ)"; $(VVP) $(BUILD_DIR)/expert_cache_pf_policy | grep -E 'ALL [0-9]+ TESTS PASSED|hit-rate|POLICY' \
+	    || { echo "FAILED: expert_cache_pf_policy"; exit 1; }
+	@echo "expert-cache: expert_cache_pf + expert_cache_pf_policy passed"
+
 # Formal (bounded model checking) of the memory-system controllers via yosys write_smt2 +
 # yosys-smtbmc -s z3.  Each harness test/formal/<dut>_fv.v instantiates the committed controller
 # read-only and asserts safety properties.  The mandatory `async2sync; chformal -lower` lowers
@@ -357,16 +396,16 @@ spec-adapt:
 # count > 0 guard re-checks non-vacuity per model.  See docs/FORMAL.md.  Bounds kept modest for a
 # routine run; deeper bounds (e.g. expert_cache_pf K=55) are in docs/FORMAL.md.
 FV_DIR := scratchpad
-define run_bmc   # $(1)=dut name  $(2)=extra read deps  $(3)=extra yosys (e.g. chparam)  $(4)=bound K
+define run_bmc   # $(1)=dut name  $(2)=extra read deps  $(3)=extra yosys (e.g. chparam)  $(4)=bound K  $(5)=optional artifact/report label (default: $(1); use when one dut runs in several chparam modes)
 	@yosys -p "read_verilog -sv -formal -I src src/$(1).v $(2) test/formal/$(1)_fv.v; $(3) \
 	          prep -top $(1)_fv -flatten; memory_map; async2sync; chformal -lower; \
-	          write_smt2 -wires $(FV_DIR)/$(1)_fv.smt2" > $(FV_DIR)/$(1)_fv_build.log 2>&1 \
-	    || { echo "FAILED(build): $(1)"; cat $(FV_DIR)/$(1)_fv_build.log; exit 1; }
-	@test `grep -ic assert $(FV_DIR)/$(1)_fv.smt2` -gt 0 \
-	    || { echo "FAILED(vacuous: 0 assertions in smt2): $(1)"; exit 1; }
-	@yosys-smtbmc -s z3 -t $(4) $(FV_DIR)/$(1)_fv.smt2 > $(FV_DIR)/$(1)_fv_bmc.log 2>&1 \
-	    && printf '[formal %-16s] PASSED  K=%s  (%s asserts)\n' "$(1)" "$(4)" "`grep -ic assert $(FV_DIR)/$(1)_fv.smt2`" \
-	    || { echo "FAILED(BMC counterexample): $(1)"; tail -20 $(FV_DIR)/$(1)_fv_bmc.log; exit 1; }
+	          write_smt2 -wires $(FV_DIR)/$(or $(5),$(1))_fv.smt2" > $(FV_DIR)/$(or $(5),$(1))_fv_build.log 2>&1 \
+	    || { echo "FAILED(build): $(or $(5),$(1))"; cat $(FV_DIR)/$(or $(5),$(1))_fv_build.log; exit 1; }
+	@test `grep -ic assert $(FV_DIR)/$(or $(5),$(1))_fv.smt2` -gt 0 \
+	    || { echo "FAILED(vacuous: 0 assertions in smt2): $(or $(5),$(1))"; exit 1; }
+	@yosys-smtbmc -s z3 -t $(4) $(FV_DIR)/$(or $(5),$(1))_fv.smt2 > $(FV_DIR)/$(or $(5),$(1))_fv_bmc.log 2>&1 \
+	    && printf '[formal %-16s] PASSED  K=%s  (%s asserts)\n' "$(or $(5),$(1))" "$(4)" "`grep -ic assert $(FV_DIR)/$(or $(5),$(1))_fv.smt2`" \
+	    || { echo "FAILED(BMC counterexample): $(or $(5),$(1))"; tail -20 $(FV_DIR)/$(or $(5),$(1))_fv_bmc.log; exit 1; }
 endef
 
 # Named-harness BMC (harness basename != dut name, and a custom read-source list).
@@ -392,10 +431,14 @@ formal:
 	$(call run_bmc,spec_decode_seq,,,20)
 	$(call run_bmc,kv_cache_pager,,,16)
 	$(call run_bmc,expert_cache_pf,src/expert_cache_ctrl.v,chparam -set PF_ENABLE 0 expert_cache_pf_fv;,20)
+	@# expert_cache_pf PF_ENABLE=1 (adversarial prefetch): bounded demand-response
+	@# liveness P3 -- a demand txn is answered within LIVE_BOUND cycles even while
+	@# best-effort prefetch contends for the shared Flash channel (harness header).
+	$(call run_bmc,expert_cache_pf,src/expert_cache_ctrl.v,chparam -set PF_ENABLE 1 expert_cache_pf_fv;,20,expert_cache_pf_pf1)
 	@# kv_cache_pager ECC=1 datapath (task C6-full followup): the lane-SECDED ring preserves
 	@# encode-decode identity + window/in-bounds + no-false-alarm (single-lane; see harness header).
 	$(call run_bmc_named,kv_cache_pager_ecc_fv,src/kv_cache_pager.v src/ecc_secded.v,12)
-	@echo "formal: 5 controllers + the ECC=1 pager datapath BMC-proven (no counterexample); see docs/FORMAL.md"
+	@echo "formal: 9 BMC runs -- 7 controllers (expert_cache_pf in both PF=0 and PF=1 modes) + the ECC=1 pager datapath -- proven at bound (no counterexample); see docs/FORMAL.md"
 
 # UNBOUNDED proof via temporal k-INDUCTION (yosys-smtbmc -i): base case + induction
 # step => the asserts hold on ALL reachable states, not just the first K cycles.
@@ -495,6 +538,29 @@ resident-equiv:
 	    equiv_simple -undef; equiv_induct -undef; equiv_status -assert" \
 	    && echo "[resident-equiv] PROVEN: glm_q4k_system(default) == $(RESIDENT_BASE)" \
 	    || { echo "FAILED: resident-equiv"; exit 1; }
+
+# ---- FULL-CONFIG (753B-shape) elaboration gate (PRODUCT_ROADMAP P1.2) -------
+# Elaborates glm_model_q4k with EVERY parameter at the REAL 753B GLM-5.2
+# (UD-Q4_K_XL) production shape (configs/full_glm52.vh: MODEL_DIM=6144, L=78,
+# VOCAB=154880, N_EXPERT=256, ...) via the documented iverilog -tnull invocation
+# in test/full_config_elab_wrap.v -- type/width elaboration only, NO simulation
+# (a full-config functional sim is intractable; see docs/FULL_CONFIG_ELAB.md).
+# Catches width overflow / out-of-range part-selects / $clog2 edges at true scale.
+# The doc's yosys `hierarchy -check` path (C) is NOT wired: yosys 0.66 is
+# documented-blocked on derived-module re-elaboration and a fresh attempt ran
+# >13 min CPU without completing.  verilator --lint-only (path B) remains the
+# authoritative independent cross-check per docs/FULL_CONFIG_ELAB.md.
+FULL_ELAB_SRCS := test/full_config_elab_wrap.v src/glm_model_q4k.v \
+	src/glm_decoder_block_q4k.v src/mla_attn_q4k.v src/swiglu_expert_q4k.v \
+	src/moe_router_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v \
+	src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v \
+	src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
+
+full-elab:
+	@printf '[%s] ' "full-elab(753B shape)"; \
+	$(IVERILOG) -g2012 -I src -I configs -tnull -pfileline=1 $(FULL_ELAB_SRCS) \
+	    && echo "iverilog -tnull elaboration OK (glm_model_q4k @ MODEL_DIM=6144/L=78/VOCAB=154880)" \
+	    || { echo "FAILED: full-elab (iverilog -tnull)"; exit 1; }
 
 # ---- Whole-chip structural gate for the GLM-5.2 (UD-Q4_K_XL) product top ----
 # Elaborates the ENTIRE product hierarchy -- the 2-clock chip top

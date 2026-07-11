@@ -37,7 +37,7 @@
 > custom board → **~15–40 tok/s [EST]**; **rung 3** (at volume) a SoC/ASIC with HBM stacks (~TB/s) →
 > **~40+ tok/s [EST]**. *(Updated 2026-07 — the **rung-3 primary design point pivoted to full
 > residency**: 512 GB LPDDR5X on-package (~1.1 TB/s) holds the whole ~467 GB checkpoint, cold store =
-> one M.2 NVMe, **~76–95 tok/s [EST]** — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
+> one M.2 NVMe, design point **≈80 tok/s [measured-inputs EST]** — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
 > measured-proxy roofline design points ([`H_MEASUREMENT.md`](H_MEASUREMENT.md); h/U first measured
 > on the OLMoE trace, U now superseded by the GLM-4.5-Air measurement): NVMe 1–2 drives, no
 > multipliers ~0.5–1 tok/s; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB +
@@ -97,8 +97,8 @@ USB-C external accelerator) over peak throughput.
 
 The model is **memory-bandwidth-bound, not compute-bound**: ~40B params are active per token
 (**≈25 GB** of weight at Q4_K's ~0.6 B/param). The pace-setting cost is the **read**, and the wall
-is the **~11–14 GB of routed experts** that change every token and stream from NVMe; the ~17 GB hot
-non-routed set stays resident in DDR5 and is re-read from fast memory. That read time dwarfs the
+is the **~14 GB of routed experts** (canonical derivation: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) that change every token and stream from NVMe; the ~17 GB hot
+non-routed set stays resident in DDR5 (per-token touch ~11 GB) and is re-read from fast memory. That read time dwarfs the
 ~80 GFLOP of math, so the design problem is a **memory hierarchy + streaming** problem. (The KV
 cache is bf16 latent-MLA, unaffected by weight quant — still ~94 GB at 1M ctx.)
 
@@ -152,7 +152,7 @@ Three components, three roles:
 | Tier | Size | Bandwidth [EST] | Contents | Reused every token? |
 |---|---|---|---|---|
 | On-die SRAM | MBs | ~10s TB/s | activations, GEMM tiles, DSA index scratch, double-buffers | — |
-| **DDR5** | **64 GB** | **~400–600 GB/s (8–12 ch)** | **hot weights ~17 GB** (attention all layers, shared expert, dense FFN, router, embed/LM-head, norms) + a wide KV working window + **expert cache ~20 GB** (~900 experts; the ~11 GB freed vs the FP8 hot-set widens the KV window) | hot: yes |
+| **DDR5** | **64 GB** | **~400–600 GB/s (8–12 ch)** | **hot weights ~17 GB resident** (attention all layers, shared expert, dense FFN, router, embed/LM-head, norms; per-token touch ~11 GB — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) + a wide KV working window + **expert cache ~20 GB** (~900 experts; the ~11 GB freed vs the FP8 hot-set widens the KV window) | hot: yes |
 | **NVMe SSD** | **1–4 TB** | **~10s GB/s agg [EST]** (per-drive ~3.5 GB/s Gen3 x4 / ~7 Gen4 x4; scale via PCIe lanes / multiple drives) | **full ~450 GB cold routed-expert pool** + KV cold pages | no (streamed on demand) |
 
 The split that makes it work: **non-routed params (~17 GB) are a *fixed* set used every
@@ -174,18 +174,19 @@ layer, chosen at runtime) → live on the NVMe SSD, streamed/cached on demand.**
 3. Final RMSNorm + **LM-head GEMV** (bf16, DDR5) → next-token logits → argmax/sample.
 4. **Prefetch**: while layer L computes, DMA layer L+1's likely experts NVMe→DDR5 (double-buffer).
 
-Hot reads (~17 GB) come from DDR5 (fast). The **routed-expert reads (~11–14 GB) are the
+Hot reads (~11 GB touched of the ~17 GB resident) come from DDR5 (fast). The **routed-expert reads (~14 GB) are the
 bottleneck** — DDR5-cache hits are fast, misses hit the NVMe SSD.
 
 ## 6. The bottleneck — routed-expert streaming
 
-Per token the MoE layers need **75 × 8 = 600 expert blocks** (~22 MB each at Q4_K) = **~13 GB [EST]**
-(the wall; ~11–14 GB — vs the prior FP8's ~22 GB), scattered data-dependently across the ~450 GB
-pool. Speed is set by:
+Per token the MoE layers need **75 × 8 = 600 expert blocks** (~23 MB each at Q4_K — 37.75M params ×
+~0.62 B/param) = **~14 GB [EST]** (the wall — canonical derivation:
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2; vs the prior FP8's ~22 GB), scattered
+data-dependently across the ~450 GB pool. Speed is set by:
 
 ```
   t_token ≈ max( t_compute≈80ms , t_hot_DDR5 , t_routed )
-  t_routed ≈ (miss_rate × 13 GB) / NVMe_BW   +   (hit × 13 GB) / DDR5_BW
+  t_routed ≈ (miss_rate × 14 GB) / NVMe_BW   +   (hit × 14 GB) / DDR5_BW
 ```
 
 With a ~20 GB expert cache (≈900 of 19,200 expert-instances) and expert-popularity skew +
@@ -231,8 +232,8 @@ within a layer across the batch) the hit rate is ~28–50 % (batch 8) to ~47–6
 
 With **prefetch** the NVMe *latency* is hidden behind compute (§8: 99 % of stall removed when
 the compute window ≥ NVMe latency), so the machine runs at the NVMe/PCIe **bandwidth** wall. The
-master equation (per-token routed footprint = 600 experts; **Q4_K ≈ 13 GB / ~11–14 GB** — vs the
-prior FP8's 22 GB):
+master equation (per-token routed footprint = 600 experts; **Q4_K ≈ 14 GB** — canonical:
+[`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2; vs the prior FP8's ~22 GB):
 
 > **aggregate tokens/s ≈ NVMe_BW / [ (1 − h) × footprint ]**  ·  (then × K for speculative/MTP)
 
@@ -296,21 +297,21 @@ range (~15–40) and the fuller-stack product headline ([`ULTRA_PERF.md`](ULTRA_
 that to the [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md): the old flat "~25–40" was implicitly this
 **rung-2** number and it is **not** reachable on the cheap near-term hardware — the **prove-it FPGA
 (rung 1, DDR4 ~4 ch) is ~5–8 tok/s [EST]** (real + bit-exact, slow-but-honest), and the **rung-3
-SoC/ASIC runs ~76–95 [EST]** at volume (2026-07 full-residency primary — 512 GB LPDDR5X on-package,
+SoC/ASIC runs ≈80 [measured-inputs EST]** at volume (2026-07 full-residency primary — 512 GB LPDDR5X on-package,
 ~1.1 TB/s; [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)). The **~15–31 aggregate** at batch 32 + MTP ×2 (~100 GB/s
 aggregate NVMe — many PCIe lanes / drives striped [EST]) is the **non-target batched/datacenter regime of the same silicon, not the product's
 speed** (the box runs B=1). Prefetch is required (hides
 latency → reach the bandwidth wall); MTP and raw NVMe/PCIe bandwidth are the real multipliers;
 batching is a modest, latency-costing aggregate boost. Interactive, not datacenter-real-time.
 Compute and the single die are *not* the limit (the die idles on NVMe reads); the wall is moving
-~11–14 GB of routed-expert weights per token across the on-module NVMe/PCIe bus. (Further sub-Q4
+~14 GB of routed-expert weights per token across the on-module NVMe/PCIe bus. (Further sub-Q4
 re-quant would push further but is a different, re-quantized model — outside the "run the published
 Q4_K" goal, and Q4_K already banked the FP8→Q4 ~1.6×.) *(Measured update: the "MTP ×2" rows are
 ideal-K upper bounds — the measured spec amortization is A/U(K) ≈ 1.1–1.3× at K=4 — and the
 measured-proxy design-point menu (NVMe-only ~0.5–1 · 90 GB+100 GB/s ~13–24 · 90 GB+200 GB/s ~25–47 ·
 225 GB+200 GB/s ~54–127 tok/s [EST]) is in [`H_MEASUREMENT.md`](H_MEASUREMENT.md) — updated 2026-07:
 that streaming menu now applies to rung 1 / the hybrid upside SKU / >512 GB checkpoints; the rung-3
-primary is full residency, **~76–95 tok/s [EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).)*
+primary is full residency, design point **≈80 tok/s [measured-inputs EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)).)*
 
 ## 8. MoE expert-cache subsystem (the heart of it)
 
@@ -360,7 +361,7 @@ for the per-rung tok/s [EST].
 
 ## 10. Power / heat
 
-The dominant dynamic energy is **moving ~11–14 GB/token of routed weights** (Q4_K; ~22 GB on the
+The dominant dynamic energy is **moving ~14 GB/token of routed weights** (Q4_K; ~22 GB on the
 prior FP8 track). Keeping the whole model
 **on-module** (DDR5 + NVMe next to the die) is the key win — vastly less energy than streaming
 weights from a host over USB/PCIe. Among the fast-tier options DDR5 is the **lowest-power**
@@ -470,6 +471,6 @@ NVMe/PCIe-bound.
   near-memory compute) — sequenced after the FPGA proves PMF, at volume; see
   [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Updated 2026-07: the rung-3 **primary** design point
   is now **full residency** — 512 GB LPDDR5X, 1024-bit on-package, ~1.1 TB/s, the whole ~467 GB
-  checkpoint DRAM-resident, one commodity M.2 NVMe as cold store, **~76–95 tok/s [EST]** —
+  checkpoint DRAM-resident, one commodity M.2 NVMe as cold store, design point **≈80 tok/s [measured-inputs EST]** —
   [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); HBM stays the long-range ceiling, and this doc's
   NVMe-streaming analysis applies to rung 1 / the hybrid upside SKU / >512 GB checkpoints.)*

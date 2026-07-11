@@ -38,7 +38,7 @@ in [`H_MEASUREMENT.md`](H_MEASUREMENT.md) (see also
 [`MOE_LOCALITY_RESEARCH.md`](MOE_LOCALITY_RESEARCH.md)). *(Updated 2026-07: this NVMe-streaming
 operating point is the **rung-①** (this demo) / hybrid-upside-SKU / >512 GB regime; the **rung-③
 primary design point is now FULL RESIDENCY** — the whole ~467 GB checkpoint resident in 512 GB
-LPDDR5X (~1.1 TB/s), h=1 by construction, no per-token NVMe streaming, effective band ~76–95 tok/s
+LPDDR5X (~1.1 TB/s), h=1 by construction, no per-token NVMe streaming, design point ≈80 tok/s
 [EST] — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 
 ## 0. Physical / logical stack
@@ -87,15 +87,15 @@ LPDDR5X (~1.1 TB/s), h=1 by construction, no per-token NVMe streaming, effective
 | 3 | **reset sequenced** | `host_rst` / `core_rst` (per-domain, sync active-high) cleanly de-asserted (`reset_sync`) | RTL |
 | 4 | **memory PHY init** | DDR5 training + NVMe/PCIe controller init | vendor IP |
 | 5 | **model present on NVMe** | the ~467 GB Q4_K model **pre-written** (one-time provisioning, `ckpt_pack_q4k.py` / `flash_layout.py`) | manufacturing / setup |
-| 6 | 🔑 **`boot_loader.done`** | DMA the **~9 GB hot-set** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas) **NVMe → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, **BMC + unbounded k-induction proven**) |
+| 6 | 🔑 **`boot_loader.done`** | DMA the **~17 GB resident hot partition** (all-layer attention, dense-FFN, MoE router `W_g`, shared expert, embeddings, LM-head, norm gammas — ~28B non-routed params × ~0.62 B/param; canonical byte constants: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) **NVMe → DDR5** — its registered `done` is the **single gate that releases inference** | RTL (`boot_loader`, **BMC + unbounded k-induction proven**) |
 | 7 | **USB enumerated** | host driver loaded, endpoint open | host + vendor USB IP |
 
-The **256 routed experts stay on the NVMe SSD** (~467 GB ≫ the ~9 GB DDR hot-set) and are demand-streamed per token
+The **256 routed experts stay on the NVMe SSD** (~467 GB ≫ the ~17 GB DDR-resident hot partition) and are demand-streamed per token
 (§4). Boot 6 is pure DMA — no arithmetic, byte-exact.
 
-**Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + hot-set load (~9 GB /
-NVMe read BW — ~1.3–2.6 s on one Gen3/4 ×4 drive at ~3.5–7 GB/s, dropping below ~1 s only with several
-NVMe striped across more PCIe lanes) + USB enum (~ms) ≈ **~1–2 s (multi-NVMe array) to a few seconds
+**Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + hot-partition load (~17 GB /
+NVMe read BW — ~2.5–5 s on one Gen3/4 ×4 drive at ~3.5–7 GB/s, dropping toward ~1–2 s with several
+NVMe striped across more PCIe lanes) + USB enum (~ms) ≈ **~2 s (multi-NVMe array) to a few seconds
 (single drive) power-on → ready**. Short boot, not instant-on.
 
 **Three timescales:** ① *one-time provisioning* — write the ~467 GB Q4_K model to the NVMe SSD. ② *every
@@ -179,7 +179,7 @@ fp32 weight` MAC, fp32-accumulated in K, rounded to bf16; scores/probs/softmax s
 
 | what | where it lives | path to the die | per-token cost |
 |---|---|---|---|
-| attention / dense-FFN / router `W_g` / norms / embed / LM-head | **DDR5-resident** (the ~9 GB hot-set, boot-loaded) | `ddr5_xbar` → `weight_loader_q4k` → die pull | small, fixed |
+| attention / dense-FFN / router `W_g` / norms / embed / LM-head | **DDR5-resident** (the ~17 GB hot partition, boot-loaded; per-token touch ~11 GB — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) | `ddr5_xbar` → `weight_loader_q4k` → die pull | small, fixed |
 | **routed experts** (the ~467 GB bulk) | **NVMe SSD** | `flash_xbar` → `expert_cache_pf` (DDR5 LRU) → die | **the bottleneck** |
 
 - **`flash_xbar`** is the storage-read fabric (a committed RTL identifier, kept as-is); in the product it
@@ -278,7 +278,9 @@ the Q4_K analogue is a structural sign-off, not a sim — see §8.)*
   225 GB + 200 GB/s → 54–127 — the "100 tok/s" design point. bandwidth-h: 20% pool cached (~90 GB
   GLM-scale) → h=0.36–0.60; 50% (~225 GB) → 0.72–0.88.)* *(Updated 2026-07: the **rung-③ primary
   design point is now FULL RESIDENCY** — 512 GB LPDDR5X (~1.1 TB/s) holds the whole ~467 GB
-  checkpoint, effective band **~76–95 tok/s [EST]** (only the accept rate r unmeasured) — see
+  checkpoint, design point **≈80 tok/s [measured-inputs EST]** (U(K) **and** the MTP accept rate r
+  both GLM-family measured — job B's vLLM MTP sweep put the memory-bound optimum at K=1–2; ~95 if
+  GLM-5.2's deeper MTP hits its published accept depth) — see
   [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md); "54–127" is no longer the rung-③ design point —
   the streaming menu above stays true for rung ①, the hybrid upside SKU, and >512 GB checkpoints.
   U(K) is now GLM-family measured (GLM-4.5-Air, [`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2nd
