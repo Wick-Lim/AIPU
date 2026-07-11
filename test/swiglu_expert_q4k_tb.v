@@ -3,12 +3,41 @@
 // Q4_K weight-response model + real-valued golden (tolerance), proving the operator
 // composes gate/up/down (glm_matmul_q4k) + silu (glm_act) + merge end-to-end. The
 // bit-exact gate is glm_matmul_q4k itself (proven 480/480); this checks the wiring.
+// Real-dims sweep overrides (docs/SCALE_FUNCTIONAL.md item 2, `make scale-ops`):
+//   -DTB_INTER=2048 -DTB_HIDDEN=.. -DTB_KMAX=2048 -DTB_VEC='"..."' runs the SAME
+//   functional contract at the real GLM-5.2 INTER_MOE (down proj = 8 Q4_K
+//   super-blocks / column).  Defaults reproduce the committed slice run
+//   (HIDDEN=8, INTER=8, KMAX=256, NSB=1) byte-identically.
+`ifndef TB_HIDDEN
+    `define TB_HIDDEN 8
+`endif
+`ifndef TB_INTER
+    `define TB_INTER 8
+`endif
+`ifndef TB_TN
+    `define TB_TN 4
+`endif
+`ifndef TB_KMAX
+    `define TB_KMAX 256
+`endif
+`ifndef TB_VEC
+    `define TB_VEC "build/swiglu_q4k_vec.txt"
+`endif
+`ifndef TB_TIMEOUT_NS
+    `define TB_TIMEOUT_NS 5000000
+`endif
+`ifndef TB_DONE_GUARD
+    `define TB_DONE_GUARD 20000
+`endif
 module swiglu_expert_q4k_tb;
-    localparam integer HIDDEN = 8;
-    localparam integer INTER  = 8;
-    localparam integer TN     = 4;
+    localparam integer HIDDEN = `TB_HIDDEN;
+    localparam integer INTER  = `TB_INTER;
+    localparam integer TN     = `TB_TN;
     localparam integer PE_M   = 1;
-    localparam integer KMAX   = 256;    // NSB=1
+    localparam integer KMAX   = `TB_KMAX;   // >= max(HIDDEN, INTER)
+    localparam integer NSB    = (KMAX  + 255) / 256;  // DUT bus super-blocks
+    localparam integer NSB_GU = (HIDDEN+ 255) / 256;  // gate/up column K=HIDDEN
+    localparam integer NSB_D  = (INTER + 255) / 256;  // down    column K=INTER
     localparam integer NGgu   = INTER/TN;   // gate/up groups
     localparam integer NGd    = HIDDEN/TN;  // down groups
 
@@ -23,10 +52,10 @@ module swiglu_expert_q4k_tb;
     wire [1:0]               w_sel;
     wire [$clog2((INTER>HIDDEN?INTER:HIDDEN)/TN+1)-1:0] w_grp;
     wire [$clog2(KMAX+1)-1:0] w_k;
-    // weight-response (driven combinationally by this TB's model)
-    reg  [4*TN-1:0]  w_q, w_q_up;
-    reg  [16*TN-1:0] w_d, w_dmin, w_d_up, w_dmin_up;
-    reg  [96*TN-1:0] w_scales, w_scales_up;
+    // weight-response (driven combinationally by this TB's model; NSB super-blocks/col)
+    reg  [4*TN-1:0]      w_q, w_q_up;
+    reg  [16*TN*NSB-1:0] w_d, w_dmin, w_d_up, w_dmin_up;
+    reg  [96*TN*NSB-1:0] w_scales, w_scales_up;
 
     swiglu_expert_q4k #(.HIDDEN(HIDDEN), .INTER(INTER), .TN(TN), .KMAX(KMAX), .PE_M(PE_M)) dut (
         .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done), .x_vec(x_vec),
@@ -37,15 +66,22 @@ module swiglu_expert_q4k_tb;
         .y_out(y_out)
     );
 
-    // ---- stored weights (per test) ----
+    // ---- stored weights (per test; per-column NSB_GU / NSB_D super-block headers) ----
     localparam [1:0] SEL_GATE = 2'd0, SEL_DOWN = 2'd2;
-    reg [3:0]  Gq [0:INTER-1][0:HIDDEN-1];  reg [15:0] Gd[0:INTER-1]; reg [15:0] Gm[0:INTER-1]; reg [95:0] Gs[0:INTER-1];
-    reg [3:0]  Uq [0:INTER-1][0:HIDDEN-1];  reg [15:0] Ud[0:INTER-1]; reg [15:0] Um[0:INTER-1]; reg [95:0] Us[0:INTER-1];
-    reg [3:0]  Dq [0:HIDDEN-1][0:INTER-1];  reg [15:0] Dd[0:HIDDEN-1]; reg [15:0] Dm[0:HIDDEN-1]; reg [95:0] Ds[0:HIDDEN-1];
+    reg [3:0]  Gq [0:INTER-1][0:HIDDEN-1];  reg [15:0] Gd[0:INTER-1][0:NSB_GU-1]; reg [15:0] Gm[0:INTER-1][0:NSB_GU-1]; reg [95:0] Gs[0:INTER-1][0:NSB_GU-1];
+    reg [3:0]  Uq [0:INTER-1][0:HIDDEN-1];  reg [15:0] Ud[0:INTER-1][0:NSB_GU-1]; reg [15:0] Um[0:INTER-1][0:NSB_GU-1]; reg [95:0] Us[0:INTER-1][0:NSB_GU-1];
+    reg [3:0]  Dq [0:HIDDEN-1][0:INTER-1];  reg [15:0] Dd[0:HIDDEN-1][0:NSB_D-1]; reg [15:0] Dm[0:HIDDEN-1][0:NSB_D-1]; reg [95:0] Ds[0:HIDDEN-1][0:NSB_D-1];
 
-    integer t2, col;
-    // combinational weight-response model
-    always @* begin
+    integer t2, col, sb;
+    integer t;   // test index (declared BEFORE the responder that lists it)
+    // combinational weight-response model (fills every stored super-block; blocks
+    // beyond a column's own NSB stay 0 -- the DUT never reads past k_len).
+    // NOTE: EXPLICIT sensitivity (the DUT's request signals + the test counter t),
+    // NOT @* -- @* over the stored weight arrays makes iverilog build a
+    // sensitivity fan-in over every memory word (INTER=2048 -> 100k+ words ->
+    // compile blows up; the same trick as glm_model_q4k_full_tb's responders).
+    // The arrays only change between tests, when `t` increments.
+    always @(w_sel or w_grp or w_k or t) begin
         w_q = 0; w_q_up = 0; w_d = 0; w_dmin = 0; w_scales = 0;
         w_d_up = 0; w_dmin_up = 0; w_scales_up = 0;
         for (t2 = 0; t2 < TN; t2 = t2 + 1) begin
@@ -54,13 +90,17 @@ module swiglu_expert_q4k_tb;
                 if (col < INTER) begin
                     w_q      [4*t2  +: 4]  = Gq[col][w_k];
                     w_q_up   [4*t2  +: 4]  = Uq[col][w_k];
-                    w_d      [16*t2 +: 16] = Gd[col]; w_dmin   [16*t2 +: 16] = Gm[col]; w_scales   [96*t2 +: 96] = Gs[col];
-                    w_d_up   [16*t2 +: 16] = Ud[col]; w_dmin_up[16*t2 +: 16] = Um[col]; w_scales_up[96*t2 +: 96] = Us[col];
+                    for (sb = 0; sb < NSB_GU; sb = sb + 1) begin
+                        w_d      [16*(t2*NSB+sb) +: 16] = Gd[col][sb]; w_dmin   [16*(t2*NSB+sb) +: 16] = Gm[col][sb]; w_scales   [96*(t2*NSB+sb) +: 96] = Gs[col][sb];
+                        w_d_up   [16*(t2*NSB+sb) +: 16] = Ud[col][sb]; w_dmin_up[16*(t2*NSB+sb) +: 16] = Um[col][sb]; w_scales_up[96*(t2*NSB+sb) +: 96] = Us[col][sb];
+                    end
                 end
             end else begin // DOWN
                 if (col < HIDDEN) begin
                     w_q [4*t2  +: 4]  = Dq[col][w_k];
-                    w_d [16*t2 +: 16] = Dd[col]; w_dmin[16*t2 +: 16] = Dm[col]; w_scales[96*t2 +: 96] = Ds[col];
+                    for (sb = 0; sb < NSB_D; sb = sb + 1) begin
+                        w_d[16*(t2*NSB+sb) +: 16] = Dd[col][sb]; w_dmin[16*(t2*NSB+sb) +: 16] = Dm[col][sb]; w_scales[96*(t2*NSB+sb) +: 96] = Ds[col][sb];
+                    end
                 end
             end
         end
@@ -81,32 +121,35 @@ module swiglu_expert_q4k_tb;
         end
     endfunction
 
-    integer fd, ntest, hh, ii, tn_f, t, n, k, o, code, errors, checks, r;
+    integer fd, ntest, hh, ii, tn_f, n, k, o, code, errors, checks, r;
     reg [15:0] tmp; reg [95:0] stmp; reg [15:0] expy [0:HIDDEN*PE_M-1]; real tol [0:HIDDEN*PE_M-1];
     real gotv, expv, tt;
 
     task load_w4(input integer N, input integer K, input integer which);
-        integer nn, kk; reg [15:0] dt, mt; reg [95:0] st;
+        integer nn, kk, ss, nsb_k; reg [15:0] dt, mt; reg [95:0] st;
         begin
+            nsb_k = (K + 255) / 256;   // super-blocks per column of this matrix
             for (nn = 0; nn < N; nn = nn + 1) begin
-                code=$fscanf(fd,"%h",dt); code=$fscanf(fd,"%h",mt); code=$fscanf(fd,"%h",st);
+                for (ss = 0; ss < nsb_k; ss = ss + 1) begin
+                    code=$fscanf(fd,"%h",dt); code=$fscanf(fd,"%h",mt); code=$fscanf(fd,"%h",st);
+                    if (which==0) begin Gd[nn][ss]=dt; Gm[nn][ss]=mt; Gs[nn][ss]=st; end
+                    else if (which==1) begin Ud[nn][ss]=dt; Um[nn][ss]=mt; Us[nn][ss]=st; end
+                    else begin Dd[nn][ss]=dt; Dm[nn][ss]=mt; Ds[nn][ss]=st; end
+                end
                 for (kk = 0; kk < K; kk = kk + 1) begin
                     code=$fscanf(fd,"%h",tmp);
                     if (which==0) Gq[nn][kk]=tmp[3:0];
                     else if (which==1) Uq[nn][kk]=tmp[3:0];
                     else Dq[nn][kk]=tmp[3:0];
                 end
-                if (which==0) begin Gd[nn]=dt; Gm[nn]=mt; Gs[nn]=st; end
-                else if (which==1) begin Ud[nn]=dt; Um[nn]=mt; Us[nn]=st; end
-                else begin Dd[nn]=dt; Dm[nn]=mt; Ds[nn]=st; end
             end
         end
     endtask
 
     initial begin
         errors=0; checks=0;
-        fd = $fopen("build/swiglu_q4k_vec.txt","r");
-        if (fd==0) begin $display("[swiglu_expert_q4k] FAIL: no vec file"); $finish; end
+        fd = $fopen(`TB_VEC,"r");
+        if (fd==0) begin $display("[swiglu_expert_q4k] FAIL: no vec file %s", `TB_VEC); $finish; end
         code=$fscanf(fd,"%d %d %d %d", ntest, hh, ii, tn_f);
         @(negedge clk); rst=0;
         for (t=0; t<ntest; t=t+1) begin
@@ -118,7 +161,7 @@ module swiglu_expert_q4k_tb;
             for (k=0; k<HIDDEN*PE_M; k=k+1) begin code=$fscanf(fd,"%f",tol[k]); end
 
             @(negedge clk); start=1; @(negedge clk); start=0;
-            k=0; while (!done && k<20000) begin @(posedge clk); k=k+1; end
+            k=0; while (!done && k<`TB_DONE_GUARD) begin @(posedge clk); k=k+1; end
             if (!done) begin $display("[swiglu_expert_q4k] FAIL test %0d: no done", t); errors=errors+1; end
             #1;
             for (o=0; o<HIDDEN*PE_M; o=o+1) begin
@@ -134,9 +177,9 @@ module swiglu_expert_q4k_tb;
             @(negedge clk);
         end
         $fclose(fd);
-        if (errors==0) $display("[swiglu_expert_q4k] ALL %0d TESTS PASSED (%0d experts, functional vs Q4_K golden)", checks, ntest);
+        if (errors==0) $display("[swiglu_expert_q4k] ALL %0d TESTS PASSED (%0d experts, functional vs Q4_K golden; HIDDEN=%0d INTER=%0d down-NSB=%0d)", checks, ntest, HIDDEN, INTER, NSB_D);
         else $display("[swiglu_expert_q4k] %0d/%0d FAILURES", errors, checks);
         $finish;
     end
-    initial begin #5000000; $display("[swiglu_expert_q4k] TIMEOUT"); $finish; end
+    initial begin #`TB_TIMEOUT_NS; $display("[swiglu_expert_q4k] TIMEOUT"); $finish; end
 endmodule

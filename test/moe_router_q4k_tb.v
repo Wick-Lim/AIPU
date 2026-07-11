@@ -4,10 +4,29 @@
 // w_j=(gate_j/s)*SCALE, so Sum(w_j)=SCALE (2.5) regardless of the sigmoid poly
 // approx -- a robust end-to-end check that GEMV->sigmoid->topk->renorm wire up.
 // The bit-exact gate is glm_matmul_q4k (proven 480/480).
+// Real-dims sweep overrides (docs/SCALE_FUNCTIONAL.md item 2, `make scale-ops`):
+//   -DTB_N_EXPERT=256 -DTB_TOPK=8 [-DTB_HIDDEN=..] runs the SAME renorm-invariant
+//   contract at the real GLM-5.2 expert count / top-K.  Defaults reproduce the
+//   committed slice run (HIDDEN=8, N_EXPERT=8, TOPK=2) byte-identically.
+`ifndef TB_HIDDEN
+    `define TB_HIDDEN 8
+`endif
+`ifndef TB_N_EXPERT
+    `define TB_N_EXPERT 8
+`endif
+`ifndef TB_TOPK
+    `define TB_TOPK 2
+`endif
+`ifndef TB_NTEST
+    `define TB_NTEST 40
+`endif
+`ifndef TB_TIMEOUT_NS
+    `define TB_TIMEOUT_NS 5000000
+`endif
 module moe_router_q4k_tb;
-    localparam integer HIDDEN   = 8;
-    localparam integer N_EXPERT = 8;
-    localparam integer TOPK     = 2;
+    localparam integer HIDDEN   = `TB_HIDDEN;
+    localparam integer N_EXPERT = `TB_N_EXPERT;
+    localparam integer TOPK     = `TB_TOPK;
     localparam integer PE_M     = 1;
     localparam integer KMAX     = 256;   // NSB=1
     localparam integer IDXW     = $clog2(N_EXPERT);
@@ -62,10 +81,11 @@ module moe_router_q4k_tb;
         end
     endfunction
 
-    integer t, e, k, errors, ntest, i0, i1;
-    real wsum, wa, wb;
+    integer t, e, k, errors, ntest, ta, tb;
+    integer idxs [0:TOPK-1];
+    real wsum, wk_r;
     initial begin
-        errors = 0; ntest = 40;
+        errors = 0; ntest = `TB_NTEST;
         @(negedge clk); rst = 0;
         for (t = 0; t < ntest; t = t + 1) begin
             // random token + Q4_K W_g
@@ -80,24 +100,30 @@ module moe_router_q4k_tb;
             k = 0; while (!done && k < 20000) begin @(posedge clk); k = k + 1; end
             if (!done) begin $display("FAIL test %0d: no done", t); errors = errors + 1; end
             #1;
-            // indices valid + distinct
-            i0 = sel_idx[0*IDXW +: IDXW];
-            i1 = sel_idx[1*IDXW +: IDXW];
-            if (i0 >= N_EXPERT || i1 >= N_EXPERT || i0 == i1) begin
-                $display("FAIL test %0d: bad idx %0d,%0d", t, i0, i1); errors = errors + 1; end
-            // renorm invariant: Sum(routed weights) ~ 2.5
-            wa = f32r({sel_weight[0*16 +: 16], 16'd0});
-            wb = f32r({sel_weight[1*16 +: 16], 16'd0});
-            wsum = wa + wb;
+            // indices valid + pairwise distinct (all TOPK of them)
+            for (ta = 0; ta < TOPK; ta = ta + 1) begin
+                idxs[ta] = sel_idx[ta*IDXW +: IDXW];
+                if (idxs[ta] >= N_EXPERT) begin
+                    $display("FAIL test %0d: bad idx[%0d]=%0d", t, ta, idxs[ta]); errors = errors + 1; end
+                for (tb = 0; tb < ta; tb = tb + 1)
+                    if (idxs[ta] == idxs[tb]) begin
+                        $display("FAIL test %0d: dup idx[%0d]==idx[%0d]==%0d", t, ta, tb, idxs[ta]); errors = errors + 1; end
+            end
+            // renorm invariant: Sum over the TOPK routed weights ~ SCALE (2.5)
+            wsum = 0.0;
+            for (ta = 0; ta < TOPK; ta = ta + 1) begin
+                wk_r = f32r({sel_weight[ta*16 +: 16], 16'd0});
+                wsum = wsum + wk_r;
+            end
             if (^sel_weight === 1'bx) begin $display("FAIL test %0d: X in weight", t); errors = errors + 1; end
             else if (wsum < 2.40 || wsum > 2.60) begin
-                $display("FAIL test %0d: renorm Sum(w)=%f != 2.5 (w=%f,%f)", t, wsum, wa, wb); errors = errors + 1; end
+                $display("FAIL test %0d: renorm Sum(w)=%f != 2.5", t, wsum); errors = errors + 1; end
             @(negedge clk);
         end
         if (errors == 0)
-            $display("[moe_router_q4k] ALL %0d TESTS PASSED (renorm Sum=SCALE, valid idx, GEMV->sigmoid->topk->renorm on Q4_K)", ntest);
+            $display("[moe_router_q4k] ALL %0d TESTS PASSED (renorm Sum=SCALE, valid idx, GEMV->sigmoid->topk->renorm on Q4_K; HIDDEN=%0d N_EXPERT=%0d TOPK=%0d)", ntest, HIDDEN, N_EXPERT, TOPK);
         else $display("[moe_router_q4k] %0d FAILURES", errors);
         $finish;
     end
-    initial begin #5000000; $display("[moe_router_q4k] TIMEOUT"); $finish; end
+    initial begin #`TB_TIMEOUT_NS; $display("[moe_router_q4k] TIMEOUT"); $finish; end
 endmodule

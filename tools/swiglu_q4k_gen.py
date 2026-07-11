@@ -8,12 +8,13 @@ FP8 path). This golden pairs exact GEMMs with a true-silu reference and a per-ou
 tolerance covering glm_act's poly-silu approximation + bf16 grid -- the proven
 methodology of swiglu_expert_fp8_tb. Emits build/swiglu_q4k_vec.txt for the TB.
 
-File layout (HIDDEN, INTER, TN, PE_M fixed by the TB; NSB=1, K<=256):
+File layout (HIDDEN, INTER, TN, PE_M fixed by the TB; NSB(K)=ceil(K/256)
+super-blocks per weight column -- NSB=1 at the committed slice, byte-identical):
   line1: NTEST HIDDEN INTER TN
   per test:
     x[PE_M*HIDDEN]  (4hex bf16, row-major)
     per weight matrix in {GATE(N=INTER,K=HIDDEN), UP(N=INTER,K=HIDDEN), DOWN(N=HIDDEN,K=INTER)}:
-      for n in 0..N-1:  d(4hex) dmin(4hex) scales(24hex)  q[0..K-1](1hex each)
+      for n in 0..N-1:  {d(4hex) dmin(4hex) scales(24hex)} x NSB(K)  q[0..K-1](1hex each)
     y[PE_M*HIDDEN] (4hex bf16 golden)   tol[PE_M*HIDDEN] (float)
 """
 import sys, numpy as np
@@ -33,31 +34,37 @@ def silu(x):  # glm_act SILU semantics: sigmoid(clamp(x,+-16)) then x*sigmoid, b
     return bf16_round(np.float32(x) * s)
 
 def mk_weight(rng, N, K):
-    """random Q4_K weight matrix as N columns, each a super-block (K<=256 codes)."""
+    """random Q4_K weight matrix as N columns, each spanning NSB=ceil(K/256)
+    super-blocks along K (NSB=1 at the slice K<=256 -- byte-identical output)."""
+    NSB = (K + 255) // 256
     cols = []
     for _ in range(N):
-        d  = _f32_to_f16bits(rng.uniform(0.01, 0.06))
-        dm = _f32_to_f16bits(rng.uniform(0.0, 0.03))
-        s  = _pack_6bit_scales([int(v) for v in rng.integers(0,64,8)],
-                               [int(v) for v in rng.integers(0,64,8)])
-        s96 = sum(b << (8*i) for i, b in enumerate(s))
-        q   = [int(v) for v in rng.integers(0, 16, K)]
+        d, dm, s, s96 = [], [], [], []
+        for _sb in range(NSB):
+            d.append(_f32_to_f16bits(rng.uniform(0.01, 0.06)))
+            dm.append(_f32_to_f16bits(rng.uniform(0.0, 0.03)))
+            sc = _pack_6bit_scales([int(v) for v in rng.integers(0,64,8)],
+                                   [int(v) for v in rng.integers(0,64,8)])
+            s.append(sc); s96.append(sum(b << (8*i) for i, b in enumerate(sc)))
+        q = [int(v) for v in rng.integers(0, 16, K)]
         cols.append((d, dm, s, s96, q))
     return cols
 
 def dequant_col(col):
     d_h, dm_h, s, _, q = col
-    d  = np.float32(np.frombuffer(np.uint16(d_h).tobytes(),  dtype=np.float16)[0])
-    mn = np.float32(np.frombuffer(np.uint16(dm_h).tobytes(), dtype=np.float16)[0])
     out = np.empty(len(q), dtype=np.float32)
     for k, qv in enumerate(q):
-        sc, m = get_scale_min_k4(k // 32, s)
+        sb = k // 256
+        d  = np.float32(np.frombuffer(np.uint16(d_h[sb]).tobytes(),  dtype=np.float16)[0])
+        mn = np.float32(np.frombuffer(np.uint16(dm_h[sb]).tobytes(), dtype=np.float16)[0])
+        sc, m = get_scale_min_k4((k % 256) // 32, s[sb])
         out[k] = (d * np.float32(sc)) * np.float32(qv) - mn * np.float32(m)
     return out
 
 def emit_w(lines, cols):
     for (d, dm, _s, s96, q) in cols:
-        lines.append(f"{d:04x} {dm:04x} {s96:024x} " + " ".join(f"{qq:01x}" for qq in q))
+        hdr = " ".join(f"{d[sb]:04x} {dm[sb]:04x} {s96[sb]:024x}" for sb in range(len(d)))
+        lines.append(hdr + " " + " ".join(f"{qq:01x}" for qq in q))
 
 def gen(ntest, HIDDEN, INTER, TN, PE_M=1, seed=0):
     rng = np.random.default_rng(seed)
@@ -99,4 +106,5 @@ if __name__ == "__main__":
     TN     = int(sys.argv[4]) if len(sys.argv) > 4 else 4
     out    = sys.argv[5] if len(sys.argv) > 5 else "build/swiglu_q4k_vec.txt"
     open(out, "w").write(gen(ntest, HIDDEN, INTER, TN))
-    print(f"wrote {out}: {ntest} tests HIDDEN={HIDDEN} INTER={INTER} TN={TN}")
+    print(f"wrote {out}: {ntest} tests HIDDEN={HIDDEN} INTER={INTER} TN={TN} "
+          f"(NSB gate/up={(HIDDEN+255)//256} down={(INTER+255)//256})")

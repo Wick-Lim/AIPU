@@ -152,8 +152,10 @@ Be clear which inputs are which:
 - **Prior-FP8 measured — NOT Q4_K (branch `fp8`, re-run PENDING):** `weight_decomp` **1.34×** fewer
   NVMe bytes (5.97 bits/sym on FP8 *byte* entropy) + order-1 `weight_decomp2` ~1.4–1.5×; the BFP
   accumulator **−87.6 %** cells; the `FLASH_LAT` stall table and the **~4–5× compute-slowdown budget**
-  (measured on the deleted `glm_fp8_system_perf_tb`). These are FP8-datapath results; **no Q4_K
-  re-characterization has been run**, so they are cited as prior-track, never as Q4_K numbers.
+  (the FP8 `FLASH_LAT` table). The stall mechanism is **since re-characterized on Q4_K**
+  (`make perf-q4k`, 2026-07-11 — see the box below and [`CYCLE_EMULATION.md`](CYCLE_EMULATION.md));
+  the compute-slowdown budget and BFP/`weight_decomp2` cell counts remain FP8-datapath results cited
+  as prior-track.
 - **Modeled (the [EST] part):** the **absolute J/token** = `bytes/token (~25 GB active, ~14 GB routed)
   × energy/bit` with the **NVMe/PCIe read path ≫ DRAM/bit** — a datasheet/roofline model, **not** a
   silicon wattmeter. So the *relative* Q4_K improvements are measured/verified; the *absolute* J/token
@@ -179,12 +181,13 @@ compute-dynamic cut at constant V, and more with V scaling. It is **result-invar
 slower clock) — the same "compute is nearly free" slack that shrinks the die
 ([`MINIATURIZATION.md`](MINIATURIZATION.md)).
 
-> **The stall-shadow mechanism was measured on the prior-FP8 perf harness [branch `fp8`, Q4_K PENDING].**
-> On `glm_fp8_system_perf_tb` (now removed with the FP8 track; **no Q4_K perf harness exists yet**), with
-> `EXPERT_STALL=1` and the token held == golden, the exposed `stall` scaled linearly with read latency
-> (`FLASH_LAT` 256 → `stall` 777; 2048 → **6153**, i.e. 8× latency → ~7.9× stall — the storage-stall
-> shadow scales with NVMe read cost). That **specific table is an FP8 measurement**; a Q4_K
-> `perf`-harness re-run is [PENDING]. The *conclusion* it supports — **storage-stall shadow ∝ read
+> **The stall-shadow mechanism is now measured on Q4_K (2026-07-11, `make perf-q4k`).**
+> `test/glm_q4k_system_perf_tb.v` on `glm_q4k_system`, with `EXPERT_STALL=1` and every token held ==
+> a standalone `glm_model_q4k` golden, shows exposed `stall/token` scaling linearly with read latency
+> (`FLASH_LAT` 8 → 11; 1024 → **2,567** at RESIDENT=0), and — the residency confirmation —
+> **35 cyc/token independent of `FLASH_LAT` at RESIDENT=1** (expert refills bypass the storage tier),
+> a ~73× cut. The prior FP8 table (`FLASH_LAT` 256→777, 2048→6153) is retained on branch `fp8` as
+> the historical mechanism reference. The *conclusion* it supports — **storage-stall shadow ∝ read
 > latency → a ~4–5× DVFS budget** — is a **format-agnostic roofline** property: at real 753B scale the
 > die is memory-bound regardless of numeric format, so compute is ≈ 20–25 % of the token window.
 

@@ -9,15 +9,15 @@ knobs, and counting cycles.
 
 > **Status / provenance (read this first).** The cycle-emulation *instrumentation* is **current and
 > Q4_K**: `src/glm_q4k_system.v` carries the `EXPERT_STALL` param and the `ec_hit_count` /
-> `ec_miss_count` / `ec_demand_stall_cycles` counters used throughout this doc. **The tabulated
-> cycle numbers below, however, were produced by the prior FP8-track perf harness**
-> (`test/glm_fp8_system_perf_tb.v` + `tools/perf_sweep.sh`, driving the prior `glm_fp8_system` +
-> `glm_model_fp8`), which now lives **only on branch `fp8`** — it was removed from `main` in the
-> Q4_K migration. **A Q4_K re-run on `glm_q4k_system` is [PENDING]**: the perf TB and sweep script
-> have not yet been ported. What carries over unchanged is the *mechanism* (exposed stall is linear
-> in storage-read latency and proportional to miss count); the *absolute* compute-die `cyc_per_tok`
-> is FP8-die-specific and will differ under Q4_K. **Every specific cycle count in this doc is a
-> prior-FP8 measurement, not a Q4_K number** — do not read them as the current product's cycles.
+> `ec_miss_count` / `ec_demand_stall_cycles` counters used throughout this doc. **The harness is now
+> ported to Q4_K and re-run** (2026-07-11): `test/glm_q4k_system_perf_tb.v` + `tools/perf_sweep.sh`
+> drive `glm_q4k_system` + a standalone `glm_model_q4k` reference (every committed token bit-exact,
+> not just timed), gated by `make perf-q4k`. The **measured Q4_K sweep is in [§Measured — Q4_K](#measured-sweep--q4k-make-perf-q4k)
+> below**; the prior FP8 table is retained beneath it as the historical mechanism reference. Key
+> Q4_K result: the compute-die baseline is **~10,896 cyc/token** (slice), and the **residency pivot
+> is confirmed on real cycles** — at `FLASH_LAT=1024`, `RESIDENT=0` exposes **2,567 stall
+> cyc/token** (19%) while `RESIDENT=1` exposes **35** (0.3%), a ~73× cut, matching the mechanism
+> (exposed stall ∝ latency × miss count). The FP8 numbers further below remain FP8-die-specific.
 
 > **Wall-clock update (2026-07 — routed Fmax now MEASURED).** The XCKU3P routed-Fmax campaign is
 > closed at **46.5 MHz** ([`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)), so the slice demo's wall clock
@@ -70,12 +70,36 @@ PASSED`, token == standalone reference) — so every cycle number below is from 
 run. The FLASH sweep was **independently re-run** (two separate runs produced byte-identical
 numbers).
 
-## Measured sweep — prior FP8 track (branch `fp8`); Q4_K re-run [PENDING]
+## Measured sweep — Q4_K (`make perf-q4k`)
 
-> **These are prior-FP8 cycle counts**, produced by `tools/perf_sweep.sh` on `glm_fp8_system` +
-> `glm_model_fp8` (branch `fp8`). The *mechanism* (stall linear in `FLASH_LAT`, ∝ miss count) is
-> format-agnostic and carries over to Q4_K; the absolute `cyc_per_tok` (FP8-die compute latency)
-> will change under Q4_K. Not re-run on `glm_q4k_system` yet — do **not** read these as Q4_K.
+Measured 2026-07-11 by `test/glm_q4k_system_perf_tb.v` on `glm_q4k_system` (compute die
+`glm_model_q4k`, every committed token bit-exact vs a standalone `glm_model_q4k` reference), 4-token
+decode, slice config (L=4, n_expert=8, cache_slots=2, ddr_nch=4). `cyc_per_tok` is the slice
+compute-die baseline, **not** a GLM-5.2 product number.
+
+| FLASH_LAT | RESIDENT | EXPERT_STALL | cyc/token | stall/token | compute/token | exposed stall |
+|---|---|---|---|---|---|---|
+| 8 | 0 | 1 | 10,899 | 11 | 10,888 | 0.1% |
+| 1024 | 0 | 1 | 13,463 | 2,567 | 10,896 | **19%** |
+| 8 | 1 | 1 | 10,931 | 35 | 10,896 | 0.3% |
+| 1024 | 1 | 1 | 10,931 | 35 | 10,896 | **0.3%** |
+| 1024 | 0 | 0 (no stall model) | 10,896 | 2,467* | 8,428 | — (thrash: 32 dropped) |
+
+**What this proves on real Q4_K cycles:** (1) the compute-die slice baseline is **~10,896
+cyc/token**; (2) exposed storage stall is **linear in `FLASH_LAT`** (11→2,567 as latency 8→1024 at
+RESIDENT=0) and **∝ miss count** — the roofline's memory-bound assumption, now measured not assumed;
+(3) the **residency pivot is confirmed**: RESIDENT=1 makes stall independent of `FLASH_LAT` (35
+cyc/token at both 8 and 1024) because expert refills no longer traverse the storage tier — a ~73×
+cut vs RESIDENT=0 at FLASH_LAT=1024. *(The last row uses the no-stall accounting mode where misses
+drop rather than stall; its stall column is the counter, not exposed latency.)* Independently re-run
+(byte-identical). See `make perf-q4k` and `build/perf_q4k_sweep.log`.
+
+## Measured sweep — prior FP8 track (branch `fp8`), historical mechanism reference
+
+> **These are prior-FP8 cycle counts**, produced by the fp8-branch `tools/perf_sweep.sh` on
+> `glm_fp8_system` + `glm_model_fp8`. Retained because the *mechanism* (stall linear in `FLASH_LAT`,
+> ∝ miss count) is format-agnostic — the Q4_K table above now confirms it directly. The absolute
+> FP8 `cyc_per_tok` differs from the Q4_K baseline; do **not** read these as Q4_K.
 
 `cyc_per_tok` = cold-token compute latency (start→tok_valid). `stall` = `ec_demand_stall_cycles`
 (cycles the cache/storage subsystem was in a demand-miss refill) over 3 tokens. **`EFF_CYC` =

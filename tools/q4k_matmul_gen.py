@@ -39,11 +39,13 @@ def dequant_col(d_h, dmin_h, scales, qcol):
         out[k] = d1 * np.float32(q) - m1
     return out
 
-def gen(ntest, PE_M, PE_N, seed=0):
+def gen(ntest, PE_M, PE_N, seed=0, kchoices=None):
+    if kchoices is None:
+        kchoices = [32, 64, 128, 200, 256, 288, 512, 600, 768]
     rng = np.random.default_rng(seed)
     lines = [f"{ntest} {PE_M} {PE_N}"]
     for t in range(ntest):
-        K   = int(rng.choice([32, 64, 128, 200, 256, 288, 512, 600, 768]))
+        K   = int(rng.choice(kchoices))
         NSB = (K + 255) // 256
         # per-(column, super-block) params, index (pj*NSB + sb)
         d_h  = [[_f32_to_f16bits(rng.uniform(0.003, 0.05)) for _ in range(NSB)] for _ in range(PE_N)]
@@ -80,5 +82,9 @@ if __name__ == "__main__":
     PE_M  = int(sys.argv[2]) if len(sys.argv) > 2 else 2
     PE_N  = int(sys.argv[3]) if len(sys.argv) > 3 else 2
     out   = sys.argv[4] if len(sys.argv) > 4 else "build/q4k_vec.txt"
-    open(out, "w").write(gen(ntest, PE_M, PE_N))
-    print(f"wrote {out}: {ntest} tests, PE_M={PE_M} PE_N={PE_N}")
+    # optional 5th arg: comma-separated K choices (real-dims sweep, e.g. 512,2048,6144);
+    # omitted -> the committed slice K list (byte-identical default output).
+    kch   = [int(v) for v in sys.argv[5].split(",")] if len(sys.argv) > 5 else None
+    open(out, "w").write(gen(ntest, PE_M, PE_N, kchoices=kch))
+    print(f"wrote {out}: {ntest} tests, PE_M={PE_M} PE_N={PE_N}"
+          + (f" K in {kch}" if kch else ""))

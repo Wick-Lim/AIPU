@@ -258,10 +258,11 @@ the Q4_K analogue is a structural sign-off, not a sim — see §8.)*
   demand-miss delays the token by the exposed NVMe-refill; the exposed stall rises **exactly
   `stall = 3·FLASH_LAT + 9`** (slope 3 = DDR beats per expert-refill slice), so `cyc_per_tok` grows
   with storage-read latency — the roofline *mechanism* measured on real RTL cycles
-  ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)). **Prior-FP8 caveat:** the *specific* counts in that
-  doc (`cyc_per_tok` 7947→8607 @ `FLASH_LAT=256`) were measured on the **FP8** system perf TB
-  (`glm_fp8_system_perf_tb`, still on the FP8 top — no Q4_K perf TB exists yet); the **formula /
-  mechanism is format-agnostic, the absolute Q4_K cycle counts are PENDING**. *(Update: with the
+  ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)). **Q4_K measured (2026-07-11, `make perf-q4k`):**
+  the harness is ported (`test/glm_q4k_system_perf_tb.v`) and re-run on `glm_q4k_system` — slice
+  `cyc_per_tok` ≈ **10,896**; the residency pivot is confirmed on real cycles (RESIDENT=1 exposes
+  35 stall cyc/token vs 2,567 at RESIDENT=0/`FLASH_LAT=1024`, ~73×). The FP8 counts in that doc are
+  retained only as the historical mechanism reference. *(Update: with the
   routed Fmax measured at 46.5 MHz, the demo wall-clock is now computable — slice `cyc_per_tok`
   ~8.0–11.0K (FP8-era absolute; Q4_K similar ballpark plus a few hundred repipeline-latency cycles)
   → ~170–240 µs/token ≈ **~4,200–5,800 slice tok/s** — the correctness-demo speed of the tiny slice,

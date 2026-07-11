@@ -3,11 +3,24 @@
 // golden (tools/q4k_ref.py, vectors from tools/q4k_matmul_gen.py -> build/q4k_vec.txt).
 // Proves the Q4_K-typed weights run with NO re-quantization, bit-exact to the
 // ggml Q4_K reference (tools/q4k_ref.py).
+// Real-dims sweep overrides (docs/SCALE_FUNCTIONAL.md item 2, `make scale-ops`):
+//   -DTB_KMAX=6144 -DTB_VEC='"build/q4k_real_vec.txt"' -DTB_TIMEOUT_NS=...
+//   runs the SAME bit-exact contract at the real projection K (NSB=24).
+//   Defaults reproduce the committed slice run byte-identically.
+`ifndef TB_KMAX
+    `define TB_KMAX 1024
+`endif
+`ifndef TB_VEC
+    `define TB_VEC "build/q4k_vec.txt"
+`endif
+`ifndef TB_TIMEOUT_NS
+    `define TB_TIMEOUT_NS 2000000
+`endif
 module glm_matmul_q4k_tb;
     localparam integer PE_M = 2;
     localparam integer PE_N = 2;
-    localparam integer KMAX = 1024;
-    localparam integer NSB  = (KMAX + 255) / 256;   // 4
+    localparam integer KMAX = `TB_KMAX;
+    localparam integer NSB  = (KMAX + 255) / 256;   // 4 at the slice KMAX=1024
 
     reg clk = 0; always #5 clk = ~clk;
     reg rst = 1;
@@ -38,8 +51,8 @@ module glm_matmul_q4k_tb;
 
     initial begin
         errors = 0; checks = 0;
-        fd = $fopen("build/q4k_vec.txt", "r");
-        if (fd == 0) begin $display("[glm_matmul_q4k] FAIL: cannot open build/q4k_vec.txt"); $finish; end
+        fd = $fopen(`TB_VEC, "r");
+        if (fd == 0) begin $display("[glm_matmul_q4k] FAIL: cannot open %s", `TB_VEC); $finish; end
         code = $fscanf(fd, "%d %d %d", ntest, pm, pn);
         if (pm != PE_M || pn != PE_N) begin
             $display("[glm_matmul_q4k] FAIL: vector PE_M/PE_N (%0d,%0d) != TB (%0d,%0d)", pm, pn, PE_M, PE_N);
@@ -103,5 +116,5 @@ module glm_matmul_q4k_tb;
         $finish;
     end
 
-    initial begin #2000000; $display("[glm_matmul_q4k] TIMEOUT"); $finish; end
+    initial begin #`TB_TIMEOUT_NS; $display("[glm_matmul_q4k] TIMEOUT"); $finish; end
 endmodule

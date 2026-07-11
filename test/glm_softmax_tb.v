@@ -98,7 +98,14 @@ module glm_softmax_tb;
 
     localparam integer LANES = 2;
     localparam integer LEN8  = 8;
-    localparam integer LEN64 = 64;
+    // Large-row LEN: 64 at the committed slice (byte-identical default); the
+    // real-dims sweep (docs/SCALE_FUNCTIONAL.md item 2, `make scale-ops`) overrides
+    // -DTB_SOFTMAX_LEN=2048 = the real DSA attention window (index_topk), running
+    // the SAME golden/tolerance contract at the real softmax row length.
+`ifndef TB_SOFTMAX_LEN
+    `define TB_SOFTMAX_LEN 64
+`endif
+    localparam integer LEN64 = `TB_SOFTMAX_LEN;
     localparam integer NB8   = LEN8  / LANES;   // beats for the LEN=8  DUT
     localparam integer NB64  = LEN64 / LANES;   // beats for the LEN=64 DUT
 
@@ -466,18 +473,24 @@ module glm_softmax_tb;
 
             // LARGE POSITIVE spread (stability stress): big positive logits with
             // a clear max; without max-subtract exp() overflows to inf -> nan.
+            // The ramp step scales as 64/len so the LOGIT ENVELOPE stays the
+            // committed one (shifted args >= -63) at ANY len -- byte-identical at
+            // len=64 (64.0/64 == 1.0 exactly), and at the real-dims LEN=2048 the
+            // row still overflows exp() without max-subtract.  Shifted-arg
+            // magnitudes beyond the committed envelope (~ -180) are OUTSIDE the
+            // exp pipe's documented softmax range and are not part of the contract.
             for (j = 0; j < len; j = j + 1)
-                row_x[j] = real_to_bf16(60.0 + 1.0*j);
+                row_x[j] = real_to_bf16(60.0 + j*64.0/len);
             do_row(len, {tag, " large-positive-spread"});
 
             // LARGE NEGATIVE logits (all far below 0, must still normalize to 1)
             for (j = 0; j < len; j = j + 1)
-                row_x[j] = real_to_bf16(-50.0 - 0.5*j);
+                row_x[j] = real_to_bf16(-50.0 - j*32.0/len);
             do_row(len, {tag, " large-negative"});
 
             // mixed-sign moderate range ramp
             for (j = 0; j < len; j = j + 1)
-                row_x[j] = real_to_bf16(-3.0 + 0.5*j);
+                row_x[j] = real_to_bf16(-3.0 + j*32.0/len);
             do_row(len, {tag, " mixed-ramp"});
 
             // a few random wide-range rows (mixed sign, wide dynamic range)

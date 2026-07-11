@@ -31,12 +31,12 @@ IFLAGS := -g2012 -Wall -I src
 # the assembled-forward smoke, the RESIDENT refill gate + its equivalence proof, and
 # the 753B-shape elaboration.  (model-q4k-smoke also runs inside `unittests`; listing
 # it here keeps `all` covering it even if the unittests tail changes.)
-all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab
+all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab mla-sparse
 
 # `release-gate` is the full pre-release battery: every simulation, structural,
 # CDC and formal gate in the repo.  HOURS-long (model-q4k / spec-slow / expert-cache
-# are minutes-to-hours each in iverilog); run before cutting a release.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv expert-cache full-elab synth-glm cdc formal formal-ind
+# / batched-q4k are minutes-to-hours each in iverilog); run before cutting a release.
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv expert-cache full-elab mla-sparse scale-ops batched-q4k perf-q4k synth-glm cdc formal formal-ind
 	@echo "release-gate: ALL gates passed"
 
 
@@ -619,3 +619,129 @@ coverage:
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f *.vcd
+
+# ============================================================================
+# mla-sparse : mla_attn_q4k SPARSE / PER-ROW batching oracle (standalone gate)
+# ----------------------------------------------------------------------------
+#   DUT-vs-DUT EXACT (===) oracle for the PE_M-batched Q4_K MLA attention:
+#   one batched DUT (PE_M=3, PER_ROW_POS/PER_ROW_SLEN, per-row q-dependent DSA
+#   DSA_REAL_IDX=1) vs PE_M=1 re-runs per row on that row's own (x,pos,s_len)
+#   -- BIT-EXACT rows across dense + sparse (S_MAX > TOPK) cases, per-row DSA
+#   divergence proven live, fetch-sharing asserted (exact / union bounds), a
+#   dense-vs-sparse full-window cross-check (TOPK=4 vs TOPK=S_MAX machine,
+#   bit-identical when selection covers the window), and PER_ROW_SEQ per-row
+#   KV windows (TOPK_SEQ=2; kc==sum-of-rows, weights shared).  The fp8 track
+#   carried this gate (test/mla_attn_fp8_sparse_perrow_tb.v); this is the
+#   Q4_K-product sibling closing that audit gap.
+# ============================================================================
+.PHONY: mla-sparse
+mla-sparse:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_q4k_sparse_perrow_sim test/mla_attn_q4k_sparse_perrow_tb.v src/mla_attn_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_matmul_pipe.v src/dsa_indexer.v src/glm_softmax.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
+	@printf '[%s] ' "mla_attn_q4k_sparse_perrow"; $(VVP) $(BUILD_DIR)/mla_attn_q4k_sparse_perrow_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mla_attn_q4k_sparse_perrow"; exit 1; }
+#============================================================================
+# ---- PERF (Q4_K): cycle-accurate throughput harness (audit #15) -----------
+#   The Q4_K port of the fp8 track's perf/cycle-emulation harness
+#   (docs/CYCLE_EMULATION.md [PENDING] item): test/glm_q4k_system_perf_tb.v
+#   decodes a 4-token sequence on glm_q4k_system with the die clock-gated on
+#   expert-cache demand misses (EXPERT_STALL=1), binding every committed token
+#   against a standalone glm_model_q4k, and emits machine-readable
+#   'PERF q4k ... cycles/token=... stall/token=... compute/token=...' lines.
+#   tools/perf_sweep.sh compiles/runs it per config (FLASH_LAT x cache-hit vs
+#   thrash x RESIDENT=0/1 x EXPERT_STALL on/off) and tabulates the measured
+#   memory-stall fraction.  MEASUREMENT harness, not part of `all`
+#   (minutes-long: ~8 iverilog runs).  SWEEP=full adds DDR_NCH/CACHE_SLOTS.
+.PHONY: perf-q4k
+perf-q4k:
+	@mkdir -p $(BUILD_DIR)
+	@bash tools/perf_sweep.sh > $(BUILD_DIR)/perf_q4k_sweep.log 2>&1 \
+	    || { cat $(BUILD_DIR)/perf_q4k_sweep.log; echo "FAILED: perf-q4k (sweep run failed)"; exit 1; }
+
+# ============================================================================
+# ---- SCALE-FUNCTIONAL gates (docs/SCALE_FUNCTIONAL.md items 2 + 3) ---------
+# ----  NEW delimited section: `make scale-ops` + `make batched-q4k`  --------
+# ============================================================================
+.PHONY: scale-ops batched-q4k
+
+# scale-ops (item 2): the REAL-DIMS Q4_K operator sweep.  Re-runs the EXISTING
+# operator TBs -- same goldens / same check contracts -- at the real GLM-5.2
+# operator magnitudes via TB `define overrides (the vector generators grew
+# parameters, they were NOT forked; all slice defaults stay byte-identical):
+#   * glm_matmul_q4k   K in {512,2048,6144}, KMAX=6144 -> NSB=24 super-blocks
+#                      (the real per-projection K) -- BIT-EXACT vs the ggml
+#                      Q4_K golden tools/q4k_ref.py (~40 s)
+#   * moe_router_q4k   N_EXPERT=256 TOPK=8 (the real expert count / top-K),
+#                      HIDDEN=128 -- renorm invariant Sum(w)=SCALE (~5 min)
+#   * swiglu_expert_q4k INTER=2048 (real INTER_MOE; down proj = 8 Q4_K
+#                      super-blocks/column), HIDDEN=64 -- tolerance golden
+#   * glm_softmax      LEN=2048 (the real DSA window index_topk), committed
+#                      logit envelope (shifted args >= -63; larger magnitudes
+#                      are outside the exp pipe's documented range) (~3 min)
+#   * rmsnorm_unit     LEN=6144 campaign (the real MODEL_DIM) -- the committed
+#                      TB already sweeps it; re-run here so the gate is
+#                      self-contained (~20 s)
+#   * rope_interleave_unit ROT_DIM=64 (the real qk_rope_head_dim), positions
+#                      to ~1M -- likewise already real-dim; re-run here (~1 s)
+# NOT covered (stated, not implied): router/swiglu/softmax GEMV K stays below
+# the real 6144 reduction (that mechanism is what the K=6144 GEMM leg proves),
+# and there is no standalone mla_attn_q4k real-geometry TB on main (the MLA
+# datapath is gated at the slice by `make model-q4k`).
+scale-ops:
+	@mkdir -p $(BUILD_DIR)
+	@# glm_matmul_q4k at real per-projection K (NSB up to 24), bit-exact.
+	@python3 tools/q4k_matmul_gen.py 30 2 2 build/q4k_real_vec.txt 512,2048,6144,6144,6144 >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_KMAX=6144 -DTB_VEC='"build/q4k_real_vec.txt"' -DTB_TIMEOUT_NS=20000000 \
+	    -o $(BUILD_DIR)/glm_matmul_q4k_real_sim test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v
+	@printf '[%s] ' "glm_matmul_q4k(K=6144)"; $(VVP) $(BUILD_DIR)/glm_matmul_q4k_real_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_matmul_q4k real-dims"; exit 1; }
+	@# rmsnorm_unit at the real MODEL_DIM (LEN=6144 campaign in the committed TB).
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/rmsnorm_unit_real_sim test/rmsnorm_unit_tb.v src/rmsnorm_unit.v
+	@printf '[%s] ' "rmsnorm_unit(LEN=6144)"; $(VVP) $(BUILD_DIR)/rmsnorm_unit_real_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: rmsnorm_unit real-dims"; exit 1; }
+	@# rope_interleave_unit at the real qk_rope_head_dim (ROT_DIM=64, pos to ~1M).
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/rope_real_sim test/rope_interleave_unit_tb.v src/rope_interleave_unit.v
+	@printf '[%s] ' "rope_interleave_unit(ROT_DIM=64)"; $(VVP) $(BUILD_DIR)/rope_real_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: rope_interleave_unit real-dims"; exit 1; }
+	@# swiglu_expert_q4k at the real INTER_MOE=2048 (down proj NSB=8).
+	@python3 tools/swiglu_q4k_gen.py 4 64 2048 4 build/swiglu_q4k_real_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_HIDDEN=64 -DTB_INTER=2048 -DTB_KMAX=2048 -DTB_VEC='"build/swiglu_q4k_real_vec.txt"' \
+	    -DTB_DONE_GUARD=400000 -DTB_TIMEOUT_NS=600000000 \
+	    -o $(BUILD_DIR)/swiglu_expert_q4k_real_sim test/swiglu_expert_q4k_tb.v \
+	    src/swiglu_expert_q4k.v src/glm_matmul_q4k.v src/glm_act.v
+	@printf '[%s] ' "swiglu_expert_q4k(INTER=2048)"; $(VVP) $(BUILD_DIR)/swiglu_expert_q4k_real_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: swiglu_expert_q4k real-dims"; exit 1; }
+	@# glm_softmax at the real DSA attention window (LEN=2048 rows).
+	@$(IVERILOG) $(IFLAGS) -DTB_SOFTMAX_LEN=2048 -o $(BUILD_DIR)/glm_softmax_real_sim \
+	    test/glm_softmax_tb.v src/glm_softmax.v src/glm_fp_pipe.v
+	@printf '[%s] ' "glm_softmax(LEN=2048)"; $(VVP) $(BUILD_DIR)/glm_softmax_real_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_softmax real-dims"; exit 1; }
+	@# moe_router_q4k at the real expert count / top-K (256 / 8).
+	@$(IVERILOG) $(IFLAGS) -DTB_N_EXPERT=256 -DTB_TOPK=8 -DTB_HIDDEN=128 -DTB_TIMEOUT_NS=600000000 \
+	    -o $(BUILD_DIR)/moe_router_q4k_real_sim test/moe_router_q4k_tb.v \
+	    src/moe_router_q4k.v src/glm_matmul_q4k.v src/glm_act.v src/topk_select.v src/glm_fp_pipe.v
+	@printf '[%s] ' "moe_router_q4k(256/top-8)"; $(VVP) $(BUILD_DIR)/moe_router_q4k_real_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: moe_router_q4k real-dims"; exit 1; }
+	@echo "scale-ops: real-dims Q4_K operator sweep passed (GEMM K=6144/NSB=24 bit-exact; router 256/top-8; SwiGLU INTER_MOE=2048; softmax LEN=2048; rmsnorm LEN=6144; rope ROT_DIM=64)"
+
+# batched-q4k (item 3): the BATCHED PE_M>1 assembled-model golden.  Two
+# glm_model_q4k instances share the model-q4k weight set (the SAME
+# tools/glm_model_q4k_tb_gen.py vectors): a PE_M=2 batched forward's row r must
+# equal a standalone PE_M=1 forward on that row's token -- logits + argmax +
+# h_state BIT-EXACT -- and row 0 is ALSO compared against the assembled numpy
+# golden directly (chaining the batch proof to the reference, not just
+# DUT-vs-DUT).  Committed slice; each scenario = B+1 extra full forwards ->
+# minutes-long in iverilog (like model-q4k), so standalone, not in `unittests`.
+BATCHED_Q4K_SRCS := test/glm_model_q4k_pem_tb.v src/glm_model_q4k.v src/glm_decoder_block_q4k.v \
+	src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v src/glm_matmul_q4k.v \
+	src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v \
+	src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/glm_fp_pipe.v
+
+batched-q4k:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null          # -> build/mq4k/*.hex (committed-slice golden)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_model_q4k_pem_sim $(BATCHED_Q4K_SRCS)
+	@printf '[%s] ' "glm_model_q4k_pem(PE_M=2)"; $(VVP) $(BUILD_DIR)/glm_model_q4k_pem_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_model_q4k_pem"; exit 1; }
+	@echo "batched-q4k: glm_model_q4k PE_M=2 rows == per-row PE_M=1 runs (BIT-EXACT logits+argmax+h_state; row 0 anchored to the numpy golden)"
+

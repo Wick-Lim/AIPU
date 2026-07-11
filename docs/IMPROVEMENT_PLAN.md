@@ -36,10 +36,12 @@ clock-gates the compute die for exactly the cycles a demand-miss is being servic
 NVMe/storage backend, so `cyc_per_tok` **grows with `FLASH_LAT`** as a direct count — exposed
 demand-stall `= 3·FLASH_LAT + 9`, slope = miss count — while the committed token stays identical
 (control math is format-agnostic). The published cycle sweep (flat 7947 → 8724 @ `FLASH_LAT=256`) is
-the **prior FP8-track measurement** (branch `fp8`; see [`CYCLE_EMULATION.md`](CYCLE_EMULATION.md),
-still FP8-framed): the `EXPERT_STALL`/`FLASH_LAT` params are present in the Q4_K system, but a Q4_K
-re-run of the sweep is **[PENDING]**. Either way this upgrades the roofline's stall term from
-*assumed* to *counted*. (With the measured 46.5 MHz routed Fmax the *slice* demo wall-clock is now
+the **prior FP8-track measurement** (branch `fp8`). The sweep is **since re-run on Q4_K**
+(2026-07-11, `make perf-q4k` — `test/glm_q4k_system_perf_tb.v`): slice `cyc_per_tok` ≈ **10,896**,
+exposed demand-stall linear in `FLASH_LAT` (11 @ 8 → 2,567 @ 1024, RESIDENT=0), and the residency
+pivot confirmed on real cycles (RESIDENT=1 → 35 cyc/token regardless of latency, ~73× cut) —
+see [`CYCLE_EMULATION.md`](CYCLE_EMULATION.md). This upgrades the roofline's stall term from
+*assumed* to *counted*, on the Q4_K die. (With the measured 46.5 MHz routed Fmax the *slice* demo wall-clock is now
 computable: cyc_per_tok ~8.0–11.0 K → **~170–240 µs/token ≈ ~4,200–5,800 slice tok/s** — the
 correctness-demo speed of the tiny slice, **not** a GLM-5.2 product number.)
 

@@ -3,12 +3,12 @@
 > **Read this first — two tracks, kept strictly separate.** This doc tracks *functional scale
 > confidence*: how far past the tiny committed slice the datapath is actually checked.
 >
-> - **Current Q4_K track (`main`).** What is proven today is **slice-level** — the Q4_K unit TBs run
->   at the small-but-faithful slice, **not** at real GLM-5.2 magnitudes — plus **structural
->   elaboration at the true 753B UD-Q4_K_XL shape**. The **assembled-model end-to-end numeric golden
->   now EXISTS** (`make model-q4k`, **1155/1155** bit-exact vs the assembled numpy reference — see
->   item 1 below, since closed); the **real-dims operator sweep has not been re-run on Q4_K** and
->   remains **OPEN / PENDING**.
+> - **Current Q4_K track (`main`).** The fast per-unit gates run at the small-but-faithful slice,
+>   plus **structural elaboration at the true 753B UD-Q4_K_XL shape**. The **assembled-model
+>   end-to-end numeric golden EXISTS** (`make model-q4k`, **1155/1155** bit-exact vs the assembled
+>   numpy reference — item 1, since closed); the **real-dims operator sweep is since RE-RUN on
+>   Q4_K** (`make scale-ops` — item 2, since closed) and the **batched PE_M>1 assembled-model
+>   golden EXISTS** (`make batched-q4k` — item 3, since closed at its stated scope).
 > - **Prior FP8 track (branch `fp8` + tag `fp8-verified-baseline`).** The real-dims operator sweep
 >   (GEMM at K=6144, router over 256 experts top-8, …) and the batched multi-seq / decode-loop
 >   bit-exact checks were achieved **on the FP8 track**. Those TBs (`*_fp8`,
@@ -36,13 +36,14 @@ equality stays out-of-contract. Everything else is scoped below.
 | Q4_K unit | dims exercised (`make q4k`) | status |
 |---|---|---|
 | `q4k_prim` (`q4k.vh`: fp16→fp32 + `get_scale_min_k4`) | primitive vectors | **18/18 — bit-exact vs ggml** |
-| `glm_matmul_q4k` (block-dequant → fp32 MAC → bf16) | PE_M=2, PE_N=2, **KMAX=1024 → NSB=4 super-blocks** (a faithful slice, **not** real K=6144) | **160/160 — bit-exact vs ggml Q4_K** *(the one true bit-exact datapath result)* |
-| `swiglu_expert_q4k` (gate/up/down + silu) | HIDDEN=8, INTER=8, KMAX=256 (NSB=1) | **240/240 — functional** (self-labeled; **not** bit-exact) |
-| `moe_router_q4k` (gate GEMV → sigmoid → top-K → renorm) | HIDDEN=8, **N_EXPERT=8, TOPK=2** (**not** the real 256/top-8) | **40/40 — renorm invariants** (**not** a numeric golden) |
+| `glm_matmul_q4k` (block-dequant → fp32 MAC → bf16) | PE_M=2, PE_N=2, **KMAX=1024 → NSB=4 super-blocks** (a faithful slice; real K=6144 re-run in `make scale-ops`, item 2) | **160/160 — bit-exact vs ggml Q4_K** *(the one true bit-exact datapath result)* |
+| `swiglu_expert_q4k` (gate/up/down + silu) | HIDDEN=8, INTER=8, KMAX=256 (NSB=1; INTER=2048 re-run in `make scale-ops`) | **240/240 — functional** (self-labeled; **not** bit-exact) |
+| `moe_router_q4k` (gate GEMV → sigmoid → top-K → renorm) | HIDDEN=8, **N_EXPERT=8, TOPK=2** (real 256/top-8 re-run in `make scale-ops`) | **40/40 — renorm invariants** (**not** a numeric golden) |
 | Assembled `glm_model_q4k` forward pass | committed-slice full forward (`make model-q4k`) + the spec loops | **`make model-q4k` 1155/1155 — bit-exact vs the assembled numpy golden** `tools/glm_model_q4k_ref.py` (logits+argmax+h_state; + `model-q4k-acthw` 1155/1155, ACT_HW result-invariant); **`spec_decode_top` 18/18 — spec==greedy** *(DUT-vs-DUT self-consistency)*; larger `spec_batched_top` / `spec_chain_top` via `make spec-slow` |
 
-The Q4_K GEMM does prove the **multi-super-block block-scaled accumulate** mechanism (NSB=4 super-blocks
-of 256 weights each) bit-exact — just not at the real projection K=6144 (24 super-blocks).
+The Q4_K GEMM proves the **multi-super-block block-scaled accumulate** mechanism (NSB=4 super-blocks
+of 256 weights each) bit-exact in the fast `make q4k` gate, and — since item 2 closed — **also at the
+real projection K=6144 (NSB=24)** in the standalone `make scale-ops` sweep (table in item 2 below).
 
 **Elaborated (structure only, not a sim, no golden):** `glm_model_q4k` elaborates clean at the **true
 753B UD-Q4_K_XL shape** (DIM 6144 / L=78 / 256-expert / VOCAB 154880) — `test/full_config_elab_wrap.v`,
@@ -60,15 +61,38 @@ The whole-chip Q4_K top `glm_q4k_system_cdc` passes the yosys structural gate (`
    remains out-of-contract.** (The per-unit *numeric* TBs `glm_model_tb` /
    `mla_attn_tb` / `glm_decoder_block_tb` / `mtp_head_tb` still build against the generic bf16/fp32
    twins, but the assembled Q4_K path now has its own gate.)
-2. **Real-dims operator sweep on Q4_K — PENDING.** The Q4_K unit TBs run at the slice (table above).
-   Re-running them at real magnitudes — GEMM K=6144, router over 256 experts top-8, SwiGLU
-   INTER_MOE=2048 — has **not** been done on the Q4_K track. (The prior-FP8 sweep below shows what that
-   looks like, on the FP8 datapath.)
-3. **Batched multi-seq / decode-loop numeric verification on Q4_K — PENDING.** The multi-sequence SoC
-   top `glm_q4k_soc_ms` exists as a **module**, but its per-row-bit-exact TBs are FP8-only (deleted).
-   The current Q4_K proof of the batch axis is **spec==greedy** self-consistency, not an
-   assembled-model numeric golden. Batching / multi-seq serving is a **capability of the silicon**, not
-   the B=1 personal box's operating mode (see the scope note below).
+2. **Real-dims operator sweep on Q4_K — DONE (since closed; gate `make scale-ops`).** The EXISTING
+   operator TBs re-run — same goldens, same check contracts, TB `define overrides only (the vector
+   generators grew parameters, they were not forked; every slice default stays byte-identical) — at
+   the real GLM-5.2 operator magnitudes:
+
+   | operator TB (`make scale-ops`) | real dims exercised | result |
+   |---|---|---|
+   | `glm_matmul_q4k` | **K ∈ {512, 2048, 6144}** (KMAX=6144 → **NSB=24** Q4_K super-blocks — the real per-projection K; 16/30 tiles at K=6144) | **ALL 120 TESTS PASSED — bit-exact vs ggml Q4_K** (`tools/q4k_ref.py`) |
+   | `moe_router_q4k` | **N_EXPERT=256, TOPK=8** (the real expert count / top-K), HIDDEN=128 | **ALL 40 TESTS PASSED** (renorm Sum(w)=2.5, valid distinct top-8 — the slice TB's invariant, not a numeric golden) |
+   | `swiglu_expert_q4k` | **INTER=2048** (real INTER_MOE; down proj = **8 Q4_K super-blocks**/column), HIDDEN=64 | **ALL 256 TESTS PASSED** (tolerance golden, as at the slice) |
+   | `glm_softmax` | **LEN=2048** (the real DSA attention window `index_topk`) | **ALL 32896 TESTS PASSED** (worst rel 0.0051, fp64 golden + slice tolerances) |
+   | `rmsnorm_unit` | **LEN=6144** (the real MODEL_DIM — the committed TB already sweeps it) | **ALL 55 TESTS PASSED** (worst rel ≤ 2⁻⁶ tol, fp64 golden) |
+   | `rope_interleave_unit` | **ROT_DIM=64** (the real qk_rope_head_dim), positions to ~1M | **ALL 2512 TESTS PASSED** (fp64 golden) |
+
+   **Scoped honestly:** the router/SwiGLU GEMV reductions stay below the real K=6144 (that reduction
+   mechanism is exactly what the K=6144 GEMM leg proves bit-exact at NSB=24); there is no standalone
+   `mla_attn_q4k` real-geometry TB on `main` (the MLA datapath is gated at the slice by
+   `make model-q4k`; the fp8 real-geometry MLA numbers below remain FP8-only); and the softmax
+   directed ramps hold the committed logit envelope (shifted args ≥ −63) at LEN=2048 — shifted-arg
+   magnitudes beyond ~−180 are outside the exp pipe's documented softmax range and are not claimed.
+3. **Batched PE_M>1 numeric golden on Q4_K — DONE at its stated scope (gate `make batched-q4k`);
+   per-row-KV multi-seq / decode-loop TBs remain FP8-only.** `test/glm_model_q4k_pem_tb.v` runs the
+   assembled `glm_model_q4k` at **PE_M=2** against standalone **PE_M=1** runs per row — the same
+   committed-slice weight set as `make model-q4k` — and asserts per-row **logits + argmax + h_state
+   BIT-EXACT** (X-aware bf16 pattern compare), with **row 0 additionally anchored bit-exact to the
+   assembled numpy golden** (not just DUT-vs-DUT): **ALL 4620 TESTS PASSED** over 3 (pos, s_len)
+   scenarios with per-row-divergent tokens/MoE routing. Scope: PE_M widening for a **shared**
+   sequence (PER_ROW_*=0). The per-row-KV multi-sequence (`kc_seq`-keyed windows) and
+   continuous-batching decode-loop TBs (`glm_model_fp8_multiseq_tb`, `glm_fp8_soc_ms_loop_tb`)
+   remain **FP8-only** (branch `fp8`) — `glm_q4k_soc_ms` still has no Q4_K equivalent of those.
+   Batching / multi-seq serving is a **capability of the silicon**, not the B=1 personal box's
+   operating mode (see the scope note below).
 
 Real GLM-5.2 operator dims (config.json / [`ACCEL_GLM52.md`](ACCEL_GLM52.md), which records
 `q_lora_rank = 2048` confirmed vs the real safetensors **on the prior FP8 track** — `q_a_proj.weight
@@ -78,13 +102,14 @@ per-projection K up to ~6144. These are **model-architecture** facts, independen
 
 ---
 
-## Prior FP8 track — real-dims operator sweep (branch `fp8`; Q4_K re-run PENDING)
+## Prior FP8 track — real-dims operator sweep (branch `fp8`; Q4_K re-run since DONE, `make scale-ops`)
 
 > **Prior-FP8 measurements.** Everything in this section was measured on the **FP8** datapath, whose
 > TBs (`glm_matmul_fp8`, `moe_router_fp8`, `swiglu_expert_fp8`, `mla_attn_fp8`, `glm_model_fp8`) are
-> **deleted from `main`** and live on branch `fp8`. The numbers are **not** Q4_K results and have
-> **not** been re-run on Q4_K. They are kept here to document what the real-dims sweep proved on the
-> prior track and what the equivalent Q4_K work (PENDING, item 2 above) would re-establish.
+> **deleted from `main`** and live on branch `fp8`. The numbers are **not** Q4_K results. They are
+> kept here to document what the real-dims sweep proved on the prior track; the equivalent Q4_K
+> sweep is **since re-established** (item 2 above, `make scale-ops`) — except the MLA real-geometry
+> leg, which has no standalone Q4_K TB on `main`.
 
 On the FP8 track, the operator TBs were run at real per-head / per-block / per-expert sizes against
 **parametric goldens** (independent fp64 models of the *same* block-scaled E4M3 math that regenerate
@@ -101,8 +126,9 @@ from the TB `localparam`s), emitting `ALL N TESTS PASSED` and `$fatal` on any mi
 On the FP8 track this covered two operators at the *full* real magnitudes (GEMM at real **K=6144** / 48
 block-scale accumulations; router over the real **256** experts top-8, weights summing to 2.5), SwiGLU
 at real **INTER_MOE=2048**, and MLA at real per-head / LoRA geometry (192/64/256/512). The Q4_K
-equivalents (`*_q4k`) exist on `main` but currently run only at the slice dims of the table in the
-previous section.
+equivalents (`*_q4k`) are **since re-run at real dims** by `make scale-ops` (item 2's table: GEMM
+K=6144 bit-exact, router 256/top-8, SwiGLU INTER_MOE=2048) — with two honest deltas vs this FP8
+table: no Q4_K re-run at **INTER_DENSE=12288**, and no standalone `mla_attn_q4k` real-geometry TB.
 
 **Intermediate full-model (branch `fp8`):** `glm_model_fp8` at **MODEL_DIM=256, VOCAB=512, L=8,
 N_EXPERT=16, TOPK=4, H_HEADS=8** — 2×+ the committed slice on every axis — **ALL 3 PASSED** (gworst_rel
@@ -111,7 +137,7 @@ larger scale **on the FP8 datapath**. The Q4_K assembled path now has its own nu
 *committed slice* (`make model-q4k`, 1155/1155 — item 1, since closed), but there is **no Q4_K
 equivalent of this enlarged 2×-slice run**.
 
-### Batched multi-sequence + decode loop (branch `fp8`; Q4_K module exists, TB PENDING)
+### Batched multi-sequence + decode loop (branch `fp8`; Q4_K PE_M>1 golden since DONE — the per-row-KV multi-seq / decode-loop TBs remain FP8-only)
 
 On the FP8 track the full `glm_model_fp8` also composed correctly on the *batch / sequence* axis. With
 `PER_ROW_SEQ=1` each `PE_M` row was a **different** sequence attending its own KV window, while the
@@ -125,9 +151,11 @@ continuous-batching decode loop** (`glm_fp8_soc_ms_loop_tb`) decoded N tokens/se
 row's step-k token **BIT-EXACT** vs a standalone `PE_M=1` model decoding that sequence alone.
 
 **These TBs are deleted from `main`** (they were FP8) — the numbers above are **prior-FP8**, not current.
-On `main` the Q4_K module `glm_q4k_soc_ms` exists, but its per-row-bit-exact multi-seq / decode-loop TBs
-have **not** been rebuilt on Q4_K; the current Q4_K batch-axis proof is **spec==greedy** only (OPEN item
-3).
+On `main` the Q4_K batch axis now has its own **direct numeric golden**: `make batched-q4k` proves
+`glm_model_q4k` at **PE_M=2 == per-row PE_M=1** bit-exact on logits+argmax+h_state, row 0 anchored to
+the assembled numpy golden (item 3 above — shared-sequence scope). The **per-row-KV multi-seq**
+(`kc_seq`-keyed windows) and **decode-loop** TBs have **not** been rebuilt on Q4_K; `glm_q4k_soc_ms`
+still has no equivalent of `glm_fp8_soc_ms_loop_tb`.
 
 **Scope (format-agnostic).** This batch / multi-seq axis is a **capability of the silicon**, not the
 product's operating mode — the product is a **local, single-user box** that runs **B=1** (one user, the
@@ -198,16 +226,24 @@ Q4_K scale confidence today rests on three legs, scoped to what is actually chec
 2. **Operator-functional at the slice** — the Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference**
    (`glm_matmul_q4k` 160/160, proving multi-super-block block-scale accumulate at NSB=4), with
    `swiglu_expert_q4k` functional (240/240) and `moe_router_q4k` renorm-invariant (40/40), all at slice
-   dims. **Real-dims Q4_K sweep is PENDING** (OPEN item 2).
+   dims — **plus the real-dims Q4_K sweep** (`make scale-ops`, item 2, since closed: GEMM bit-exact at
+   K=6144/NSB=24 120/120; router 256/top-8 40/40; SwiGLU INTER_MOE=2048 256/256; softmax LEN=2048
+   32896/32896; rmsnorm LEN=6144; rope ROT_DIM=64).
 3. **Assembled forward pass** — **bit-exact vs the assembled numpy golden** at the committed slice
-   (`make model-q4k` 1155/1155 + `model-q4k-acthw` 1155/1155 — item 1, since closed), plus
-   **spec==greedy** self-consistency (`spec_decode_top` 18/18; larger loops via `make spec-slow`).
+   (`make model-q4k` 1155/1155 + `model-q4k-acthw` 1155/1155 — item 1, since closed), plus the
+   **batched PE_M>1 golden** (`make batched-q4k`, item 3: PE_M=2 rows == per-row PE_M=1 runs
+   BIT-EXACT, row 0 anchored to the numpy golden), plus **spec==greedy** self-consistency
+   (`spec_decode_top` 18/18; larger loops via `make spec-slow`).
    The golden's dequant layer is proven on real GGUF bytes; llama.cpp whole-runtime stays out-of-contract.
 
 **Honestly capped.** Full-config *functional* sim remains infeasible (LM head ~2.38e8 K-beats/token);
 it is covered structurally by leg 1, not by a run. The prior FP8 track additionally had a real-dims
-operator sweep and a real-tensor checkpoint validation — both on branch `fp8`, neither re-established on
-Q4_K. The assembled-model end-to-end numeric golden is since **closed** (`make model-q4k`, item 1) and
+operator sweep — since re-established on Q4_K (`make scale-ops`, item 2, minus the MLA real-geometry
+leg) — and a real-tensor checkpoint validation, which remains branch-`fp8`-only.
+The assembled-model end-to-end numeric golden is since **closed** (`make model-q4k`, item 1) and
 the golden's **dequant layer is since proven on real GGUF bytes** ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md));
-the largest remaining open items are the **real-dims Q4_K operator sweep** (item 2) and the **batched
-PE_M>1 Q4_K golden** (item 3) — llama.cpp whole-runtime equality stays out-of-contract by design.
+the **real-dims Q4_K operator sweep** (item 2, `make scale-ops`) and the **batched PE_M>1 Q4_K
+golden** (item 3, `make batched-q4k`) are **since closed at their stated scopes**. The largest remaining
+opens are the **per-row-KV multi-seq / decode-loop Q4_K TBs** (FP8-only, item 3 scope note), a
+standalone **`mla_attn_q4k` real-geometry TB**, and the enlarged 2×-slice assembled run — llama.cpp
+whole-runtime equality stays out-of-contract by design.
