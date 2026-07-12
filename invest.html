@@ -200,7 +200,7 @@
       <tr><td><span class="what">FPGA 실측 fit</span></td><td>XCKU3P에 실제 place &amp; route — 87.5% LUT, routed 46.5 MHz, hold met</td><td class="n"><span class="chip m"><span class="tick"></span>증명</span></td></tr>
       <tr><td><span class="what">메모리-바운드 메커니즘</span></td><td>사이클-정확 하니스가 상주 시 스토리지 스톨 <b>73배 감소</b>를 실 RTL 사이클로 측정</td><td class="n"><span class="chip m"><span class="tick"></span>증명</span></td></tr>
       <tr><td><span class="what">메모리 컨트롤러</span></td><td>형식 검증(BMC + k-induction) — 반례 없음</td><td class="n"><span class="chip m"><span class="tick"></span>증명</span></td></tr>
-      <tr><td><span class="what">보드 물리 성립</span></td><td>12층 HDI·130×110mm에 20 DRAM+SoC — escape 라우팅 여유 + 배치 DRC PASS</td><td class="n"><span class="chip m"><span class="tick"></span>증명</span></td></tr>
+      <tr><td><span class="what">보드 물리 성립</span></td><td>12층 HDI·130×110mm에 20 DRAM+SoC — 배치 DRC PASS + escape 해석(라우팅 아님, 더미 SoC 볼아웃)</td><td class="n"><span class="chip e"><span class="tick"></span>분석</span></td></tr>
       <tr><td><span class="what">출력 속도 (~110 tok/s)</span></td><td>대역폭 루프라인 <b>투영</b> — 입력(U·수락률 r)은 GLM-4.5-Air 실측이나, 최종 tok/s는 실리콘 미측정</td><td class="n"><span class="chip e"><span class="tick"></span>추정</span></td></tr>
       <tr><td><span class="what">SoC 실리콘</span></td><td>테이프아웃 미착수 — LPDDR5X PHY IP + 12–16nm NRE 필요 (진짜 관문)</td><td class="n"><span class="chip o"><span class="tick"></span>열림</span></td></tr>
       <tr><td><span class="what">사업 트랙션</span></td><td>고객·매출·파트너 0 — 지금 있는 건 검증된 코드베이스</td><td class="n"><span class="chip o"><span class="tick"></span>열림</span></td></tr>
@@ -345,7 +345,7 @@
       </svg>
     </div>
     <div class="pvspec">
-      <div class="specrow"><div class="k">출력 속도</div><div class="v">~110 <span class="u">tok/s</span> <span class="chip e"><span class="tick"></span>추정</span></div><div class="d">상용 API(초당 수십 토큰)급 체감. 첫 토큰 지연·대기열 없음, 시간대 무관 일정.</div></div>
+      <div class="specrow"><div class="k">출력 속도</div><div class="v">~80–110 <span class="u">tok/s</span> <span class="chip e"><span class="tick"></span>추정</span></div><div class="d">양산형(512GB·1024-bit) ~80–95, 소매부품 프로토(480GB·1280-bit) ~110. 상용 API급 체감, 첫 토큰 지연·대기열 없음.</div></div>
       <div class="specrow"><div class="k">소비자 가격대</div><div class="v">~$3,500–5,000 <span class="chip e"><span class="tick"></span>추정</span></div><div class="d">BOM ~$1.8–2.4k 기반. Mac Studio 512GB($10k+, ~15–25 tok/s) 대비 ~절반 가격·~4배 속도 목표.</div></div>
       <div class="specrow"><div class="k">구동 모델</div><div class="v">GLM-5.2 · 753B</div><div class="d">4-bit Q4_K(~467GB) 통째 상주. 신뢰하는 다른 오픈웨이트 GGUF로 재타겟 가능(RTL 작업).</div></div>
       <div class="specrow"><div class="k">전력 / 소음</div><div class="v">~40–60 W · 저소음</div><div class="d">노트북 어댑터급. 베이퍼챔버 + 저소음 팬.</div></div>
@@ -382,6 +382,7 @@
     <li><span class="x">✕</span><span><b>실리콘에서 잰 tok/s가 아니다.</b> ~110은 루프라인 투영([EST])이다. 입력은 실측이지만 최종 수치는 프로토(Stage 3)에서 확정된다.</span></li>
     <li><span class="x">✕</span><span><b>llama.cpp 전체 런타임과의 수치 동일성은 계약 밖이다.</b> 우리 계약은 ggml dequant 비트 동일 + 문서화된 자체 fp32 순서. 어텐션·누산 순서는 설계상 다르다.</span></li>
     <li><span class="x">✕</span><span><b>아직 실물 보드가 돈 적 없다.</b> FPGA fit은 place&amp;route지 실리콘 데모가 아니다. 첫 도는 하드웨어가 Stage 1의 목표다.</span></li>
+    <li><span class="x">✕</span><span><b>보드는 라우팅된 설계가 아니다.</b> 12층·130×110mm는 해석적 escape 분석 + 배치 DRC(더미 SoC 볼아웃)로 방어 가능하다는 것이지, 실제 라우팅·SI 검증은 실 SoC 볼아웃 후 [PENDING]이다.</span></li>
     <li><span class="x">✕</span><span><b>데이터센터 속도(수백 tok/s)를 노리지 않는다.</b> 그건 다른 종목($20만+). 우리는 1인·1박스·오프라인·&lt;$5k 브래킷에서 Opus/Gemini급 체감을 노린다.</span></li>
     <li><span class="x">✕</span><span><b>사업 트랙션을 부풀리지 않는다.</b> 고객·매출 0. 지금 있는 건 코드와 그 검증뿐 — 그래서 요청도 그 단계에 맞춘다.</span></li>
   </ul>

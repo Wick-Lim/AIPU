@@ -214,7 +214,7 @@
     <p class="lead reveal" style="animation-delay:.12s">A local, single-user appliance that runs the full <b>753-billion-parameter</b> GLM-5.2 model <b>fully offline — air-gapped, no internet, ever.</b> It finally puts a frontier model onto the work — and into the places — that the cloud shuts out, and you <b>own it outright.</b> Nothing leaves, because <b>there is no path out.</b></p>
     <div class="facts">
       <div class="fact reveal"><div class="n">753<span class="u">B</span></div><div class="k">params, run locally</div></div>
-      <div class="fact reveal"><div class="n">5–95<span class="u">tok/s</span></div><div class="k">single-user, staged [est]</div></div>
+      <div class="fact reveal"><div class="n">5–110<span class="u">tok/s</span></div><div class="k">single-user, staged [est]</div></div>
       <div class="fact reveal"><div class="n">467<span class="u">GB</span></div><div class="k">Q4_K GGUF · on the box</div></div>
       <div class="fact reveal"><div class="n">0<span class="u">net</span></div><div class="k">internet required · air-gapped</div></div>
     </div>
@@ -261,7 +261,7 @@
     <div class="spec" style="margin-top:18px">
       <div class="cell"><div class="lab">Rung ① prove-it (now)</div><div class="val">~5–8 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">budget FPGA + DDR4 · the demo</div></div>
       <div class="cell"><div class="lab">Rung ② product</div><div class="val">~15–40 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">custom board, DDR5/HBM</div></div>
-      <div class="cell"><div class="lab">Rung ③ ASIC (volume)</div><div class="val">~76–95 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">512GB memory-resident appliance — <a href="board.html">board concept</a></div></div>
+      <div class="cell"><div class="lab">Rung ③ ASIC</div><div class="val">~80–110 <small>tok/s [EST]</small></div><div class="k" style="margin-top:4px;font-size:.66rem;color:var(--ink3)">480GB retail-parts proto ~110 / 512GB volume ~80–95 — <a href="board.html">board concept</a></div></div>
     </div>
     <p class="note" style="margin-top:12px">Performance is set by <b>memory bandwidth = the chip's IO/PHY</b> (compute is cheap — the die idles behind the memory system). So it's staged honestly: <b>prove it cheap on an FPGA → custom board → ASIC at volume</b>. Same GGUF model on every rung; only the bandwidth the silicon feeds it changes. The tok/s figures are <b>bandwidth-roofline [EST]s</b> — but a roofline with <b>measured U(K) and MTP accept-rate inputs</b> (measured on GLM-4.5-Air), not pure estimates — gated on the FPGA demo below.</p>
   </div>
@@ -270,7 +270,7 @@
 <section>
   <div class="wrap">
     <div class="sechead"><span class="idx">03</span><h2>Verified RTL — proven, elaborated, and the gaps named</h2><span class="chip m"><span class="tick"></span>verification-first</span></div>
-    <p class="lede">Most hardware pitches are slides. This one is <b>verified RTL</b>, gated in CI. The Q4_K math is <b>bit-exact to the GGML k-quant reference</b> and the memory controllers are <b>formally proven</b>. The <b>whole-model forward is bit-exact</b> to an assembled golden (1,155 tests) and the dequant layer is <b>bitwise-equal to llama.cpp's own code on a real published GGUF</b> (104.6M weights). What is <b>not yet</b> proven is stated as plainly as what is. For a box a <b>security team must sign off on</b>, an honest verification ledger is the close, not a blanket claim.</p>
+    <p class="lede">Most hardware pitches are slides. This one is <b>verified RTL</b>, gated in CI. The Q4_K math is <b>bit-exact to the GGML k-quant reference</b> and the memory controllers are <b>formally proven</b>. The <b>whole-model forward is bit-exact</b> to an assembled golden (1,155 tests) and the dequant layer is <b>bitwise-equal to llama.cpp's own code on real published GGUFs</b> (376.6M weights, Q4_K/Q6_K/Q8_0 across two files). What is <b>not yet</b> proven is stated as plainly as what is. For a box a <b>security team must sign off on</b>, an honest verification ledger is the close, not a blanket claim.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Evidence</th><th>Against</th><th>Result</th><th>Status</th></tr></thead>
@@ -281,14 +281,14 @@
           <tr><td><span class="what">Full 753B config</span><div class="src">6144 / 78L / 256-expert / 154880</div></td><td>elaboration, true dims</td><td class="num"><span class="c">0</span> errors</td><td><span class="chip e">elaborated</span></td></tr>
           <tr><td><span class="what">Whole-chip structural gate</span><div class="src">glm_q4k_system_cdc · yosys check-assert</div></td><td>two-clock product top</td><td class="num">0 unresolved</td><td><span class="chip e">elaborated</span></td></tr>
           <tr><td><span class="what">Assembled-model fidelity</span><div class="src">end-to-end Q4_K forward vs golden</div></td><td>whole-forward golden</td><td class="num"><span class="c">1,155/1,155</span> bit-exact</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
-          <tr><td><span class="what">Real-GGUF dequant crosscheck</span><div class="src">q4k_ref vs llama.cpp's own dequant code</div></td><td>published GGUF, raw bytes</td><td class="num"><span class="c">104.6M</span> weights bitwise-equal</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
+          <tr><td><span class="what">Real-GGUF dequant crosscheck</span><div class="src">q4k_ref vs llama.cpp's own dequant code</div></td><td>published GGUF, raw bytes</td><td class="num"><span class="c">376.6M</span> weights bitwise-equal</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
           <tr><td><span class="what">Residency-SKU configuration</span><div class="src">RESIDENT=1 · expert refills from LPDDR tier</div></td><td>two-DUT contrast sim + formal equiv of default</td><td class="num"><span class="c">19/19</span> + equiv proven</td><td><span class="chip m"><span class="tick"></span>proven</span></td></tr>
           <tr><td><span class="what">llama.cpp full-runtime equality</span><div class="src">attention/accumulation order differs by design</div></td><td>whole-runtime numerics</td><td class="num">out-of-contract</td><td><span class="chip o"><span class="tick"></span>open</span></td></tr>
-          <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · measured U(K) + accept-rate inputs · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~76–95 tok/s</td><td><span class="chip e">[est]</span></td></tr>
+          <tr><td><span class="what">Single-user throughput</span><div class="src">bandwidth roofline · measured U(K) + accept-rate inputs · staged by hardware</div></td><td>memory-BW-bound model</td><td class="num">~5–8 → ~80–110 tok/s</td><td><span class="chip e">[est]</span></td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">Every "proven" row is reproducible from the repo (<span class="mono">make q4k</span>, <span class="mono">make formal</span>, <span class="mono">make model-q4k</span>, <span class="mono">make resident</span>). The self-referential caveat is closed at the dequant layer: our reimplementation is <b>bitwise-equal to llama.cpp's own <span class="mono">dequantize_row_q4_K/_q6_K</span> on a real published GGUF's raw blocks</b> — so by transitivity the RTL dequant ≡ the real file's ggml dequant. What stays <b>open</b> is named, not buried: <b>whole-runtime numeric equality with llama.cpp</b> is out-of-contract by design (fp32 accumulation order differs; our contract is ggml-exact dequant + our own documented order), and the Q8_0 tensor class awaits a file that contains one.</p>
+    <p class="note">Every "proven" row is reproducible from the repo (<span class="mono">make q4k</span>, <span class="mono">make formal</span>, <span class="mono">make model-q4k</span>, <span class="mono">make resident</span>). The self-referential caveat is closed at the dequant layer: our reimplementation is <b>bitwise-equal to llama.cpp's own <span class="mono">dequantize_row_q4_K/_q6_K</span> on two real published GGUFs' raw blocks (Q4_K/Q6_K/Q8_0, 376.6M weights)</b> — so by transitivity the RTL dequant ≡ the real files' ggml dequant. What stays <b>open</b> is named, not buried: <b>whole-runtime numeric equality with llama.cpp</b> is out-of-contract by design (fp32 accumulation order differs; our contract is ggml-exact dequant + our own documented order).</p>
   </div>
 </section>
 
@@ -352,7 +352,7 @@
       <div class="gate">
         <div class="n">STEP 1</div>
         <h3>Whole-model fidelity</h3>
-        <p>The Q4_K operators are bit-exact to the k-quant reference, and the <b>assembled end-to-end golden is done</b>: the whole-model forward is <b>bit-exact (1,155/1,155)</b>, and the dequant layer is <b>bitwise-equal to llama.cpp's own code on a real published GGUF</b> (104.6M weights). What stays open is scoped in §03: whole-runtime llama.cpp equality (out-of-contract by design) and the Q8_0 tensor class.</p>
+        <p>The Q4_K operators are bit-exact to the k-quant reference, and the <b>assembled end-to-end golden is done</b>: the whole-model forward is <b>bit-exact (1,155/1,155)</b>, and the dequant layer is <b>bitwise-equal to llama.cpp's own code on two real published GGUFs</b> (376.6M weights, Q4_K/Q6_K/Q8_0). What stays open is scoped in §03: whole-runtime llama.cpp equality, out-of-contract by design.</p>
         <div class="need">status · whole-model golden done · real-GGUF dequant crosschecked</div>
       </div>
       <div class="gate">
@@ -386,7 +386,7 @@
     <div class="sechead"><span class="idx">07</span><h2>Honest limits</h2><span class="chip e">documented, not hidden</span></div>
     <div class="risks">
       <div class="risk"><div class="r">Not silicon yet</div><div class="t">Throughput / BOM figures are <b>roofline [EST]s</b>. The compute die itself <b>is now a real routed FPGA fit</b> (XCKU3P, 87.5% LUT, routed 46.5&nbsp;MHz after a bit-exact repipeline campaign) — the running board demo (§04, §06) is what turns tok/s into a measurement. Everything tagged <b>proven</b> above <b>is</b> reproducible from the repo.</div></div>
-      <div class="risk"><div class="r">Runtime equality scoped</div><div class="t">The <b>assembled 753B forward</b> is bit-exact to the golden (1,155/1,155) and the dequant layer is bitwise-equal to <b>llama.cpp's own code on a real published GGUF</b> (104.6M weights). What stays open is named: <b>whole-runtime llama.cpp numeric equality is out-of-contract by design</b> (fp32 accumulation order differs), and the Q8_0 tensor class awaits a file that contains one.</div></div>
+      <div class="risk"><div class="r">Runtime equality scoped</div><div class="t">The <b>assembled 753B forward</b> is bit-exact to the golden (1,155/1,155) and the dequant layer is bitwise-equal to <b>llama.cpp's own code on two real published GGUFs</b> (376.6M weights, Q4_K/Q6_K/Q8_0). What stays open is named: <b>whole-runtime llama.cpp numeric equality is out-of-contract by design</b> (fp32 accumulation order differs).</div></div>
       <div class="risk"><div class="r">Narrow by design</div><div class="t">This wins only where <b>frontier scale + must-run-offline</b> both bind. That intersection is the <b>intended niche</b>, not a bug — a Mac runs 70B; the cloud runs online; we run the full model, unplugged.</div></div>
       <div class="risk"><div class="r">One box, one seat</div><div class="t">A <b>personal appliance</b> (B=1), not a multi-user server. Batched/datacenter serving is a capability of the same silicon, not this product.</div></div>
     </div>
