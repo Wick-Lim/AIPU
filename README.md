@@ -58,8 +58,9 @@ below for the exact status of every claim.
 > at rung ① (FPGA prove-it), the offline single-user box, with the near-term goal being the working
 > FPGA demo. The **prior FP8 datacenter-native track** is preserved on branch **`fp8`** + tag
 > **`fp8-verified-baseline`**, and the compression research study lives on branch
-> **`research/compression-study`** (the older research prototype on `prototype`, frozen at
-> `47fb7f8`) — all referenced here as prior/preserved, never current. The full product (rungs ②③) is the roadmap, not
+> **`research/compression-study`** + tag **`compression-study-baseline`** (the older research
+> prototype on `prototype`, frozen at `47fb7f8`) — all referenced here as prior/preserved, never
+> current. The full product (rungs ②③) is the roadmap, not
 > main's current code ([`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md),
 > [`NEXT_STEPS_PLAN.md`](NEXT_STEPS_PLAN.md)).
 
