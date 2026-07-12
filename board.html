@@ -45,12 +45,12 @@
 </style>
 
 <div class="wrap">
-  <p style="margin:0 0 26px;font-size:13px"><a href="./" style="color:#9aa39b;text-decoration:none">← AIPU 홈 (English)</a></p>
+  <p style="margin:0 0 26px;font-size:13px"><a href="./" style="color:#9aa39b;text-decoration:none">← AIPU 홈</a></p>
   <h1>AIPU — 개인용 프런티어 LLM 어플라이언스</h1>
   <p class="sub">753B급 오픈 모델(GLM-5.2, 4-bit 양자화 ~467GB)을 <b>통째로 메모리에 올려</b> 오프라인으로 구동하는 단일 사용자 박스 — 프로토타입 설계 (메모리·보드 전 부품 소매 조달 가능)</p>
 
   <div class="fixbar">
-    <div class="chip">메모리 <b>LPDDR5X 480GB</b> · 1280-bit · <b>~1.5TB/s</b></div>
+    <div class="chip">메모리 <b>LPDDR5X 480GB</b> · 1280-bit · <b>~1.54TB/s</b></div>
     <div class="chip">저장 <b>NVMe 1TB</b> · 부팅 시 모델 로드 ~70초</div>
     <div class="chip">속도 <b>~110 tok/s</b> <span class="est">[추정]</span> — 상용 API급 체감</div>
     <div class="chip">전력 <b>~50–80W</b> <span class="est">[추정]</span> · 저소음</div>
@@ -220,11 +220,11 @@
       <line x1="590" y1="104" x2="760" y2="122"/><line x1="600" y1="104" x2="770" y2="130"/>
     </g>
     <text x="950" y="132" fill="#7d8c96" font-size="10">12층 HDI</text>
-    <text x="66" y="166" fill="#7d8c96" font-size="10">1280-bit 메모리 버스가 이 HDI 층들에서 완결 — 임피던스 제어 + 바이트레인 길이매칭 (스마트폰 LPDDR 배선과 같은 규칙)</text>
+    <text x="66" y="166" fill="#7d8c96" font-size="10">1280-bit 메모리 버스를 이 HDI 층 안에서 완결 — 임피던스 제어와 바이트레인 길이 매칭 (스마트폰 LPDDR 배선과 같은 규칙)</text>
 
     <rect x="430" y="176" width="200" height="22" rx="3" fill="#1a232b" stroke="#5a6a76"/>
     <text x="452" y="191" fill="#8fa0ab" font-size="10" font-family="monospace">M.2 NVMe (뒷면)</text>
-    <text x="60" y="226" fill="#5fd38a" font-size="11">특수 패키지 기판이 필요 없는 구조 — 표준 팹·조립 서비스(부품 위탁 포함)로 프로토타입 제작이 가능한 이유.</text>
+    <text x="60" y="226" fill="#5fd38a" font-size="11">특수 패키지 기판 없이, 표준 팹·조립 서비스(부품 위탁 포함)만으로 프로토타입을 만들 수 있습니다.</text>
   </svg>
   </div>
 
@@ -273,7 +273,7 @@
     <rect x="690" y="46" width="210" height="140" rx="8" fill="#131a21" stroke="#d4b96a"/>
     <text x="706" y="72" fill="#d4b96a" font-size="13" font-weight="bold">LPDDR5X PHY</text>
     <text x="706" y="94" fill="#7d8c96" font-size="11" font-family="monospace">1280-bit</text>
-    <text x="706" y="114" fill="#cfd6cb" font-size="12" font-family="monospace">480GB · ~1.5TB/s</text>
+    <text x="706" y="114" fill="#cfd6cb" font-size="12" font-family="monospace">480GB · ~1.54TB/s</text>
 
     <rect x="690" y="206" width="210" height="150" rx="8" fill="#131a21" stroke="#8fa0ab"/>
     <text x="706" y="232" fill="#8fa0ab" font-size="13" font-weight="bold">호스트 · 저장</text>
@@ -294,13 +294,13 @@
   <div class="panel">
     <table>
       <tr><th>항목</th><th>값</th><th>설명</th></tr>
-      <tr><td>출력 속도</td><td><b>~110 tok/s</b></td><td>모델 전체가 ~1.5TB/s 메모리에 상주 → 상용 API(초당 수십 토큰)급 체감. 네트워크·대기열 지연 없음, 시간대 무관하게 일정</td></tr>
+      <tr><td>출력 속도</td><td><b>~110 tok/s</b></td><td>모델 전체가 ~1.54TB/s 메모리에 상주 → 상용 API(초당 수십 토큰)급 체감. 네트워크·대기열 지연 없음, 시간대 무관하게 일정</td></tr>
       <tr><td>첫 응답</td><td>즉시</td><td>로컬 연산 — 왕복 지연 없음</td></tr>
       <tr><td>부팅</td><td>~70초</td><td>NVMe → 메모리 1회 로드, 이후 저장장치 미사용</td></tr>
       <tr><td>전력</td><td><b>~50–80W</b></td><td>노트북 어댑터급. USB-PD 또는 DC. 베이퍼챔버 + 저소음 팬</td></tr>
       <tr><td>프라이버시</td><td>완전 오프라인</td><td>프롬프트/응답이 기기 밖으로 나가지 않음</td></tr>
     </table>
-    <p class="note" style="margin:12px 0 0">속도는 순수 추측이 아니라 대역폭 루프라인에 <b>실측 입력</b>을 넣은 값입니다 — 전문가 합집합 계수 U(K)와 투기 디코딩(MTP) 수락률은 GLM-4.5-Air에서 실측 (U(2)=1.62, U(4)=2.65, U(8)=4.27; 위치별 수락률 0.87/0.60/0.32/…).</p>
+    <p class="note" style="margin:12px 0 0">속도 수치는 대역폭 루프라인 모델에 <b>실측값</b>을 넣어 계산했습니다. 전문가 합집합 계수 U(K)와 투기 디코딩(MTP) 수락률은 GLM-4.5-Air에서 직접 측정한 값입니다 (U(2)=1.62, U(4)=2.65, U(8)=4.27; 위치별 수락률 0.87/0.60/0.32/…).</p>
   </div>
 
   <h2>⑤ 부품 구성 — 프로토와 양산형 <span class="est">[추정]</span></h2>
@@ -319,16 +319,16 @@
   <h2>⑥ 한눈 스펙</h2>
   <div class="panel">
     <table>
-      <tr><td>구동 모델</td><td>GLM-5.2 (753B, 4-bit 양자화 Q4_K) — 디퀀트는 실제 GGUF의 자체 코드와, 전체 포워드는 골든 참조와 비트 단위 동일 (시뮬레이션 검증)</td></tr>
-      <tr><td>출력 속도</td><td>~110 tok/s <span class="est">[추정]</span> (적응형 투기 디코딩 포함) — 양산형(1024-bit)은 ~80–100</td></tr>
-      <tr><td>메모리</td><td>LPDDR5X 480GB, 1280-bit, ~1.5TB/s — 24GB ×20 보드 직실장 (양산형: 512GB, 패키지 통합)</td></tr>
+      <tr><td>구동 모델</td><td>GLM-5.2 (753B, 4-bit 양자화 Q4_K) — 디퀀트는 실제 GGUF에서 llama.cpp 코드와, 전체 포워드는 골든 참조와 비트 단위로 일치 (시뮬레이션 검증)</td></tr>
+      <tr><td>출력 속도</td><td>~110 tok/s <span class="est">[추정]</span> (적응형 투기 디코딩 포함) — 양산형(1024-bit)은 ~80–95</td></tr>
+      <tr><td>메모리</td><td>LPDDR5X 480GB, 1280-bit, ~1.54TB/s — 24GB ×20 보드 직실장 (양산형: 512GB, 패키지 통합)</td></tr>
       <tr><td>저장</td><td>NVMe 1TB (모델 보관 + KV 오버플로)</td></tr>
       <tr><td>크기</td><td>메인보드 ~130×110mm — 소형 셋톱 폼팩터 (양산형 120×80mm)</td></tr>
       <tr><td>전력 / 소음</td><td>~50–80W <span class="est">[추정]</span> / 저소음 (양산형 ~40–60W)</td></tr>
       <tr><td>연결</td><td>USB-C ×1 (데이터) + 전원</td></tr>
       <tr><td>목표 가격대</td><td>~$3,500–5,000 <span class="est">[추정 · 양산 기준]</span></td></tr>
     </table>
-    <p class="note" style="margin:12px 0 0">본 문서는 개념 설계입니다. 성능·비용 수치는 대역폭 루프라인 추정치이며(U(K)·수락률 입력은 GLM-4.5-Air 실측), 프로세서 RTL은 시뮬레이션에서 전체 포워드가 골든 참조와 비트 단위 동일(1,155 테스트), 디퀀트 계층은 실제 공개 GGUF 두 파일에서 llama.cpp 자체 디퀀트 코드와 비트 단위 동일(Q4_K/Q6_K/Q8_0, 3.77억 가중치)함이 검증되었습니다. FPGA는 배치·배선(fit)까지 실측 — 고정 커밋에서 측정하고 이후 변경은 형식 등가 증명으로 유지 — 실보드 구동 데모는 다음 단계입니다.</p>
+    <p class="note" style="margin:12px 0 0">이 문서는 개념 설계입니다. 성능·비용 수치는 대역폭 루프라인 기반 추정치입니다(U(K)·수락률 입력은 GLM-4.5-Air 실측). 검증이 끝난 부분은 분명합니다. 프로세서 RTL은 시뮬레이션에서 전체 포워드가 골든 참조와 비트 단위로 일치하고(1,155 테스트), 디퀀트 계층은 실제 공개 GGUF 두 파일에서 llama.cpp의 디퀀트 코드와 비트 단위로 일치합니다(Q4_K/Q6_K/Q8_0, 3.77억 가중치). FPGA(XCKU3P)는 배치·배선까지 실측했습니다(LUT 87.5%, 46.5MHz). 실제 보드 구동 데모가 다음 단계입니다.</p>
   </div>
 </div>
 
