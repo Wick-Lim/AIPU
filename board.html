@@ -42,10 +42,14 @@
   .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--dim);margin-top:10px}
   .legend span{display:inline-flex;align-items:center;gap:6px}
   .sw{width:14px;height:10px;border-radius:2px;display:inline-block}
-  .topnav{display:flex;gap:18px;margin:0 0 24px;font-family:"Helvetica Neue",Arial,sans-serif;font-size:14px}
-  .topnav a{color:var(--dim);text-decoration:none;letter-spacing:.01em}
-  .topnav a:hover{color:var(--ink)}
-  .topnav a.here{color:var(--accent);font-weight:600}
+  .topbar{border-bottom:1px solid var(--line);background:rgba(14,17,20,.86);backdrop-filter:blur(6px);position:sticky;top:0;z-index:5}
+  .topbar .bar{max-width:1060px;margin:0 auto;padding:0 24px;display:flex;align-items:center;justify-content:space-between;height:56px;gap:16px}
+  .brand{font-family:"Helvetica Neue",Arial,sans-serif;font-weight:700;letter-spacing:.02em;font-size:15px;color:var(--ink)}
+  .brand b{color:var(--pad)}
+  .nav{display:flex;gap:18px;align-items:center}
+  .nav a{font-family:"Helvetica Neue",Arial,sans-serif;font-size:14px;color:var(--dim);text-decoration:none;letter-spacing:.01em}
+  .nav a:hover{color:var(--ink)}
+  .nav a.here{color:var(--accent);font-weight:600}
   @media(max-width:600px){
     .wrap{padding:24px 16px 60px}
     h1{font-size:21px}
@@ -54,12 +58,17 @@
     .panel{padding:12px}
     table{font-size:12px}
     th,td{padding:6px 8px}
-    .topnav{gap:16px;font-size:13px}
+    .topbar .bar{padding:0 16px}
+    .nav{gap:15px;font-size:13px}
   }
 </style>
 
+<div class="topbar"><div class="bar">
+  <div class="brand">AI<b>PU</b></div>
+  <nav class="nav"><a href="./">개요</a><a class="here" href="board.html">보드 설계</a><a href="invest.html">로드맵</a></nav>
+</div></div>
+
 <div class="wrap">
-  <nav class="topnav"><a href="./">개요</a><a class="here" href="board.html">보드 설계</a><a href="invest.html">로드맵</a></nav>
   <h1>AIPU — 개인용 프런티어 LLM 어플라이언스</h1>
   <p class="sub">753B급 오픈 모델(GLM-5.2, 4-bit 양자화 ~467GB)을 <b>통째로 메모리에 올려</b> 오프라인으로 구동하는 단일 사용자 박스 — 프로토타입 설계 (메모리·보드 전 부품 소매 조달 가능)</p>
 
