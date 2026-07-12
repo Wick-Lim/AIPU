@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""cdc_check.py -- structural CDC sign-off checker for glm_fp8_system_cdc (task C8).
+"""cdc_check.py -- structural CDC sign-off checker for glm_q4k_system_cdc (task C8).
 
 This is a TARGETED structural verifier, not a generic CDC analyzer. It parses
-src/glm_fp8_system_cdc.v and asserts that the module's cross-domain interface is
+src/glm_q4k_system_cdc.v and asserts that the module's cross-domain interface is
 built ENTIRELY from recognized synchronizer structures, and that no raw
 multi-bit register is driven directly across the host_clk/core_clk boundary
 outside them. It prints a per-crossing GUARDED/UNGUARDED report and exits
@@ -12,13 +12,13 @@ WHY TARGETED (honest limits): a sound generic Verilog CDC tool must elaborate
 the full hierarchy, track every net's driving clock through instances, and
 model gray-encoding / pulse-width / reconvergence -- that is a commercial-tool
 job. This checker instead encodes the module's DOCUMENTED crossing contract
-(the header of glm_fp8_system_cdc.v) and verifies each element is structurally
+(the header of glm_q4k_system_cdc.v) and verifies each element is structurally
 present and correctly wired, plus a raw-crossing guard. It is a sign-off AID
 and regression guard, not a replacement for static CDC analysis. It TRUSTS the
 cdc_async_fifo and reset_sync primitives (separately unit-verified) rather than
 re-checking their internal gray-pointer syncs.
 
-Crossings verified (per glm_fp8_system_cdc.v header, lines ~50-54):
+Crossings verified (per glm_q4k_system_cdc.v header, lines ~50-54):
   host->core : {prompt_tok,start_pos,s_len}  via u_req_fifo (cdc_async_fifo)
   core->host : next_tok                       via u_tok_fifo (cdc_async_fifo)
   core->host : busy (level)                   via busy_s1/busy_s2 2-FF sync
@@ -68,7 +68,7 @@ def domain_of_always_blocks(body):
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else "src/glm_fp8_system_cdc.v"
+    path = sys.argv[1] if len(sys.argv) > 1 else "src/glm_q4k_system_cdc.v"
     txt = strip_comments(open(path).read())
     mm = re.search(r"\bmodule\s+(\w+)\b(.*?)\bendmodule\b", txt, flags=re.S)
     if not mm:

@@ -86,7 +86,7 @@ The whole-chip Q4_K top `glm_q4k_system_cdc` passes the yosys structural gate (`
    assembled `glm_model_q4k` at **PE_M=2** against standalone **PE_M=1** runs per row — the same
    committed-slice weight set as `make model-q4k` — and asserts per-row **logits + argmax + h_state
    BIT-EXACT** (X-aware bf16 pattern compare), with **row 0 additionally anchored bit-exact to the
-   assembled numpy golden** (not just DUT-vs-DUT): **ALL 4620 TESTS PASSED** over 3 (pos, s_len)
+   assembled numpy golden** (not just DUT-vs-DUT): **ALL 4233 TESTS PASSED** over 3 (pos, s_len)
    scenarios with per-row-divergent tokens/MoE routing. Scope: PE_M widening for a **shared**
    sequence (PER_ROW_*=0). The per-row-KV multi-sequence (`kc_seq`-keyed windows) and
    continuous-batching decode-loop TBs (`glm_model_fp8_multiseq_tb`, `glm_fp8_soc_ms_loop_tb`)

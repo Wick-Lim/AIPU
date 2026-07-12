@@ -62,8 +62,8 @@ a separate, non-target analysis, not this product's speed.)
   a free-running cycle counter (`cyc_per_tok` = start → `tok_valid`), and a machine-readable
   `PERF …` line reading the DUT counters. `tools/perf_sweep.sh` compiles once per config via
   `iverilog -P glm_fp8_system_perf_tb.<P>=<v>`, runs, and tabulates. **The equivalent Q4_K perf TB
-  (against `glm_q4k_system` / `glm_model_q4k`) is [PENDING] port** — the instrumentation it would
-  bind to already exists on `main`.
+  (against `glm_q4k_system` / `glm_model_q4k`) is since PORTED** (`make perf-q4k`, 2026-07-11) — see
+  the measured Q4_K sweep above.
 
 **On the prior FP8 harness the functional binding held at every valid config** (`ALL 3 TESTS
 PASSED`, token == standalone reference) — so every cycle number below is from a *correct-token*
@@ -168,7 +168,7 @@ independently-counted exposed demand-stall** (a second counter, `in_window_stall
 cache's cumulative `ec_demand_stall`), so the number is measured, not fabricated. This upgrades
 `EFF_CYC` from a modeling statement to a **directly-measured faithful token latency**. **These are
 prior-FP8 cycle counts; the Q4_K re-run on `glm_q4k_system` (which retains the identical
-`EXPERT_STALL` gate and `in_window_stall` counter) is [PENDING].** (The default `EXPERT_STALL=0`
+`EXPERT_STALL` gate and `in_window_stall` counter) is since DONE** (`make perf-q4k`). (The default `EXPERT_STALL=0`
 keeps the committed system byte-identical — regression `ALL 3 TESTS PASSED`.)
 
 ## Extrapolation to real scale (measured mechanism → projection)
@@ -208,8 +208,8 @@ routing entropy and storage latency, not the weight format), so they carry into 
   storage/NVMe stall). The RTL that produces these signals (`expert_cache_pf`, `EXPERT_STALL`) is
   current and Q4_K on `main`.
 - **Does NOT establish:** an absolute real-753B tok/s (needs full-scale weights / a real FPGA run);
-  the Q4_K product's own absolute `cyc_per_tok` (the perf TB + sweep re-run on `glm_q4k_system` is
-  **[PENDING]** — the tabulated numbers are the prior FP8 die's); achievable-vs-peak NVMe/PCIe
+  the Q4_K product's own absolute real-753B `cyc_per_tok` (the SLICE `cyc_per_tok` ≈ 10,896 IS
+  measured — `make perf-q4k` — but full-scale is not); achievable-vs-peak NVMe/PCIe
   bandwidth on silicon; or overlap efficiency at production widths. Those remain the FPGA-prototype
   step ([`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)).
 
@@ -221,7 +221,7 @@ absolute magnitude — see the extrapolation for how it maps to the real regime.
 **Current branch (Q4_K).** The cycle-emulation *instrumentation* is in `src/glm_q4k_system.v` — the
 `EXPERT_STALL` clock-gate and the `FLASH_LAT` / `CACHE_SLOTS` / `DDR_NCH` knobs feeding the
 `ec_hit_count` / `ec_miss_count` / `ec_demand_stall_cycles` counters. The Q4_K perf TB + sweep that
-drive them into a `PERF …` table are **[PENDING] port** from branch `fp8`.
+drive them into a `PERF …` table are **since ported** (`make perf-q4k`).
 
 **Prior FP8 harness (branch `fp8`)** — the exact commands that produced the table above:
 

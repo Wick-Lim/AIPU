@@ -18,8 +18,9 @@ correct one; the earlier "surface dogbone" draft was too pessimistic and gave
         L * perim_channels(k) * traces_per_channel
     and the signals that must cross ring k is  sum of signal balls on rings > k.
   - Min signal layers L = max over k of  ceil(cross(k) / (perim_ch(k)*t)).
-  This is the standard area-array escape bound; the binding ring is usually
-  mid-array (few channels near center, but also few signals there).
+  This is the standard area-array escape bound; for a uniform signal distribution
+  the binding ring is the OUTERMOST (k=0) -- every interior signal must cross it,
+  and its channel budget is the ceiling on total escape.
 
 Analysis, not a router: it counts channel capacity, not literal traces.  A real
 KiCad/Allegro place-and-route is the next fidelity step (gen_gerbers.py emits the
@@ -42,6 +43,9 @@ def escape_layers(side_mm, pitch_mm, n_signals, label, verbose=True):
     N = int(math.floor(side_mm / pitch_mm))
     t = traces_per_channel(pitch_mm)
     rings = (N + 1) // 2
+    assert n_signals < N * N, (
+        f"{label}: {n_signals} signals > {N*N} ball positions -- physically impossible "
+        f"(real BGAs are ~40-60% signal, rest power/GND)")
     # signal balls per ring, distributed proportional to ring population
     pop = [max(1, 4 * (N - 1 - 2 * k)) for k in range(rings)]
     tot = sum(pop)
@@ -77,32 +81,33 @@ def main():
     # DRAM: per-package escape (the easier side).
     dram = escape_layers(12.4, 0.40, 84, "DRAM 496-FBGA (84 signals/package)")
 
-    # calibration sanity: a phone-AP-class escape should land near its known layer use
-    cal = escape_layers(14.0, 0.40, 1300, "[calibration] phone-AP-class 1300-sig",
+    # calibration sanity: a phone-AP-class escape (~14 mm / 0.4 mm = 35x35 = 1225 balls;
+    # ~55% signal => ~680 signals) should land near its known ~6-signal-layer use.
+    cal = escape_layers(14.0, 0.40, 680, "[calibration] phone-AP-class ~680-sig",
                         verbose=False)
 
     budget = 6  # 12-layer stack = 6 signal + 4 GND + 2 PWR
     print("\n" + "=" * 72)
     print("VERDICT")
     print("=" * 72)
-    print(f"  calibration check: phone-AP-class (1300 sig, 0.4 mm, 14 mm) -> "
-          f"{cal} signal layers  (real phone HDI uses ~6 -- model is in range)")
+    print(f"  calibration check: phone-AP-class (~680 sig, 0.4 mm, 14 mm) -> "
+          f"{cal} signal layers  (real phone HDI uses ~6)")
     print(f"  SoC 1280-bit escape needs   {soc} signal layers  (binding)")
     print(f"  DRAM per-package escape     {dram} signal layer(s)")
     print(f"  a 12-layer stack provides   {budget} signal layers (6 SIG / 4 GND / 2 PWR)")
     fits12 = soc <= budget
     print()
-    print(f"  Model bias: the calibration case over-predicts ({cal} vs real ~6), so this")
-    print(f"  model runs CONSERVATIVE (~1.5x) -- it counts every signal through inner")
-    print(f"  layers and ignores direct surface escape of the outer rings and finer")
-    print(f"  2/2 mil rules real HDI uses. Read {soc} as an upper-ish bound on the SoC.")
+    print(f"  Model accuracy: the physically-valid calibration lands at {cal} vs the real ~6,")
+    print(f"  i.e. the model is roughly calibrated (±1 layer, if anything mildly optimistic)")
+    print(f"  -- NOT a conservative upper bound. Treat {soc} as a central estimate with ~±1-2")
+    print(f"  layers of uncertainty (traces/channel, signal fraction, surface-escape credit).")
     print()
     if fits12:
-        print(f"  PASS (with margin): 1280-bit escape needs {soc} signal layers <= the 6 a")
-        print(f"  12-layer stack gives, and the model is conservative, so the real number")
-        print(f"  is likely <= {soc}. The spec's 12-layer (6 SIG / 4 GND / 2 PWR) is")
-        print(f"  DEFENSIBLE for the full board-escape at analytical fidelity.")
-        print(f"  Spare: {budget - soc} signal layer(s) for length-match detours / isolation.")
+        print(f"  PASS (with margin): 1280-bit escape needs ~{soc} signal layers vs the 6 a")
+        print(f"  12-layer stack gives. Even if the model is optimistic by 1-2 layers, ~4-6")
+        print(f"  still fits within 6 -- the {budget - soc}-layer spare absorbs the model")
+        print(f"  uncertainty. The spec's 12-layer (6 SIG / 4 GND / 2 PWR) is DEFENSIBLE at")
+        print(f"  analytical fidelity, though margin is tighter than a routed board would confirm.")
     else:
         print(f"  FINDING: escape needs {soc} signal layers > 6; a ~{soc+6}-layer stack")
         print(f"  (or directional DRAM-bank placement, or a narrower bus) is the fix.")

@@ -7,7 +7,7 @@ and reproducible:
 
 | script | question it answers | verdict |
 |---|---|---|
-| `escape_analysis.py` | does the 1280-bit escape fit in **6 signal layers** (the 12-layer stack's budget)? | **PASS (with margin)** — 4 signal layers needed, model runs conservative |
+| `escape_analysis.py` | does the 1280-bit escape fit in **6 signal layers** (the 12-layer stack's budget)? | **PASS (with margin)** — ~4 signal layers needed vs 6 available; model ~calibrated (±1–2 layers) |
 | `gen_gerbers.py` | do 20 DRAM + the SoC physically **fit in 130×110 mm** with clearance? | **DRC PASS** — 0 courtyard overlaps, ≥1 mm edge clearance, 43% area |
 
 ## What each proves — and its honest limit
@@ -16,11 +16,14 @@ and reproducible:
 from first principles: via-in-pad HDI, the ring-cut channel-crossing bound (a signal
 on ring *r* must cross every outer ring; each ring's channel capacity is
 `perimeter × traces_per_channel × layers`). For the SoC BGA (~4,300 balls, 0.75 mm
-pitch, **2,800 signals** to escape) it needs **4 signal layers** — inside the 6 a
+pitch, **2,800 signals** to escape) it needs **~4 signal layers** — inside the 6 a
 12-layer stack (6 SIG / 4 GND / 2 PWR) provides. A built-in **calibration case**
-(phone-AP-class, ~1,300 signals) over-predicts (9 vs the ~6 real phones use), so the
-model runs **~1.5× conservative** — the real SoC number is likely ≤4, and the
-12-layer claim is **defensible with margin at analytical fidelity**.
+(phone-AP-class, ~680 signals in a 35×35 = 1,225-ball package) lands at **5 vs the
+~6 real phones use** — so the model is **roughly calibrated (±1–2 layers, if
+anything mildly optimistic), NOT a conservative upper bound**. Treat the SoC's 4 as
+a central estimate; even optimistic by 1–2 layers (real ~4–6) it still fits within
+6, so the 2-layer spare absorbs the uncertainty and the 12-layer claim is
+**defensible at analytical fidelity — margin tighter than a routed board confirms**.
 *Limit:* it counts channel capacity, not literal routed traces; it ignores the
 shorter per-bank crossing a directional DRAM placement would give (that only helps).
 A real place-and-route confirms the final margin.

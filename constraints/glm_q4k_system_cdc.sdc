@@ -1,7 +1,7 @@
 # ============================================================================
-# glm_fp8_system_cdc.sdc  --  CDC timing constraints for the 2-clock product top
+# glm_q4k_system_cdc.sdc  --  CDC timing constraints for the 2-clock product top
 # ----------------------------------------------------------------------------
-# Task C8 (the CDC SIGN-OFF half).  glm_fp8_system_cdc runs the compute box
+# Task C8 (the CDC SIGN-OFF half).  glm_q4k_system_cdc runs the compute box
 # entirely on core_clk and presents a host_clk (USB-C device) interface.  EVERY
 # signal that crosses between the two asynchronous domains does so through a
 # recognized synchronizer:

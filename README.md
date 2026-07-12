@@ -40,9 +40,11 @@ below for the exact status of every claim.
 > after stacking the faithful levers — the old flat ~25–40 was the funded rung's number, not a
 > near-term-cheap one; see the 3-rung [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md). (These
 > ranges now have a **measured design-point menu** [EST] behind them — the rung-③ **primary** design
-> point is now the **512GB full-residency box, ≈80 tok/s [measured-inputs EST]** (U(K) and the MTP
+> point is the **512GB full-residency box, ≈80 tok/s [measured-inputs EST]** (U(K) and the MTP
 > accept rate r both GLM-family measured; ~95 if GLM-5.2's deeper MTP hits its published accept depth
-> — [`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md)); the streaming 54–127 tok/s point
+> — [`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md)). **Execution order (2026-07-11): prototype-first** —
+> the *build sequence* leads with a retail-parts prototype (24GB×20, 1280-bit, 480GB, **~110 tok/s [EST]**;
+> §5c) that defers the 32GB NDA procurement and on-substrate packaging to the volume SKU. The streaming 54–127 tok/s point
 > survives as the hybrid-SKU-if-h≥0.75 upside — see
 > [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md) and the update note below.) The design
 > is deliberately NVMe/PCIe-bandwidth-bound to keep it cheap. Where these docs mention *aggregate /
@@ -154,8 +156,9 @@ MoE-gate trace (U(4)=2.60–2.71, U(8)=4.19–4.41) supersedes the first-pass OL
 [`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md); this streaming menu stays active for
 rung-①, the hybrid upside SKU (h≥0.75), and >512GB checkpoints, so 54–127 is now the hybrid-SKU
 note, not the primary design point.)* What
-*is* validated on real RTL cycles is the roofline's underlying **memory-stall mechanism** (exposed stall
-exactly `3·FLASH_LAT + 9`, faithful `cyc_per_tok` grows with storage-read latency); the absolute tok/s
+*is* validated on real RTL cycles is the roofline's underlying **memory-stall mechanism** (Q4_K measured,
+`make perf-q4k`: exposed stall linear in `FLASH_LAT` — 11 cyc/token at 8 → 2,567 at 1024, RESIDENT=0 —
+and 35 independent of `FLASH_LAT` at RESIDENT=1); the absolute tok/s
 stays [EST] ([`CYCLE_EMULATION.md`](docs/CYCLE_EMULATION.md)).
 
 **Out of scope** (vendor IP / hardware / resource-gated): DDR5/NVMe (PCIe)/USB-C **PHYs** (TB-stubbed),

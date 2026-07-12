@@ -83,8 +83,8 @@ cell histograms from `make synth-glm` remain a *sanity* cross-check, **not** a r
 **tok/s is already grounded in RTL, not hand-waved:** the workload is **memory-bandwidth-bound**
 (tok/s ≈ sustained weight bandwidth ÷ **~25 GB per token** = ~40 B active params × ~0.6 B/param), and
 the memory-stall mechanism + `cyc_per_tok` are measured on real RTL cycles
-([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md); stall = `3·FLASH_LAT+9`, `cyc_per_tok` grows with
-storage-read latency). (`FLASH_LAT` and the `flash_xbar` read path are committed RTL names for a
+([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md), `make perf-q4k`: Q4_K slice `cyc_per_tok` ≈ 10,896,
+exposed stall linear in `FLASH_LAT` — 2,567 cyc/token at 1024 (RESIDENT=0) vs 35 at RESIDENT=1). (`FLASH_LAT` and the `flash_xbar` read path are committed RTL names for a
 **medium-agnostic storage-read abstraction** — address → weight bytes, latency-hidden — that in the
 product fronts an **NVMe/PCIe** backend, not a NAND die.) L0′/L2 now give the routed **Fmax —
 46.5 MHz MEASURED**, so the *slice* demo's wall clock is computable: `cyc_per_tok` ≈ 8.0–11.0 K
