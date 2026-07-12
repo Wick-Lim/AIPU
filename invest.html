@@ -40,6 +40,7 @@
   a{color:var(--copper);text-decoration:none}
   a:hover{text-decoration:underline}
   h1,h2,h3{text-wrap:balance;word-break:keep-all;margin:0}
+  .nb{white-space:nowrap}
   .lead,.lede,p.body,.stage p{word-break:keep-all}
   p{margin:0}
   .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
@@ -179,7 +180,7 @@
 </div></header>
 
 <section id="thesis"><div class="wrap">
-  <div class="sechead"><span class="idx">01</span><h2>핵심 판단: 병목은 GPU가 아니라 메모리 대역폭입니다</h2></div>
+  <div class="sechead"><span class="idx">01</span><h2><span class="nb">핵심 판단 —</span> 병목은 GPU가 아니라 메모리 대역폭입니다</h2></div>
   <p class="lede">753B 모델(Q4_K, ~467GB)의 속도는 <b>메모리 대역폭</b>이 결정합니다. 토큰 하나마다 활성 가중치 ~25GB를 읽어야 하고, 속도는 <span class="mono">대역폭 ÷ 토큰당 바이트</span>입니다. 연산 성능은 오히려 남습니다. 그래서 이 시장은 양극단으로 갈라져 있고, 그 사이가 비어 있습니다.</p>
   <div class="bracket">
     <div class="bcol">
@@ -202,7 +203,7 @@
 </div></section>
 
 <section id="ledger"><div class="wrap">
-  <div class="sechead"><span class="idx">02</span><h2>지금 있는 것 — 증명한 것과 아직 아닌 것</h2></div>
+  <div class="sechead"><span class="idx">02</span><h2><span class="nb">지금 있는 것 —</span> 증명한 것과 아직 아닌 것</h2></div>
   <p class="lede">이 프로젝트를 지탱하는 건 <b>철저한 검증</b>입니다. 아래는 무엇이 <span class="chip m"><span class="tick"></span>증명</span>됐고, 무엇이 <span class="chip e"><span class="tick"></span>추정</span>이며, 무엇이 아직 <span class="chip o"><span class="tick"></span>열림</span>인지 있는 그대로 정리한 것입니다. 보안과 기술을 아는 분에게는 이 투명함이 어떤 슬로건보다 강한 신뢰의 근거가 됩니다.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>항목</th><th>무엇을 확인했나</th><th>상태</th></tr></thead>
@@ -224,7 +225,7 @@
 </div></section>
 
 <section id="roadmap"><div class="wrap">
-  <div class="sechead"><span class="idx">03</span><h2>로드맵 — 저비용 검증을 먼저, 큰 요청은 그 뒤에</h2></div>
+  <div class="sechead"><span class="idx">03</span><h2><span class="nb">로드맵 —</span> 저비용 검증을 먼저, 큰 요청은 그 뒤에</h2></div>
   <p class="lede">각 단계는 <b>다음 단계의 리스크를 줄이는 증거</b>를 만듭니다. 가장 큰 지출인 테이프아웃은, 앞선 저비용 단계들이 물리와 수요를 증명한 <b>뒤에</b> 옵니다. 이 순서가 계획의 핵심입니다.</p>
   <div class="road">
 
@@ -282,7 +283,7 @@
 </div></section>
 
 <section id="product"><div class="wrap">
-  <div class="sechead"><span class="idx">04</span><h2>출하 제품 비전 — 무엇이, 얼마에, 얼마나 빠르게</h2></div>
+  <div class="sechead"><span class="idx">04</span><h2><span class="nb">출하 제품 비전 —</span> 무엇이, 얼마에, 얼마나 빠르게</h2></div>
   <p class="lede">Stage 4 양산 SKU가 소비자에게 도달하는 모습입니다. <b>손바닥 두 개 크기의 조용한 오프라인 박스</b>를 USB-C 하나로 PC나 폰에 연결합니다. 아래 이미지와 가격, 출력은 모두 <span class="chip e"><span class="tick"></span>추정</span>입니다. 설계에 기반한 비전이지 실제 출하품 사진이 아닙니다.</p>
   <div class="pvgrid">
     <div class="pvrender">
@@ -367,7 +368,7 @@
 </div></section>
 
 <section id="ask"><div class="wrap">
-  <div class="sechead"><span class="idx">05</span><h2>지금 필요한 것 — 단계에 맞는 요청</h2></div>
+  <div class="sechead"><span class="idx">05</span><h2><span class="nb">지금 필요한 것 —</span> 단계에 맞는 요청</h2></div>
   <p class="lede">테이프아웃 자본을 <b>먼저</b> 요청하지 않습니다. 지금 필요한 건 <b>Stage 1을 실행할 소액</b>이고, 그것이 이후의 큰 요청에 대한 리스크를 줄입니다.</p>
   <div class="asklist">
     <div class="askcard">
@@ -388,7 +389,7 @@
 </div></section>
 
 <section id="wont"><div class="wrap">
-  <div class="sechead"><span class="idx">06</span><h2>우리가 주장하지 않는 것 (이게 차별점입니다)</h2></div>
+  <div class="sechead"><span class="idx">06</span><h2>우리가 주장하지 않는 것 <span class="nb">(이게 차별점입니다)</span></h2></div>
   <ul class="wont">
     <li><span class="x">✕</span><span><b>실리콘에서 측정한 tok/s가 아닙니다.</b> ~110은 대역폭 루프라인 기반 추정치입니다. 입력값은 실측이지만 최종 수치는 프로토타입(Stage 3)에서 확정됩니다.</span></li>
     <li><span class="x">✕</span><span><b>llama.cpp 전체 런타임과 숫자까지 똑같다고 주장하지 않습니다.</b> 우리가 보장하는 건 ggml dequant의 비트 단위 일치와 문서화된 자체 fp32 연산 순서입니다. 어텐션과 누산 순서는 설계상 다릅니다.</span></li>

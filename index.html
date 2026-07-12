@@ -43,6 +43,7 @@
   a{color:var(--copper);text-decoration:none}
   a:hover{text-decoration:underline}
   h1,h2,h3{text-wrap:balance;word-break:keep-all;margin:0}
+  .nb{white-space:nowrap}
   .lead,.lede,.sub{word-break:keep-all}
   p{margin:0}
   .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
@@ -237,7 +238,7 @@
 
 <section>
   <div class="wrap">
-    <div class="sechead"><span class="idx">01</span><h2>프런티어 AI는 연결을 요구합니다. 그런데 돈 되는 큰 시장은 연결할 수가 없습니다.</h2></div>
+    <div class="sechead"><span class="idx">01</span><h2>프런티어 AI는 연결을 요구합니다.<br>그런데 돈 되는 큰 시장은 연결할 수가 없습니다.</h2></div>
     <p class="lede">최고의 모델은 API 뒤에 있습니다. 그 API로 데이터를 보낼 수 없거나 — 변호사·의뢰인 비밀유지, 진료정보(PHI), 미공개 중요정보(MNPI), 기밀, 핵심 IP — 아예 <b>연결이 끊긴 환경</b>(SCIF, 격리된 OT 네트워크, 선박, 현장)이라면 아예 배제됩니다. <b>"보안 클라우드"도 답이 아닙니다.</b> VPC 내부, 무보존, 기밀 컴퓨팅(TEE) 모두 결국 연결이 필요합니다. 정작 중요한 하나의 시험을 통과하지 못합니다. <span class="mono" style="color:var(--copper)">랜선을 뽑아도 돌아가는가?</span></p>
     <div class="cols">
       <div class="card">
@@ -259,7 +260,7 @@
 
 <section>
   <div class="wrap">
-    <div class="sechead"><span class="idx">02</span><h2>제품: 데이터센터 가격이 아니라 좌석 가격에 담은 프런티어 모델</h2></div>
+    <div class="sechead"><span class="idx">02</span><h2><span class="nb">제품 —</span> 데이터센터 가격이 아니라 좌석 가격에 담은 프런티어 모델</h2></div>
     <p class="lede">양자화된 모델 전체를 <b>NVMe SSD</b>에서 꺼내 빠른 <b>DDR</b> 캐시를 거쳐 <b>Q4_K 연산 다이</b>로 흘려보내는 단일 사용자 박스(FPGA 카드)입니다. <b>모델·캐시·연산 모두 박스 안에</b> 있고, 호스트 링크는 <b>토큰 ID만</b> 주고받습니다. 그래서 랜선을 뽑아도 돌아갑니다. <b>일부러 메모리 대역폭에 묶어 값을 낮췄습니다.</b> 467GB Q4_K 모델은 NVMe에 담고, 다이는 작게 유지하며, 속도는 값비싼 데이터센터 GPU가 아니라 메모리 대역폭에서 나옵니다. 성능은 <b>하드웨어에 따라 단계별로</b> 올라갑니다(아래 사다리 참고).</p>
     <div class="spec">
       <div class="cell"><div class="lab">모델 저장</div><div class="val">1–4 TB NVMe <small>· 467 GB Q4_K</small></div></div>
@@ -283,7 +284,7 @@
 
 <section>
   <div class="wrap">
-    <div class="sechead"><span class="idx">03</span><h2>검증된 RTL — 증명된 것, 엘라보레이션된 것, 그리고 남은 과제까지</h2><span class="chip m"><span class="tick"></span>검증 우선</span></div>
+    <div class="sechead"><span class="idx">03</span><h2><span class="nb">검증된 RTL —</span> 증명된 것, 엘라보레이션된 것, 남은 과제까지</h2><span class="chip m"><span class="tick"></span>검증 우선</span></div>
     <p class="lede">대부분의 하드웨어 소개는 슬라이드에 그칩니다. 이것은 CI에서 게이팅되는 <b>검증된 RTL</b>입니다. Q4_K 연산은 <b>GGML k-quant 레퍼런스와 비트 단위로 동일</b>하고, 메모리 컨트롤러는 <b>형식 검증</b>을 통과했습니다. <b>전체 모델 포워드는 조립된 골든과 비트 단위로 동일</b>하며(1,155 테스트), dequant 계층은 <b>실제 공개 GGUF 두 파일에서 llama.cpp 자체 코드와 비트 단위로 동일</b>합니다(가중치 3.77억 개, Q4_K/Q6_K/Q8_0). <b>아직 증명하지 못한 것</b>도 증명한 것만큼 분명하게 밝힙니다. <b>보안팀의 승인을 받아야 하는</b> 박스에는, 뭉뚱그린 주장이 아니라 정직한 검증 장부가 결론을 짓습니다.</p>
     <div class="tablewrap">
       <table>
@@ -308,7 +309,7 @@
 
 <section>
   <div class="wrap">
-    <div class="sechead"><span class="idx">04</span><h2>실리콘으로 가는 길: FPGA 핏 관문</h2></div>
+    <div class="sechead"><span class="idx">04</span><h2><span class="nb">실리콘으로 가는 길 —</span> FPGA 핏 관문</h2></div>
     <div class="flag">
       <div class="top">
         <div class="stamp">▍ 다음 관문</div>
@@ -361,7 +362,7 @@
 
 <section>
   <div class="wrap">
-    <div class="sechead"><span class="idx">06</span><h2>지금 어디까지 왔나 — 출시로 가는 길</h2></div>
+    <div class="sechead"><span class="idx">06</span><h2><span class="nb">지금 어디까지 왔나 —</span> 출시로 가는 길</h2></div>
     <div class="gates">
       <div class="gate">
         <div class="n">1단계</div>
