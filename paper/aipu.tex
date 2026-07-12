@@ -1,0 +1,424 @@
+\documentclass[11pt]{article}
+
+% --- dependency-light preamble (arXiv-friendly) ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\est}{\textsuperscript{[EST]}}
+\newcommand{\tps}{tok/s}
+
+\title{\textbf{Verification-First RTL for Local LLM Inference:\\
+Bit-Exact GGUF $k$-Quant Datapaths and a\\
+Memory-Bandwidth-Bound Residency Design}}
+
+\author{Wick-Lim\\
+\small Independent Researcher\\
+\small \texttt{wicklim90@gmail.com}\\
+\small \url{https://github.com/Wick-Lim/AIPU}}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present the design and verification of a synthesizable RTL accelerator for
+running a frontier open-weight mixture-of-experts (MoE) language model---the
+753-billion-parameter GLM-5.2, in its published $\sim$467\,GB GGUF $k$-quant
+form---as a single-user, fully offline appliance. The work is deliberately
+\emph{verification-first} and \emph{pre-silicon}: we do not report a fabricated
+chip or a measured end-to-end token rate. Instead we contribute (i) a bit-exact
+hardware datapath for GGUF $k$-quant (Q4\_K/Q6\_K/Q8\_0) dequantization and the
+assembled model forward pass, cross-validated bitwise against llama.cpp's own
+\code{ggml} kernels on 376{,}586{,}240 weights drawn from two real published
+GGUF files, which closes the ``self-referential golden'' gap endemic to
+reimplementation-based accelerators; (ii) a memory-bandwidth-bound design
+methodology for full-residency MoE decoding, in which a roofline parameterized
+by \emph{measured} MoE expert-union growth $U(K)$ and multi-token-prediction
+(MTP) speculative accept rates is validated on real RTL cycles by a
+cycle-accurate emulation that confirms the residency stall mechanism
+(a $\sim$73$\times$ reduction in exposed storage stall); and (iii) a
+verification-first methodology with an explicit, reproducible ledger that
+separates \emph{proven} (bit-exact and formal), \emph{elaborated} (structural),
+and \emph{estimated} (roofline) claims, including formal verification of the
+memory/control plane and a parameter-equivalence proof for result-invariant
+configuration knobs. The compute datapath places and routes on a commodity
+Kintex UltraScale+ FPGA, and we derive a retail-parts prototype design point
+(twenty 24\,GB LPDDR5X packages on a 1280-bit bus, 480\,GB resident) supported by
+an analytical board routability study. Throughout, projected token rates are
+tagged as estimates; the sole remaining physical gate---an ASIC tapeout---is
+named, not hidden.
+\end{abstract}
+
+\section{Introduction}
+
+Frontier large language models are increasingly available as open weights, yet
+running the largest of them locally---offline, on data that cannot leave a
+network---remains out of reach for most users. The obstacle is not compute but
+memory bandwidth. A 753B-parameter MoE model quantized to roughly four bits
+occupies $\sim$467\,GB; each decoded token reads on the order of 25\,GB of
+active weights, so single-stream throughput is governed by
+$\text{bandwidth} \div \text{bytes-per-token}$, and arithmetic units spend most
+of their time waiting. Consumer multi-GPU rigs cannot hold 467\,GB in aggregate
+VRAM, so weights spill to host memory and stream over PCIe; the effective
+bandwidth---not the number of GPUs---then caps throughput at a few tokens per
+second. Datacenter deployments that keep the whole model resident in
+high-bandwidth memory reach hundreds of tokens per second, but at a cost and
+form factor incompatible with a single-user, sub-\$5k appliance.
+
+This paper studies the middle of that gap: an application-specific design that
+holds the entire model resident in a single, wide, moderately-fast memory pool,
+purpose-built to saturate the memory-bound roofline rather than to provide
+general-purpose FLOPS. The target is a local box that runs the full model with
+the network disconnected---an audit as literal as ``does it still work with the
+Ethernet cable unplugged?''---which is precisely the property air-gapped
+organizations require and which cloud, in-VPC, and trusted-execution deployments
+by construction cannot provide.
+
+A design of this kind is only credible if its claims are checkable. Machine-
+learning accelerators are frequently validated against a reimplementation of the
+reference numerics, leaving a ``self-referential golden'' gap: the hardware may
+be bit-exact to the author's own reference while diverging from the software the
+community actually runs. We therefore treat verification as the primary
+deliverable and organize every claim into a ledger of three kinds:
+\emph{proven} (a gated bit-exact simulation or a solver proof), \emph{elaborated}
+(a structural check with no functional golden), and \emph{estimated} (a roofline
+model). We are explicit about what this work is \emph{not}: there is no
+fabricated silicon, and every token rate is a roofline projection. What is
+established on real artifacts is stated as such; what is projected is tagged
+\est.
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{A bit-exact GGUF $k$-quant datapath, cross-validated against
+llama.cpp.} The RTL dequantization of Q4\_K, Q6\_K, and Q8\_0 super-blocks, and
+the assembled GLM-5.2 forward pass, are bit-exact to an independent \code{ggml}
+reference; that reference is in turn shown bitwise-identical to llama.cpp's own
+\code{dequantize\_row\_*} kernels on 376{,}586{,}240 weights from two real
+published GGUF files. By transitivity the hardware dequantization equals the
+real file's \code{ggml} dequantization, closing the self-referential gap at the
+quantization layer (Section~\ref{sec:verif}).
+
+\item \textbf{A memory-bandwidth-bound residency design methodology with measured
+inputs.} We parameterize a decode-time roofline by the MoE expert-union growth
+$U(K)$ under speculative decoding and by the MTP accept-rate $r$, both measured
+on a same-family model, and we validate the underlying stall mechanism on real
+RTL cycles with a cycle-accurate emulation (Sections~\ref{sec:design}
+and~\ref{sec:analysis}).
+
+\item \textbf{A verification-first methodology and reproducible ledger.} Formal
+model checking (BMC and unbounded $k$-induction) of the memory/control plane, a
+sequential-equivalence proof that result-invariant configuration parameters do
+not change the default netlist, and an explicit proven/elaborated/estimated
+accounting that is reproducible from the repository (Section~\ref{sec:verif}).
+
+\item \textbf{A retail-parts prototype design point with an analytical
+routability study.} A residency configuration built from commodity 24\,GB
+LPDDR5X packages on a 1280-bit board-level bus, with a first-principles escape-
+routing and placement analysis of a 12-layer HDI board (Section~\ref{sec:analysis}).
+\end{enumerate}
+
+\section{Background}
+\label{sec:bg}
+
+\paragraph{GGUF $k$-quants.} \code{llama.cpp} and its \code{ggml} tensor library~\cite{llamacpp}
+are the de-facto substrate for local inference, and GGUF is their model format.
+The $k$-quant family stores weights in 256-element super-blocks with a compact
+hierarchy of scales: Q4\_K packs 256 four-bit weights with six-bit sub-block
+scales and minima into 144 bytes; Q6\_K uses 210 bytes; Q8\_0 stores 32-element
+blocks of eight-bit weights with an FP16 scale. A ``dynamic'' mix such as
+UD-Q4\_K\_XL keeps most tensors at Q4\_K while promoting sensitive tensors to
+higher precision. Matching this format exactly---not a nearby integer
+quantization---is what lets an accelerator consume the same file the community
+already trusts.
+
+\paragraph{Fine-grained MoE and MLA.} GLM-5.2~\cite{glmweights} is a fine-grained
+MoE model~\cite{moe}: each token routes to a small top-$k$ subset of many experts,
+so the \emph{set} of weights touched per token is data-dependent. It also uses
+multi-head latent attention (MLA)~\cite{deepseekv2}, which compresses the
+key/value cache, and a multi-token-prediction (MTP) head usable as a
+self-speculative draft in the sense of speculative decoding~\cite{specdec}.
+
+\paragraph{Memory-bound roofline.} For single-stream decoding of a model whose
+active weights exceed cache, the classic roofline model~\cite{roofline} reduces
+to a bandwidth bound: throughput is
+$\text{\tps} = \text{BW} \cdot A \,/\, B_{\text{tok}}$,
+where BW is sustained weight bandwidth, $B_{\text{tok}}$ is bytes read per
+committed token, and $A$ is the mean number of committed tokens per model pass
+(the speculative amplification). The design problem is to make BW large and
+$B_{\text{tok}}/A$ small; the compute must merely keep up.
+
+\section{Accelerator Design}
+\label{sec:design}
+
+\paragraph{Bit-exact datapath.} The core is a Q4\_K general matrix-multiply
+(GEMM) unit that dequantizes super-blocks to FP32 and accumulates in a
+documented fixed order, followed by conversion to bf16. Mixed-type columns
+(Q6\_K, Q8\_0, F16) are handled by per-column type routing in the same GEMM,
+fed by a weight loader that carries a per-tile type descriptor. The surrounding
+operators---MLA attention with data-dependent sparse (DSA) key selection, the
+SwiGLU expert feed-forward, the sigmoid-gated top-$k$ MoE router, RMSNorm,
+interleaved RoPE, and softmax---are assembled into a full \code{glm\_model\_q4k}
+forward pass. The entire compute datapath is bit-exact to an assembled numpy
+reference that imports the same $k$-quant dequantization used for the
+cross-check of Section~\ref{sec:verif}.
+
+\paragraph{Memory system.} A single top-level module wraps the compute die with
+a tier-agnostic banked read crossbar, a routed-expert cache with prefetch, an
+MLA latent-KV pager with NVMe overflow, weight and boot loaders, and multi-clock
+domain-crossing FIFOs. The same RTL serves three configurations selected by
+parameters: a streaming demonstrator (weights streamed from storage), a
+full-residency SKU (the whole checkpoint resident in DRAM, expert refills served
+by the DRAM-tier crossbar), and a hybrid. Residency is expressed by a
+\code{RESIDENT} parameter; with it set, expert refills complete as tagged
+crossbar reads and the storage path carries only KV spill and the one-time boot
+copy, an invariant checked in simulation.
+
+\paragraph{Adaptive speculative chain.} Self-speculative MTP decoding proposes a
+chain of draft tokens that the model verifies in a single pass. Because
+verification preserves the greedy result exactly, the speculative loop is
+\emph{output-invariant} for any draft-depth schedule---it changes throughput,
+never the emitted tokens. We exploit this with a runtime-adaptive draft depth
+that observes the recent accept rate and adjusts $K$, settling at the
+memory-bound optimum without any change to results.
+
+\paragraph{Result-invariant knobs.} Several parameters (a compute-resource knob,
+the residency mode, the adaptive-depth mode) are designed to be
+\emph{result-invariant}: enabling them must not change the emitted tokens. We
+verify this both functionally (bit-exact test gates with the knob on and off)
+and structurally (a sequential-equivalence proof that the default-parameter
+netlist is unchanged), so the knobs are optimizations, not risks.
+
+\section{Verification Methodology}
+\label{sec:verif}
+
+Verification is organized as a ledger. Each claim is \emph{proven} (a gated
+functional/bit-exact simulation or a solver proof), \emph{elaborated} (a
+structural elaboration with no functional golden), or \emph{estimated} (a
+roofline model). Table~\ref{tab:ledger} summarizes the state; the remainder of
+this section describes the load-bearing pieces.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}p{0.42\linewidth}p{0.36\linewidth}l@{}}
+\toprule
+\textbf{Claim} & \textbf{Evidence} & \textbf{Status} \\
+\midrule
+Assembled model forward & bit-exact vs assembled numpy golden (1{,}155 tests) & proven \\
+$k$-quant dequant vs real GGUF & bitwise-equal to llama.cpp \code{ggml} on 376.6M weights & proven \\
+Q4\_K GEMM core & bit-exact vs \code{ggml} $k$-quant (160 tiles) & proven \\
+Mixed-type path (Q6\_K/Q8\_0/F16) & bit-exact vs \code{ggml}-reimpl goldens & proven \\
+Memory/control plane & BMC + unbounded $k$-induction, no counterexample & proven (formal) \\
+Residency-SKU configuration & two-DUT contrast + sequential-equivalence of default & proven \\
+Full 753B-shape hierarchy & type/width elaboration at true dimensions & elaborated \\
+FPGA fit (compact config) & routed on Kintex UltraScale+, timing met & measured \\
+Cycle-accurate stall mechanism & per-token stall measured on real cycles & measured \\
+Single-user throughput & bandwidth roofline with measured $U(K)$, $r$ & estimated\est \\
+End-to-end silicon token rate & --- & not done \\
+\bottomrule
+\end{tabular}
+\caption{The verification ledger. ``Proven'' means a gated bit-exact simulation
+or a solver proof; ``elaborated'' is a structural check with no functional
+golden; ``estimated'' is a roofline projection. Every row is reproducible from
+the repository.}
+\label{tab:ledger}
+\end{table}
+
+\paragraph{Closing the self-referential gap.} The assembled forward pass is
+bit-exact to a numpy golden, but that golden is the author's own reimplementation
+of \code{ggml}. To close the gap to the software the community runs, we parse
+two real published GGUF files, extract every Q4\_K, Q6\_K, and Q8\_0 tensor's raw
+super-blocks, and dequantize each block two ways: with our reference, and with
+llama.cpp's own \code{dequantize\_row\_q4\_K}/\code{\_q6\_K}/\code{\_q8\_0}
+compiled against the built \code{ggml} library. The FP32 outputs are compared
+bitwise (as \code{uint32}, not within a tolerance). All 376{,}586{,}240 weights
+match; Q8\_0 is cross-confirmed across two distributions. By transitivity with
+the existing RTL$\,\equiv\,$reference gates, the hardware dequantization equals
+the real file's \code{ggml} dequantization. We are careful to scope the claim:
+whole-runtime numeric equality with llama.cpp (attention and accumulation
+orders) is \emph{out of contract} by design; our contract is \code{ggml}-exact
+dequantization plus a documented FP32 accumulation order.
+
+\paragraph{Formal verification of the control plane.} The memory-system
+controllers---the banked crossbar, the storage-read fabric, the boot loader, the
+KV pager, the speculative-decode sequencer, and the expert cache in both
+prefetch-off and prefetch-on modes---are checked by bounded model checking and,
+where tractable, unbounded $k$-induction, with no counterexample from reset.
+Documented residual bounded gaps are recorded rather than hidden.
+
+\paragraph{Equivalence of result-invariant knobs.} For the residency mode we
+prove, by sequential equivalence checking (combinational and inductive), that
+the default-parameter top-level module is logically identical to the pre-feature
+commit; the feature therefore adds behavior only when explicitly enabled and
+cannot perturb the verified default. The same discipline (a formal or structural
+identity proof, not a promise) is applied to the other result-invariant knobs.
+
+\section{Design-Space Analysis and Evaluation}
+\label{sec:analysis}
+
+\paragraph{Measured roofline inputs.} The bytes-per-token denominator has two
+parts that speculation amortizes differently. The routed-expert stream is
+$\approx$14\,GB/token at $K{=}1$, and under a speculative chain the \emph{union}
+of experts touched across the verified draft positions grows by a factor $U(K)$;
+the resident hot set (attention projections, dense and shared FFN, router, LM
+head) is $\approx$11\,GB/token, read once per pass. We measure $U(K)$ directly
+by tracing exact expert selections on a same-family model (GLM-4.5-Air):
+$U(2){\approx}1.6$, $U(4){\approx}2.65$, $U(6){\approx}3.5$, $U(8){\approx}4.3$.
+We also measure the MTP accept rate---first-position $r_1{\approx}0.87$ with a
+steep per-position decay---which, combined with $U(K)$, places the memory-bound
+optimum at a shallow depth ($K{=}1$--2) and an effective amplification
+$A_{\text{eff}}$ plateau near 2.9. The adaptive controller settles at this
+optimum by construction.
+
+\paragraph{Cycle-accurate validation of the mechanism.} A cycle-accurate
+testbench drives the assembled system with a storage read-latency model engaged,
+holding every committed token bit-exact against a standalone reference while
+counting cycles. On the verified slice the compute-die baseline is
+$\approx$10{,}896 cycles/token. Exposed storage stall is linear in read latency
+and proportional to miss count---the memory-bound assumption, now \emph{measured}
+rather than assumed---and the residency configuration makes stall independent of
+storage latency: at a 1024-cycle latency, streaming exposes 2{,}567 stall
+cycles/token whereas residency exposes 35, a $\sim$73$\times$ reduction. This
+validates the residency pivot on real cycles even though the absolute product
+token rate remains a projection.
+
+\paragraph{FPGA fit.} The Q4\_K product top, in a compact configuration, places
+and routes on a Kintex UltraScale+ XCKU3P: 87.5\% LUT utilization, hold met, and
+a routed maximum frequency of 46.5\,MHz reached through a sequence of
+bit-exactness-preserving latency-only repipelining rounds. This establishes that
+the datapath is physically realizable on commodity silicon; it is a compact
+slice, not the full model at product speed, and we do not extrapolate a token
+rate from it.
+
+\paragraph{Projected throughput.} Combining the measured bandwidth of a resident
+LPDDR5X pool with the measured $U(K)$ and $r$ inputs, the roofline projects a
+residency design point of order $80$--$110$\,\tps\est\ for the single-user box,
+against $\sim$7\,\tps\ observed on a four-GPU offloading rig (bandwidth-starved)
+and $\sim$15--25\,\tps\ reported for a same-class 512\,GB unified-memory
+workstation. These are projections with measured inputs, not silicon
+measurements.
+
+\paragraph{Prototype design point and routability.} A physically buildable
+prototype uses commodity retail parts: twenty 24\,GB LPDDR5X packages on a
+1280-bit board-level bus give 480\,GB resident at $\approx$1.54\,TB/s. Because
+the wide bus leaves the package, we perform a first-principles routability study.
+An escape-routing model (via-in-pad HDI, the ring-cut channel-crossing bound)
+estimates that the $\sim$2{,}800-signal escape of the host BGA needs on the order
+of four signal layers, within the six a 12-layer stack (6 signal / 4 ground /
+2 power) provides; a placement check confirms the twenty packages and the host
+fit within a 130$\times$110\,mm board with courtyard and edge clearance. This is
+analysis, not a routed board: the layer count is an estimate with roughly
+$\pm$1--2 layers of uncertainty, and a full place-and-route confirms the final
+margin.
+
+\section{Related Work}
+\label{sec:related}
+
+Offloading systems (e.g.\ weight streaming and paged attention in software
+stacks~\cite{llamacpp}) make large models runnable on limited memory but remain
+bounded by the slowest tier's bandwidth, which is precisely the wall this design
+removes by full residency. Wafer-scale and SRAM-resident accelerators reach very
+high token rates by holding weights in on-chip SRAM, but at a capacity-per-die
+that makes a
+467\,GB single-box deployment economically impossible; they occupy a different
+bracket. Unified-memory workstations approximate the residency idea with a wide
+LPDDR pool and are the closest existing comparison, at roughly half the bandwidth
+of the prototype design point studied here. Relative to all of these, our
+contribution is not a new attention kernel or a new quantization, but a
+verification-first hardware realization of an existing, community-trusted
+quantization format together with a measured-input design methodology.
+
+\section{Limitations and Honest Scope}
+\label{sec:limits}
+
+We restate the boundaries plainly. (1)~There is no fabricated silicon; the sole
+remaining physical gate is an ASIC tapeout (an LPDDR5X PHY IP license plus
+mask/NRE cost), which no amount of RTL verification removes. (2)~All token rates
+are roofline projections tagged \est; the FPGA result is a compact
+place-and-route, not the full model at speed, and the cycle-accurate numbers are
+on a verified slice. (3)~Our numeric contract is \code{ggml}-exact
+dequantization plus a documented accumulation order; whole-runtime equality with
+llama.cpp is deliberately out of contract. (4)~The board routability result is
+an analytical estimate with a dummy host ball-out, not a routed, signal-integrity-
+closed design. (5)~Deployment, cost, and business claims are out of scope for
+this paper. We regard stating these boundaries as part of the contribution: for a
+system an auditor must sign off on, an honest ledger is the argument, not a
+blanket claim.
+
+\section{Conclusion}
+\label{sec:concl}
+
+We have described a verification-first RTL accelerator for local GGUF $k$-quant
+LLM inference. The datapath is bit-exact to the community's own software on real
+model bytes; the memory-bandwidth-bound residency design is parameterized by
+measured MoE and speculative-decoding inputs and validated on real RTL cycles;
+and the control plane is formally verified, with result-invariant configuration
+knobs proven not to disturb the default netlist. The compute datapath is
+physically realizable on a commodity FPGA, and a retail-parts prototype design
+point is supported by an analytical routability study. Nothing physically
+impossible appears in the path from here to a device; what remains is a tapeout,
+which we name rather than hide. The full engineering record, and every gate that
+backs the claims above, is open.
+
+\section*{Reproducibility}
+Every ``proven'' row of Table~\ref{tab:ledger} is reproducible from the public
+repository at \url{https://github.com/Wick-Lim/AIPU} via the corresponding build
+targets (bit-exact simulation gates, the GGUF cross-check tool, the formal model-
+checking targets, the cycle-accurate performance harness, and the board-study
+scripts).
+
+\section*{Acknowledgments}
+The GGUF cross-check builds on the open-source \code{ggml}/llama.cpp project and
+the published GLM-5.2 open weights; this work is an inference accelerator for
+those models and is independent of their developers.
+
+\begin{thebibliography}{9}
+
+\bibitem{roofline}
+S.~Williams, A.~Waterman, and D.~Patterson.
+\newblock Roofline: an insightful visual performance model for multicore
+architectures.
+\newblock \emph{Communications of the ACM}, 52(4):65--76, 2009.
+
+\bibitem{moe}
+N.~Shazeer, A.~Mirhoseini, K.~Maziarz, A.~Davis, Q.~Le, G.~Hinton, and J.~Dean.
+\newblock Outrageously large neural networks: the sparsely-gated
+mixture-of-experts layer.
+\newblock In \emph{International Conference on Learning Representations (ICLR)},
+2017. arXiv:1701.06538.
+
+\bibitem{specdec}
+Y.~Leviathan, M.~Kalman, and Y.~Matias.
+\newblock Fast inference from transformers via speculative decoding.
+\newblock In \emph{International Conference on Machine Learning (ICML)}, 2023.
+arXiv:2211.17192.
+
+\bibitem{deepseekv2}
+DeepSeek-AI.
+\newblock DeepSeek-V2: a strong, economical, and efficient mixture-of-experts
+language model.
+\newblock arXiv:2405.04434, 2024.
+
+\bibitem{llamacpp}
+G.~Gerganov and the llama.cpp/ggml contributors.
+\newblock llama.cpp and the ggml tensor library.
+\newblock Software, \url{https://github.com/ggml-org/llama.cpp}.
+
+\bibitem{glmweights}
+Zhipu AI / THUDM.
+\newblock GLM-5.2 open weights, GGUF ($k$-quant) distribution.
+\newblock \url{https://huggingface.co/unsloth/GLM-5.2-GGUF}.
+
+\end{thebibliography}
+
+\end{document}
