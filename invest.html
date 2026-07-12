@@ -275,7 +275,7 @@
   <p class="lede">Stage 4 양산 SKU가 소비자에게 도달하는 형태. <b>손바닥 두 개 크기의 조용한 오프라인 박스</b>, USB-C 하나로 PC/폰에 연결. 아래 이미지·가격·출력은 전부 <span class="chip e"><span class="tick"></span>추정</span> — 설계 기반 비전이지 출하품 사진이 아니다.</p>
   <div class="pvgrid">
     <div class="pvrender">
-      <svg viewBox="40 78 400 232" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AIPU 어플라이언스 예상 이미지" font-family="ui-monospace,Menlo,monospace">
+      <svg viewBox="48 84 392 232" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AIPU 어플라이언스 예상 이미지" font-family="ui-monospace,Menlo,monospace">
         <defs>
           <linearGradient id="alTop" x1="0.1" y1="0" x2="0.7" y2="1">
             <stop offset="0" stop-color="#ffffff"/><stop offset="0.55" stop-color="#eef1f4"/><stop offset="1" stop-color="#dde2e8"/>
@@ -292,61 +292,56 @@
           <radialGradient id="ledglow" cx="0.5" cy="0.5" r="0.5">
             <stop offset="0" stop-color="#5fd38a" stop-opacity="0.9"/><stop offset="1" stop-color="#5fd38a" stop-opacity="0"/>
           </radialGradient>
-          <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+          <filter id="soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="7"/></filter>
         </defs>
 
-        <!-- ground shadow -->
-        <ellipse cx="232" cy="282" rx="150" ry="20" fill="#14181F" opacity="0.12" filter="url(#soft)"/>
+        <!-- ground contact shadow: a soft halo around the full bottom footprint so
+             the box reads as sitting flat (front AND back grounded, not floating) -->
+        <polygon points="80.2,276.1 308.2,276.1 386.3,241.4 158.3,241.4" fill="#14181F" opacity="0.15" filter="url(#soft)"/>
 
         <!-- RIGHT side face (darkest) -->
-        <polygon points="296,150 360.7,106.4 360.7,224.4 296,268" fill="url(#alSide)"/>
-        <!-- vents on the side (back portion, clear of the ports) -->
+        <polygon points="296,152 364.5,121.5 364.5,237.5 296,268" fill="url(#alSide)"/>
         <g stroke="#7f8790" stroke-width="1.6" stroke-linecap="round" opacity="0.5">
-          <line x1="322" y1="154.5" x2="322" y2="226.5"/><line x1="328.4" y1="150.2" x2="328.4" y2="222.2"/>
-          <line x1="334.8" y1="145.8" x2="334.8" y2="217.8"/><line x1="341.3" y1="141.5" x2="341.3" y2="213.5"/>
-          <line x1="347.8" y1="137.1" x2="347.8" y2="209.1"/><line x1="354.2" y1="132.8" x2="354.2" y2="204.8"/>
+          <line x1="319.3" y1="160.2" x2="319.3" y2="239.0"/><line x1="325.8" y1="157.3" x2="325.8" y2="236.1"/>
+          <line x1="332.3" y1="154.4" x2="332.3" y2="233.2"/><line x1="338.8" y1="151.5" x2="338.8" y2="230.3"/>
+          <line x1="345.3" y1="148.6" x2="345.3" y2="227.4"/><line x1="351.8" y1="145.7" x2="351.8" y2="224.5"/>
         </g>
-        <!-- side ports on the front strip of the side face (clear of vents) -->
-        <rect x="300" y="196" width="13" height="6.5" rx="3.2" fill="#20262c"/>
-        <ellipse cx="307" cy="216" rx="5.6" ry="5" fill="#20262c"/><ellipse cx="307" cy="216" rx="2.1" ry="1.9" fill="#8a929b"/>
 
         <!-- TOP face (lightest, brushed) -->
-        <polygon points="96,150 296,150 360.7,106.4 160.7,106.4" fill="url(#alTop)"/>
-        <!-- brushed streaks on top -->
-        <g stroke="#ffffff" stroke-width="1" opacity="0.45">
-          <line x1="120" y1="144" x2="320" y2="144"/><line x1="128" y1="138" x2="328" y2="138"/>
-          <line x1="136" y1="132" x2="336" y2="132"/><line x1="144" y1="126" x2="344" y2="126"/>
+        <polygon points="96,152 296,152 364.5,121.5 164.5,121.5" fill="url(#alTop)"/>
+        <g stroke="#ffffff" stroke-width="1" opacity="0.42">
+          <line x1="120" y1="146" x2="320" y2="146"/><line x1="130" y1="141.5" x2="330" y2="141.5"/>
+          <line x1="140" y1="137" x2="340" y2="137"/><line x1="150" y1="132.5" x2="350" y2="132.5"/>
         </g>
         <!-- copper accent seam along the front-top edge -->
-        <rect x="96" y="147.5" width="200" height="4" fill="url(#seam)"/>
+        <rect x="96" y="149" width="200" height="4" fill="url(#seam)"/>
 
         <!-- FRONT face (flat, mid) -->
-        <polygon points="96,150 296,150 296,268 96,268" fill="url(#alFront)"/>
-        <!-- top highlight edge on front -->
-        <line x1="96" y1="151.5" x2="296" y2="151.5" stroke="#ffffff" stroke-width="1" opacity="0.6"/>
-        <!-- wordmark -->
-        <text x="120" y="205" font-size="30" font-weight="700" letter-spacing="1" fill="#20262c">AI<tspan fill="#A85B1C">PU</tspan></text>
-        <line x1="121" y1="216" x2="180" y2="216" stroke="#A85B1C" stroke-width="1.5" opacity="0.7"/>
-        <!-- status LED + label -->
-        <circle cx="128" cy="242" r="8" fill="url(#ledglow)"/>
-        <circle cx="128" cy="242" r="3" fill="#5fd38a"/><circle cx="127" cy="241" r="1" fill="#d6ffe8"/>
-        <text x="141" y="245.5" font-size="8.5" letter-spacing="1" fill="#6b7480">READY · OFFLINE</text>
-        <!-- subtle right-edge shade on front for form -->
-        <rect x="286" y="150" width="10" height="118" fill="#000000" opacity="0.05"/>
+        <polygon points="96,152 296,152 296,268 96,268" fill="url(#alFront)"/>
+        <line x1="96" y1="153.5" x2="296" y2="153.5" stroke="#ffffff" stroke-width="1" opacity="0.6"/>
+        <text x="120" y="209" font-size="30" font-weight="700" letter-spacing="1" fill="#20262c">AI<tspan fill="#A85B1C">PU</tspan></text>
+        <line x1="121" y1="220" x2="180" y2="220" stroke="#A85B1C" stroke-width="1.5" opacity="0.7"/>
+        <circle cx="128" cy="246" r="8" fill="url(#ledglow)"/>
+        <circle cx="128" cy="246" r="3" fill="#5fd38a"/><circle cx="127" cy="245" r="1" fill="#d6ffe8"/>
+        <text x="141" y="249.5" font-size="8.5" letter-spacing="1" fill="#6b7480">READY · OFFLINE</text>
+        <rect x="286" y="152" width="10" height="116" fill="#000000" opacity="0.05"/>
 
-        <!-- edge accents (metallic highlight) -->
-        <g stroke="#ffffff" stroke-width="1.1" opacity="0.55" fill="none">
-          <polyline points="96,150 160.7,106.4 360.7,106.4"/>
-        </g>
+        <!-- ports live on the BACK panel (not shown); annotate at the upper back -->
+        <g stroke="#aab2bb" stroke-width="1" fill="none"><path d="M300 108 L332 108 L349 124"/></g>
+        <circle cx="349" cy="124" r="1.8" fill="#aab2bb"/>
+        <text x="298" y="104" font-size="9" fill="#8992A1" text-anchor="end">뒤면 — USB-C · DC 전원</text>
+
+        <!-- metallic edge highlights / shades -->
+        <g stroke="#ffffff" stroke-width="1.1" opacity="0.55" fill="none"><polyline points="96,152 164.5,121.5 364.5,121.5"/></g>
         <g stroke="#939ba4" stroke-width="1" opacity="0.7" fill="none">
-          <polyline points="96,268 296,268 360.7,224.4"/><line x1="296" y1="150" x2="296" y2="268"/>
+          <polyline points="96,268 296,268 364.5,237.5"/><line x1="296" y1="152" x2="296" y2="268"/>
         </g>
 
         <!-- dimension + disclaimer -->
-        <line x1="96" y1="288" x2="296" y2="288" stroke="#aab2bb" stroke-width="1"/>
-        <line x1="96" y1="284" x2="96" y2="292" stroke="#aab2bb" stroke-width="1"/><line x1="296" y1="284" x2="296" y2="292" stroke="#aab2bb" stroke-width="1"/>
-        <text x="196" y="303" font-size="10" fill="#6b7480" text-anchor="middle">~150 mm (양산 기준)</text>
-        <text x="360" y="300" font-size="9" fill="#9aa2ab" text-anchor="end">개념 렌더 · 추정</text>
+        <line x1="96" y1="290" x2="296" y2="290" stroke="#aab2bb" stroke-width="1"/>
+        <line x1="96" y1="286" x2="96" y2="294" stroke="#aab2bb" stroke-width="1"/><line x1="296" y1="286" x2="296" y2="294" stroke="#aab2bb" stroke-width="1"/>
+        <text x="196" y="305" font-size="10" fill="#6b7480" text-anchor="middle">~150 mm (양산 기준)</text>
+        <text x="366" y="302" font-size="9" fill="#9aa2ab" text-anchor="end">개념 렌더 · 추정</text>
       </svg>
     </div>
     <div class="pvspec">
