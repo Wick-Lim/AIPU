@@ -39,7 +39,8 @@
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
   a{color:var(--copper);text-decoration:none}
   a:hover{text-decoration:underline}
-  h1,h2,h3{text-wrap:balance;margin:0}
+  h1,h2,h3{text-wrap:balance;word-break:keep-all;margin:0}
+  .lead,.lede,p.body,.stage p{word-break:keep-all}
   p{margin:0}
   .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
   .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink3)}
@@ -49,7 +50,10 @@
   .topbar .wrap{display:flex;align-items:center;justify-content:space-between;height:56px;gap:16px}
   .brand{font-family:var(--mono);font-weight:600;letter-spacing:.02em;font-size:.95rem}
   .brand b{color:var(--copper)}
-  .nav a{font-family:var(--mono);font-size:.74rem;letter-spacing:.06em;color:var(--ink3);text-transform:uppercase;margin-left:16px}
+  .nav{display:flex;gap:18px;align-items:center}
+  .nav a{font-family:var(--mono);font-size:.76rem;letter-spacing:.03em;color:var(--ink2)}
+  .nav a:hover{color:var(--ink);text-decoration:none}
+  .nav a.here{color:var(--copper);font-weight:600}
 
   .hero{padding:70px 0 44px}
   .hero .kick{margin-bottom:20px}
@@ -127,6 +131,13 @@
   .askcard .m{font-family:var(--mono);font-size:1.2rem;font-weight:600;margin:6px 0 4px}
   .askcard p{font-size:.92rem;color:var(--ink2)}
   @media(max-width:640px){.asklist{grid-template-columns:1fr}}
+  @media(max-width:560px){
+    .wrap{padding:0 18px}
+    .nav{gap:13px}.nav a{font-size:.72rem}
+    .hero{padding:52px 0 36px}
+    .hero h1{font-size:1.9rem}
+    .stage{grid-template-columns:1fr;gap:6px}
+  }
 
   /* product vision */
   .pvgrid{display:grid;grid-template-columns:1.05fr 1fr;gap:22px;margin-top:8px;align-items:stretch}
@@ -154,7 +165,7 @@
 
 <div class="topbar"><div class="wrap">
   <div class="brand">AI<b>PU</b></div>
-  <div class="nav"><a href="./">개요</a><a href="board.html">보드 설계</a><a href="#roadmap">로드맵</a></div>
+  <nav class="nav"><a href="./">개요</a><a href="board.html">보드 설계</a><a class="here" href="invest.html">로드맵</a></nav>
 </div></div>
 
 <header class="hero"><div class="wrap">

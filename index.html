@@ -42,7 +42,8 @@
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
   a{color:var(--copper);text-decoration:none}
   a:hover{text-decoration:underline}
-  h1,h2,h3{text-wrap:balance;margin:0}
+  h1,h2,h3{text-wrap:balance;word-break:keep-all;margin:0}
+  .lead,.lede,.sub{word-break:keep-all}
   p{margin:0}
   .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
 
@@ -55,6 +56,10 @@
   .topbar .wrap{display:flex;align-items:center;justify-content:space-between;height:56px;gap:16px}
   .brand{font-family:var(--mono);font-weight:600;letter-spacing:.02em;font-size:.95rem}
   .brand b{color:var(--copper)}
+  .nav{display:flex;gap:18px;align-items:center}
+  .nav a{font-family:var(--mono);font-size:.76rem;letter-spacing:.03em;color:var(--ink2)}
+  .nav a:hover{color:var(--ink);text-decoration:none}
+  .nav a.here{color:var(--copper);font-weight:600}
   .topmeta{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;color:var(--ink3);text-transform:uppercase}
 
   /* hero */
@@ -184,6 +189,15 @@
     .spec{grid-template-columns:1fr 1fr}
     .flag .body{grid-template-columns:1fr}
   }
+  @media(max-width:560px){
+    .wrap{padding:0 18px}
+    .bt{display:none}
+    .nav{gap:14px}
+    .nav a{font-size:.72rem}
+    .facts{grid-template-columns:1fr 1fr}
+    .spec{grid-template-columns:1fr}
+    .hero{padding:52px 0 40px}
+  }
   @media(prefers-reduced-motion:no-preference){
     .reveal{opacity:0;transform:translateY(10px);animation:rise .6s cubic-bezier(.2,.7,.2,1) forwards}
     .facts .fact:nth-child(1){animation-delay:.05s}
@@ -202,8 +216,8 @@
 <a class="skiplink" href="#main">본문으로 건너뛰기</a>
 <div class="topbar">
   <div class="wrap">
-    <div class="brand">AIPU<b>·</b>로컬 프런티어 AI 박스</div>
-    <div class="topmeta">오프라인 · 에어갭 · GLM-5.2 · Q4_K GGUF</div>
+    <div class="brand">AIPU<b>·</b><span class="bt">로컬 프런티어 AI 박스</span></div>
+    <nav class="nav"><a class="here" href="./">개요</a><a href="board.html">보드 설계</a><a href="invest.html">로드맵</a></nav>
   </div>
 </div>
 
@@ -214,7 +228,7 @@
     <p class="lead reveal" style="animation-delay:.12s"><b>753B 파라미터</b> GLM-5.2 전체 모델을 <b>완전 오프라인으로 — 에어갭, 인터넷 없이</b> 구동하는 단일 사용자 박스입니다. 클라우드가 막아 온 작업과 장소에 마침내 프런티어 모델을 올려놓고, 그 박스를 <b>온전히 소유</b>합니다. 밖으로 나가는 것은 없습니다. <b>나갈 길 자체가 없기 때문입니다.</b></p>
     <div class="facts">
       <div class="fact reveal"><div class="n">753<span class="u">B</span></div><div class="k">파라미터 · 로컬 구동</div></div>
-      <div class="fact reveal"><div class="n">5–110<span class="u">tok/s</span></div><div class="k">단일 사용자 · 단계별 [추정]</div></div>
+      <div class="fact reveal"><div class="n">110<span class="u">tok/s</span></div><div class="k">단일 사용자 · 목표 [추정]</div></div>
       <div class="fact reveal"><div class="n">467<span class="u">GB</span></div><div class="k">Q4_K GGUF · 박스에 상주</div></div>
       <div class="fact reveal"><div class="n">0<span class="u">net</span></div><div class="k">인터넷 불필요 · 에어갭</div></div>
     </div>
@@ -397,7 +411,7 @@
 <footer>
   <div class="wrap" style="display:block">
     <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:16px;align-items:baseline">
-      <div class="brand">AIPU<b>·</b>로컬 프런티어 AI 박스</div>
+      <div class="brand">AIPU<b>·</b><span class="bt">로컬 프런티어 AI 박스</span></div>
       <div class="mono">오프라인 프런티어 AI 박스 · GLM-5.2 Q4_K · [추정] 표시 수치는 라우팅된 실리콘이 아니라 루프라인 예측치</div>
     </div>
     <p class="note">모든 주장은 프로젝트의 공개 검증 기록으로 거슬러 올라갑니다. <b>증명</b> 표시 항목은 <b>github.com/Wick-Lim/AIPU</b>에서 재현할 수 있고(<span class="mono">make q4k</span>, <span class="mono">make formal</span>), <b>열림</b> 표시 항목은 명시되고 기록된 남은 과제입니다. 처리량·BOM·좌석당 가격은 FPGA 데모가 나오기 전까지 추정치입니다. 남은 과제까지 정직하게 기록하는 원칙으로 만들었습니다. 여기 감춘 것은 없습니다.</p>
