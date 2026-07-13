@@ -47,7 +47,7 @@ subscription-free come as the *result*.
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
 | **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp; the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype` — see §2) |
 | **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST] — updated 2026-07: these **streaming** points now apply to rung ① / the hybrid upside SKU / >512 GB checkpoints; the rung-③ primary is **full residency, design point ≈80 tok/s [measured-inputs EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); spec multiplier = A/U(K), U now GLM-4.5-Air measured — U(4)=2.60–2.71, superseding the OLMoE proxy)* |
-| **Power** | ~80–110 W at interactive throughput (self-powered; ~30 W throttled) [EST] |
+| **Power** | **~40–60 W** (v3-volume residency SKU, self-powered) · ~50–80 W v3-proto · down to ~30 W eco/throttle (15 W bus-powered travel mode) [EST] — config-labeled canonical envelope in §7 / [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4. *(The old ~80–110 W figure was the pre-pivot streaming SKU; see §7.)* |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
 | **Host** | thin driver + a local OpenAI-compatible endpoint → existing chat UIs / editors point at it |
 | **Target user** | air-gap / offline-mandated users (SCIF, defense-forward, isolated OT/critical-infra, field/edge), privacy-critical individuals, local-AI enthusiasts, cost-heavy power users |
@@ -115,10 +115,18 @@ with **one one-time setup**:
 
 - **One-time provisioning (factory/first setup):** the ~467 GB Q4_K model is written to the internal
   **NVMe SSD** (`flash_layout.py` — committed tool name; the offline expert→channel placement pass). Done once; survives power cycles.
-- **Every power-on (a few s [EST]):** power → clocks/PLL lock → resets → DDR5 PHY training + NVMe
-  init → **`boot_loader` streams the ~17 GB resident hot partition (attention/dense/shared/embed/LM-head — canonical: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) NVMe→DDR5** → its `done` **releases
+- **Every power-on — boot time is per-SKU [EST]:** power → clocks/PLL lock → resets → DDR5 PHY
+  training + NVMe init → **`boot_loader` copies the resident set NVMe→DRAM** → its `done` **releases
   inference** → USB device enumerates on the host. **Inference is gated by `boot_loader.done`, not
-  by power-on.** (Full condition list + RTL detail: [`OPERATION_FLOW.md`](OPERATION_FLOW.md) §1.)
+  by power-on.** How much is copied — and therefore how long the boot is — depends on the SKU:
+  - **Streaming SKU:** only the **~17 GB hot partition** (attention/dense/shared/embed/LM-head —
+    canonical: [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2) is loaded; the 256 routed experts
+    stay on NVMe and demand-stream per token → **a few s** (~1–2 s multi-NVMe, a few s single drive).
+  - **Primary full-residency SKU (R3):** the **whole ~467 GB** checkpoint is loaded NVMe→LPDDR5X (512 GB
+    resident, volatile) → **~70 s cold boot on EVERY power-on**. This is the flagship box; plan the UX
+    around the ~70 s figure, not the streaming SKU's few seconds.
+
+  (Full condition list + RTL detail: [`OPERATION_FLOW.md`](OPERATION_FLOW.md) §1.)
 - **Per request:** the host sends token IDs + position over USB-C; the box streams the demand
   experts from the **NVMe SSD**, runs the model, returns next tokens. **Session KV lives in the box's DDR5** —
   the host only exchanges tokens.
@@ -129,11 +137,14 @@ never leaves the box.
 
 **Two power inputs, one data cable.** Because the box is self-powered (§7), the physical picture is:
 a **DC/PD power input** + a **USB-C data cable** to the host. It is not a bus-powered stick; think
-"powered external box that appears to the host as a local AI endpoint after a ~1–2 s boot."
+"powered external box that appears to the host as a local AI endpoint after a boot" — a **~1–2 s boot
+on the streaming SKU**, but **~70 s on every power-on for the primary full-residency SKU (R3)** that
+reloads the whole ~467 GB into volatile LPDDR5X (see §1a per-SKU note above)."
 
 **Device-readiness signaling (to build):** the host driver should surface the boot state (booting →
-loading resident set → ready) so the app can show "warming up" instead of failing calls before
-`done`. (Phase D2.)
+loading resident set → ready) so the app can show "warming up" with an accurate ETA instead of failing
+calls before `done`. On the residency SKU the ETA is a genuine **~70 s** (percent-loaded of ~467 GB),
+so this is real warming-up UX, not a spinner flash. (Phase D2.)
 
 ---
 
@@ -208,8 +219,8 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 |---|---|---|
 | Model | GLM-5.2 `UD-Q4_K_XL` (Q4_K GGUF, ~467 GB) | the differentiator is **full 753B frontier locally**, not a smaller local model; Q4_K GEMM core bit-exact to `tools/q4k_ref.py` (our ggml reimpl), **not** the real GGUF / llama.cpp |
 | Throughput | **rung-②** funded board ≥ 25 tok/s (goal 30–40) single-user; **rung-①** prove-it FPGA ~5–8 [EST] | comfortable interactive on the product rung; staged per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) |
-| Power (peak) | ≤ 110 W self-powered; stretch ≤ 100 W USB-PD | see §7 power decision |
-| Idle power | ≤ 10 W | clock-gating + DVFS |
+| Power (peak) | **~40–60 W v3-volume** (~50–80 W v3-proto), self-powered; adapter ~100–140 W USB-PD/DC | config-labeled envelope in §7 / R3 §4 (the ≤110 W target was the pre-pivot streaming SKU) |
+| Idle power | ≤ 10 W target [EST] | clock-gating + DVFS *(inherited from the smaller streaming box; the 512 GB residency box's idle is not yet separately analyzed — see §7)* |
 | Size | ≤ ~1 L enclosure | external-SSD → small-mini-PC |
 | Noise | quiet (≤ ~35 dBA) | desktop appliance |
 | Interface | USB-C (USB 3.2 Gen 2 min) | + separate DC power in |
@@ -224,9 +235,10 @@ loading resident set → ready) so the app can show "warming up" instead of fail
 The RTL track (PRODUCT_ROADMAP P1–P4) makes the accelerator correct & synthesizable. The **device**
 adds these workstreams, which that roadmap only touches lightly:
 
-1. **Power architecture** — ~80–110 W can't be bus-powered; needs a self-powered design or USB-PD
-   EPR. (§7)
-2. **Thermal / acoustics** — dissipate ~100 W quietly in ~1 L. (§7)
+1. **Power architecture** — even the v3-volume ~40–60 W (up to ~50–80 W v3-proto) is above the 15 W
+   USB-C default, so it can't be bus-powered; needs a self-powered design (own DC/PD input, ~100–140 W
+   adapter). (§7) *(The ~80–110 W in older drafts was the pre-pivot streaming SKU.)*
+2. **Thermal / acoustics** — dissipate the ~40–60 W v3 draw quietly in ~1 L. (§7)
 3. **Host software & UX** — driver + local OpenAI-compatible server + onboarding; the difference
    between "a board" and "a product people use." (Phase D2)
 4. **Industrial design & enclosure** — the physical box, connectors, LEDs, mounting.
@@ -250,8 +262,8 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
   closed bit-exact on the 1155-test golden; the old Gowin/nextpnr scaffold is removed. FPGA class =
   KU3P-class.)* ~~take the design through a vendor flow to get real utilization → pick the FPGA
   class~~ — was the project's #1 unknown; now measured.
-- **D0.3 Power point** — decide the operating point (§7): ~100 W self-powered "fast" vs ~40 W
-  throttled "quiet/small". Drives thermal + PSU + enclosure.
+- **D0.3 Power point** — decide the operating point (§7): the v3-volume ~40–60 W self-powered "fast"
+  point vs the eco/throttle "quiet/small" point (down to ~30 W). Drives thermal + PSU + enclosure.
 - **D0.4 Bring-up feasibility** — confirm the target FPGA dev-kit has the DDR5 + NVMe (M.2/PCIe) +
   USB-C IO the design needs. *(Update: the measured fit landed on **XCKU3P** via Vivado, so the
   bring-up board is now **KU3P-class**; the Gowin/nextpnr path — and with it the Tang Mega 138K Pro
@@ -306,8 +318,8 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 
 | Decision | Options | Recommendation |
 |---|---|---|
-| **Power point** | ~100 W fast (self-powered) · ~40 W quiet (throttled, slower) | ship **self-powered ~90 W** (interactive tok/s); offer a quiet/eco mode — **the RTL knob exists** (`clk_throttle` runs the die f/div, byte-identical, [`LOW_POWER.md`](LOW_POWER.md) §4) |
-| **Power delivery** | own PSU/barrel · USB-PD EPR 240 W · bundled PD brick | **own DC input** (EPR host+cable support is still rare); USB-C = data |
+| **Power point** | ~40–60 W v3-volume "fast" (self-powered) · down to ~30 W eco/throttle (slower) | ship **self-powered at the v3-volume ~40–60 W** point (interactive tok/s); offer a quiet/eco mode — **the RTL knob exists** (`clk_throttle` runs the die f/div, byte-identical, [`LOW_POWER.md`](LOW_POWER.md) §4). *(Envelope is R3 §4 / §7; the old ~90–100 W was the pre-pivot streaming SKU.)* |
+| **Power delivery** | own PSU/barrel · USB-PD (~100–140 W per R3 §4) · bundled PD brick | **own DC input** (a ~100–140 W adapter covers v3-volume/proto with headroom; EPR host+cable support is still rare); USB-C = data |
 | **FPGA class** | mid FPGA (~$0.5–2 k) · data-center card (~$3–8 k) | **decided — D0.2 measured**: fits **XCKU3P** (KU3P-class, low-end UltraScale+) at 87.5 % LUT |
 | **Model updates** | NVMe model-store rewrite tool · sealed | **field-updatable** (GLM ships point releases) |
 | **Openness** | closed appliance · open driver/API | **open local API** (drives adoption via existing clients) |
@@ -317,20 +329,37 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 
 ## 7. Power & thermal (the hard constraint)
 
-Estimated **~80–110 W** at interactive throughput ([`LOW_POWER.md`](LOW_POWER.md)) — **above USB
-bus power**, so:
+**Canonical power envelope (config-labeled — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4, the
+honest v1→v3 revision history):**
 
-| USB-PD tier | budget | verdict |
+| config | draw [EST] | what it is |
 |---|---|---|
-| USB-C default | 15 W | ✗ |
-| PD SPR | 60 / 100 W | △ only if throttled to ≤100 W, zero headroom |
-| PD 3.1 EPR | 140–240 W | ✓ headroom, but needs a compatible host **and** cable (rare) |
+| **v3-volume** (primary residency SKU) | **~40–60 W** | LPDDR5X rail ~25–40 W + SoC ~15–25 W; the shipping box — **plan your adapter around this** |
+| **v3-proto** (1.54 TB/s higher-BW variant) | **~50–80 W** | DRAM rail ~35–55 W + SoC ~15–25 W (§5a); same cooling class |
+| **eco / throttle** | **down to ~30 W**, or **15 W bus-powered "travel mode"** | `clk_throttle` runs the die f/div (byte-identical, BMC-proven, [`LOW_POWER.md`](LOW_POWER.md) §4) → single-digit tok/s |
 
-Also, a laptop port cannot both source ~100 W **and** have the device consume it. **Conclusion: a
-self-powered box (own DC/PD input) with USB-C as the data link** — the eGPU / NAS model. Thermal:
-~100 W dissipated quietly in ~1 L needs a heatsink + a tuned fan; a **~40 W throttled mode** enables
-smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated** (NVMe + DDR5
-~60–70 %); the compute die is ~20–30 % and mostly gated.
+> **Note on the older ~80–110 W figure.** Earlier drafts of this doc cited **~80–110 W** at
+> interactive. That is the **pre-residency-pivot (v2-era) streaming-SKU** number, when NAND streaming
+> dominated the thermal budget (~40–90 W on the NAND read — R3 §4 v2 = ~70–120 W). The residency pivot
+> **deletes the NAND-stream term**, so the primary SKU is **~40–60 W (v3-volume)**, not ~80–110 W. The
+> ~80–110 W band is retained here only as history; it is **not** the number a residency-box user plans
+> around.
+
+All configs are **above the 15 W USB-C default** (except the deliberate travel-mode throttle), so pick
+an adapter for the v3 draw:
+
+| USB-PD tier | budget | verdict for the v3 residency box |
+|---|---|---|
+| USB-C default | 15 W | ✗ full speed — but = the **15 W bus-powered "travel/eco" throttle** (single-digit tok/s) |
+| PD SPR | 60 / 100 W | **100 W ✓** for v3-volume (~40–60 W) with headroom, and covers v3-proto peak (~80 W); 60 W △ (throttled) |
+| PD 3.1 EPR | 140–240 W | ✓ full headroom (R3's DC 19 V / USB-PD 100–140 W recommendation), but needs a compatible host **and** cable (rare) |
+
+**Conclusion: a self-powered box (own DC/PD input, ~100–140 W adapter per R3 §4) with USB-C as the data
+link** — the eGPU / NAS model. A laptop port cannot both source the box's draw **and** have the host
+consume data, which is the other reason power is separated from the USB-C data cable. Thermal: the
+~40–60 W v3 draw dissipated quietly in ~1 L needs a heatsink + a tuned fan; the eco/throttle mode
+(down to ~30 W) enables smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated**
+(LPDDR5X the dominant rail on v3); the compute die is ~20–30 % and mostly gated.
 
 ---
 
@@ -406,7 +435,7 @@ RTL. D0 is cheap and decisive — **do it before committing to the rest.**
 
 1. **D0.1** — run the real-checkpoint full-model fidelity check on a GPU host (PRODUCT_ROADMAP P1.1).
 2. **D0.2** — **(DONE — Vivado routed fit + closed Fmax campaign on XCKU3P; see §5 D0.2.)**
-3. **D0.3** — pick the power point (~90 W self-powered recommended) and draft the thermal envelope.
+3. **D0.3** — pick the power point (v3-volume ~40–60 W self-powered recommended; §7) and draft the thermal envelope.
 4. Wire the **host-side local OpenAI-compatible server** ([`host/`](../host/README.md), already
    scaffolded against a mock backend) to a simulator-backed backend now (no hardware needed) so the
    software is ready when D1 tokens flow.

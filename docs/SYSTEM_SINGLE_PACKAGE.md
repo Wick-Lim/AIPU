@@ -368,8 +368,9 @@ weights from a host over USB/PCIe. Among the fast-tier options DDR5 is the **low
 choice (mainstream, not the high-speed/high-power GDDR6; its per-bit energy is above an
 in-package HBM stack but it uses far fewer, slower devices than GDDR6). On the compute side
 Q4_K's dequant→fp32 MAC (the weights arrive as 4-bit codes; the prior-track FP8 `glm_matmul_fp8`
-measured 18× 7-bit multipliers vs fp32's 24×24) keeps the die's dynamic power and DSP/area down. Net: a few tens of W — needs a
-heatsink/fan (a small box, not a thin USB stick), powerable over USB-C PD (~60–100 W).
+measured 18× 7-bit multipliers vs fp32's 24×24) keeps the die's dynamic power and DSP/area down. Net: a few tens of W (the v3-volume residency box is **~40–60 W**; canonical config-labeled
+envelope in [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4) — needs a
+heatsink/fan (a small box, not a thin USB stick), powered over its own DC/USB-C PD input (R3 recommends a ~100–140 W adapter for headroom; PD 100 W covers v3-volume).
 
 > **Honest energy caveat (research-backed).** Prefetch + caching hide NVMe *latency* but **cannot
 > remove its energy-per-bit penalty** — an NVMe SSD is still a NAND array behind a PCIe controller, so

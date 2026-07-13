@@ -93,14 +93,24 @@ LPDDR5X (~1.1 TB/s), h=1 by construction, no per-token NVMe streaming, design po
 The **256 routed experts stay on the NVMe SSD** (~467 GB ≫ the ~17 GB DDR-resident hot partition) and are demand-streamed per token
 (§4). Boot 6 is pure DMA — no arithmetic, byte-exact.
 
-**Timing (one boot, [EST]):** PLL lock (~ms) + DDR5 training (~10–100 ms) + hot-partition load (~17 GB /
-NVMe read BW — ~2.5–5 s on one Gen3/4 ×4 drive at ~3.5–7 GB/s, dropping toward ~1–2 s with several
-NVMe striped across more PCIe lanes) + USB enum (~ms) ≈ **~2 s (multi-NVMe array) to a few seconds
-(single drive) power-on → ready**. Short boot, not instant-on.
+**Timing (one boot, [EST]) — this §1 describes the streaming-SKU boot (only the ~17 GB hot partition
+is loaded; the 256 routed experts stay on NVMe and demand-stream per token):** PLL lock (~ms) + DDR5
+training (~10–100 ms) + hot-partition load (~17 GB / NVMe read BW — ~2.5–5 s on one Gen3/4 ×4 drive at
+~3.5–7 GB/s, dropping toward ~1–2 s with several NVMe striped across more PCIe lanes) + USB enum (~ms)
+≈ **~2 s (multi-NVMe array) to a few seconds (single drive) power-on → ready** on the streaming SKU.
+Short boot, not instant-on.
 
-**Three timescales:** ① *one-time provisioning* — write the ~467 GB Q4_K model to the NVMe SSD. ② *every
-power-on* — conditions 1–7 (~1–2 s). ③ *per token* — §2 (demand-stream experts from NVMe; KV
-lives in DDR5, per session).
+> **Primary full-residency SKU (R3) boots differently and much slower.** The rung-③ residency box
+> ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)) holds the **whole ~467 GB** checkpoint in 512 GB
+> LPDDR5X, so `boot_loader` copies the **full ~467 GB NVMe → LPDDR5X**, not a 17 GB slice. That is a
+> **~70 s cold boot on EVERY power-on** (measured-inputs [EST]: ~467 GB ÷ NVMe read BW). LPDDR5X is
+> volatile, so this reload happens on every cold start — the ~1–2 s number above is the streaming SKU
+> only and does **not** apply to the residency box.
+
+**Three timescales:** ① *one-time provisioning* — write the ~467 GB Q4_K model to the NVMe SSD.
+② *every power-on* — conditions 1–7 (streaming SKU ~1–2 s; **primary residency SKU ~70 s** for the full
+~467 GB NVMe→LPDDR5X load). ③ *per token* — §2 (streaming SKU demand-streams experts from NVMe; the
+residency SKU reads them from resident LPDDR5X; KV lives in DDR5/LPDDR5X, per session).
 
 **Host interface (what USB-C carries — all on `host_clk`):** in = `start` (pulse), `prompt_tok`
 (token ID), `start_pos`, `s_len`; out = `next_tok` (token ID), `tok_valid`, `busy`, `done`. Just

@@ -1,23 +1,33 @@
 """
 aipu_sim_backend.py -- an AIPUDevice backed by the RTL SIMULATOR (iverilog/vvp).
 
-Drives the committed `glm_model_fp8` slice (its `vvp` build) and returns the REAL
-argmax next-token ids the RTL forward pass produces, wired into the device protocol.
-This is the "server -> real RTL -> real token" co-simulation path.
+Drives the on-main product top `glm_model_q4k` (the committed VOCAB=256 slice, via its
+`make model-q4k` iverilog/`vvp` build) and returns the REAL argmax next-token ids the
+RTL forward pass produces, wired into the device protocol. This is the
+"server -> real RTL -> real token" co-simulation path.
 
-HONEST SCOPE (all real, all caveated):
-  * SLOW -- the slice `vvp` run is ~12 min (measured: 752 s). Fine for co-sim /
-    bring-up, NOT for interactive use. The result is cached per process.
-  * SLICE model -- VOCAB=256, small/untrained: the tokens are genuine RTL outputs
-    (e.g. {4, 31, 20}) but NOT language. This validates the datapath + protocol,
-    not fluency.
-  * FIXED vectors -- runs the testbench's built-in prompts, not an arbitrary user
-    prompt. Driving glm_model_fp8 from a live prompt needs the full weight/embedding/
-    KV pull-port ROM harness (a larger TB effort); the committed TB already carries
-    that harness for its own vectors, which we reuse here.
+HONEST SCOPE (all real, all caveated -- this is a co-sim / datapath witness, NOT a
+usable chatbot):
+  * SLOW -- each forward is the full assembled model in an event simulator; the
+    committed VOCAB=256 slice run is minutes-long (the SPEC_SLICE VOCAB=16 build is
+    seconds). Fine for bring-up, NOT for interactive use. The result is cached per
+    process.
+  * SLICE model -- MODEL_DIM=128/L=6/VOCAB=256, small/untrained: the tokens are
+    genuine bit-exact-vs-numpy-golden RTL outputs but NOT language. This validates
+    the datapath + protocol, not fluency.
+  * FIXED vectors -- runs the testbench's built-in stimulus (build/mq4k/stim.hex),
+    NOT the user's prompt. The streamed tokens are the TB's golden argmax cases, so
+    they are INDEPENDENT of whatever text a client sends. Driving glm_model_q4k from a
+    live prompt needs the full weight/embedding/KV pull-port ROM harness (a larger TB
+    effort); the committed TB already carries that harness for its own vectors, which
+    we reuse here.
 
-Build the binary first (~8 min, once):
-    make unittests            # or: iverilog ... -o build/glm_model_fp8_sim (see Makefile)
+Build the binary + golden vectors first (once):
+    make model-q4k            # -> build/glm_model_q4k_full_sim + build/mq4k/*.hex
+
+History: the prior fp8-era backend targeted `build/glm_model_fp8_sim`; `glm_model_fp8`
+was removed from main (it lives on branch `fp8`), so this backend was retargeted to the
+on-main `glm_model_q4k` product top.
 """
 
 from __future__ import annotations
@@ -28,7 +38,10 @@ import subprocess
 
 from aipu_device import AIPUDevice, DeviceState
 
-_ARGMAX_RE = re.compile(r"argmax dut=(\d+)")
+# glm_model_q4k_full_tb prints one line per golden case:
+#   "case 0: token=3 pos=1 s_len=2 -> argmax=13 (golden 13)    MATCH"
+# -- the `argmax=<id>` is the DUT's real next-token for that fixed vector.
+_ARGMAX_RE = re.compile(r"->\s*argmax=(\d+)")
 _REPO = os.path.dirname(os.path.abspath(os.path.join(__file__, "..")))
 
 
@@ -36,7 +49,7 @@ class SimulatorBackend(AIPUDevice):
     vocab_size = 256
     eos_token = 256                                  # out-of-band sentinel
 
-    def __init__(self, vvp_binary: str = "build/glm_model_fp8_sim",
+    def __init__(self, vvp_binary: str = "build/glm_model_q4k_full_sim",
                  vvp: str = "vvp", timeout: float = 1800.0,
                  cwd: str | None = None) -> None:
         super().__init__()
@@ -58,18 +71,20 @@ class SimulatorBackend(AIPUDevice):
         return p if os.path.isabs(p) else os.path.join(self.cwd, p)
 
     def _run_rtl(self) -> list[int]:
-        """Run the vvp slice sim ONCE and parse the RTL argmax tokens (~12 min)."""
+        """Run the vvp slice sim ONCE and parse the RTL argmax tokens (minutes)."""
         binp = self._binary_path()
         if not os.path.exists(binp):
             raise FileNotFoundError(
-                f"vvp binary {binp} not built. Build it first (~8 min): "
-                f"`make unittests` (or the glm_model_fp8_sim iverilog line in the Makefile).")
+                f"vvp binary {binp} not built. Build it + its golden vectors first: "
+                f"`make model-q4k` (builds build/glm_model_q4k_full_sim and "
+                f"build/mq4k/*.hex).")
         proc = subprocess.run([self.vvp, binp], cwd=self.cwd,
                               capture_output=True, text=True, timeout=self.timeout)
         toks = [int(m) for m in _ARGMAX_RE.findall(proc.stdout)]
         if not toks:
             raise RuntimeError(
-                f"no 'argmax dut=<id>' lines in vvp output (rc={proc.returncode}); "
+                f"no '-> argmax=<id>' lines in vvp output (rc={proc.returncode}); the "
+                f"golden vectors (build/mq4k/*.hex) may be missing -- run `make model-q4k`. "
                 f"tail: {proc.stdout[-400:]!r}")
         return toks
 
@@ -95,9 +110,10 @@ class SimulatorBackend(AIPUDevice):
 
 
 if __name__ == "__main__":
-    # Manual smoke (SLOW ~12 min): python3 host/aipu_sim_backend.py
+    # Manual smoke (SLOW, minutes): needs `make model-q4k` first.
+    #   python3 host/aipu_sim_backend.py
     dev = SimulatorBackend()
     dev.power_on()
-    print("running the RTL slice sim (~12 min)...")
+    print("running the RTL glm_model_q4k slice sim (minutes; fixed TB vectors)...")
     toks = list(dev.generate(prompt_ids=[1, 2, 3], max_new_tokens=16))
     print(f"RTL argmax tokens: {toks}")

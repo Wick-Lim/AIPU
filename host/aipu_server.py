@@ -13,10 +13,10 @@ the model). A byte-level tokenizer makes text round-trip exactly through token i
 Run:   python3 host/aipu_server.py            # 0 external deps (stdlib only)
 Test:  curl -s localhost:8000/v1/models
        curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \
-            -d '{"model":"aipu-glm-5.2-fp8","messages":[{"role":"user","content":"hi"}]}'
+            -d '{"model":"aipu-glm-5.2-q4k","messages":[{"role":"user","content":"hi"}]}'
        # streaming:
        curl -sN localhost:8000/v1/chat/completions -H 'content-type: application/json' \
-            -d '{"model":"aipu-glm-5.2-fp8","messages":[{"role":"user","content":"hi"}],"stream":true}'
+            -d '{"model":"aipu-glm-5.2-q4k","messages":[{"role":"user","content":"hi"}],"stream":true}'
 """
 
 from __future__ import annotations
@@ -280,8 +280,9 @@ def main(argv=None):
     p.add_argument("--tokenizer", default=None,
                    help="path to GLM tokenizer.json (else byte-level fallback)")
     p.add_argument("--backend", choices=["mock", "sim"], default="mock",
-                   help="mock (canned) or sim (real RTL glm_model_fp8 via vvp -- SLOW "
-                        "~12 min/run, slice tokens; needs build/glm_model_fp8_sim)")
+                   help="mock (canned, default) or sim (real RTL glm_model_q4k slice via "
+                        "vvp -- SLOW minutes/run, untrained slice tokens from FIXED TB "
+                        "vectors, not your prompt; needs `make model-q4k` first)")
     p.add_argument("--raw", action="store_true",
                    help="skip the GLM chat template; use the naive 'role: content' "
                         "flatten (the byte-scaffold / debug path)")
@@ -289,9 +290,14 @@ def main(argv=None):
 
     if args.backend == "sim":
         from aipu_sim_backend import SimulatorBackend
-        device = SimulatorBackend()                  # byte vocab (slice VOCAB=256)
+        device = SimulatorBackend()                  # slice VOCAB=256 glm_model_q4k
         tok = make_tokenizer(args.tokenizer)          # decode is best-effort (slice tokens)
-        backend_name = "SimulatorBackend(glm_model_fp8/vvp)"
+        backend_name = "SimulatorBackend(glm_model_q4k/vvp)"
+        print("NOTE: --backend sim runs the on-main glm_model_q4k RTL slice via vvp. It is "
+              "SLOW (minutes/run) and emits REAL but UNTRAINED slice argmax tokens from the "
+              "testbench's FIXED golden vectors -- they are NOT a response to your prompt and "
+              "NOT language. This is a datapath co-sim witness, not a chatbot. Needs "
+              "`make model-q4k` first. Use the default (mock) for the API/plumbing loop.")
     else:
         tok = make_tokenizer(args.tokenizer)
         device = MockDevice(boot_seconds=args.boot_seconds,

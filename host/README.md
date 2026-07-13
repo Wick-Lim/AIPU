@@ -13,6 +13,34 @@ RTL host protocol. This is the **software track's first deliverable**
 testable **with zero hardware** so it is ready when D1 (first real tokens over USB-C)
 lands.
 
+## What this host stack IS and IS NOT (honest ledger)
+
+**IT IS, today, on `main`:**
+- An **OpenAI-compatible HTTP API shim** (`/v1/models`, `/v1/chat/completions`
+  streaming + non-streaming, `/health`) — stdlib only, 0 deps.
+- A **real tokenizer** (byte-level, plus the real GLM-5.2 BPE when `tokenizer.json` is
+  present) and a **GLM-5.2 chat template** (text path).
+- A **device-protocol driver** (`aipu_device.py`) that mirrors the `glm_q4k_system_cdc`
+  host handshake exactly, with host-side `max_tokens` / `stop` / `finish_reason`.
+- Two backends: a **mock** (canned, self-labelled reply — proves the plumbing, default)
+  and an **on-main RTL co-sim** (`--backend sim`: real but slow, untrained-slice,
+  fixed-vector `glm_model_q4k` argmax tokens — a datapath witness, **not** a chatbot).
+
+**IT IS NOT (none of this is built here — it is the future software track, see
+[`docs/USBC_PRODUCT_PLAN.md`](../docs/USBC_PRODUCT_PLAN.md)):**
+- **No RAG** — no document ingestion, embedder, or vector store.
+- **No GUI / web app** — no chat UI, no visualization (knowledge-graph / timeline), no
+  tuning dashboard, and no telemetry endpoints to feed one.
+- **No USB-C transport** — no libusb/pyusb/CDC-NCM driver; all traffic is loopback over
+  `127.0.0.1` to an in-process backend (`USBBackend` is a D1 to-build).
+- **No multi-context / sessions** — the server is single-user; concurrent requests
+  share one device object with no session routing or locking.
+- **No persistence** — fully stateless; no conversation history / KV reuse across
+  requests, nothing written to disk.
+- **No real model tokens for your prompt** — the mock echoes a canned string; the sim
+  emits fixed-vector slice tokens. Real language needs the full-model / hardware
+  backend (D1+).
+
 ## What's real vs. scaffold (honest)
 
 | Piece | Status |
@@ -140,21 +168,31 @@ loop, streaming, tokenizer, and OpenAI surface are unchanged.
 
 - **`MockDevice`** (`--backend mock`, default) — replays a canned reply through the
   protocol; zero deps, instant. Proves the plumbing for byte OR GLM vocab.
-- **`SimulatorBackend`** (`--backend sim`, `aipu_sim_backend.py`) — **implemented**:
-  runs the prior-track `glm_model_fp8` slice via its iverilog/`vvp` build and returns the
-  **REAL argmax tokens the RTL forward pass produces** (measured: `{4, 31, 20}`), wired
-  into the device protocol — the *server → real RTL → real token* co-sim path. Honest
-  caveats: **SLOW** (~12 min/run — measured 752 s, cached per process, not interactive);
-  **slice** model (VOCAB=256, untrained → real datapath outputs, not language);
-  **fixed** testbench vectors (arbitrary-prompt drive needs the model's full weight/KV
-  pull-port ROM harness — a larger TB effort); and the `glm_model_fp8` slice has since been
-  **removed from `main`** (preserved on branch `fp8`) — the backend still points at
-  `build/glm_model_fp8_sim` (buildable on branch `fp8`) and is being **retargeted to
-  `glm_model_q4k`**.
-- **`USBBackend`** (to build at D1) — the real USB-C driver: enumerate the device, send
-  the token/control words over the bulk endpoint, read back `next_tok` (the CDC host
+- **`SimulatorBackend`** (`--backend sim`, `aipu_sim_backend.py`) — **on-main co-sim**:
+  runs the on-main product top **`glm_model_q4k`** via its `make model-q4k`
+  iverilog/`vvp` build and returns the **REAL argmax next-tokens the RTL forward pass
+  produces** (bit-exact vs the numpy golden), wired into the device protocol — the
+  *server → real RTL → real token* path. Honest caveats, in bold because they matter:
+  **SLOW** (each forward is the full assembled model in an event sim → minutes/run for
+  the committed VOCAB=256 slice; cached per process; **not interactive**); **untrained
+  SLICE** model (MODEL_DIM=128/L=6/VOCAB=256 → genuine datapath outputs, **not
+  language**); **FIXED testbench vectors** — the streamed tokens are the TB's built-in
+  golden cases (`build/mq4k/stim.hex`), so **they are NOT a response to your prompt**
+  (arbitrary-prompt drive needs the model's full weight/embedding/KV pull-port ROM
+  harness — a larger TB effort). This is a **datapath witness, not a chatbot**. Build it
+  first with `make model-q4k` (produces `build/glm_model_q4k_full_sim` +
+  `build/mq4k/*.hex`). Verified: the fast `SPEC_SLICE` (VOCAB=16, `make
+  model-q4k-smoke`) emits `{13, 3, 13}`; the committed VOCAB=256 slice emits its own
+  genuine argmax vectors. *(History: the prior fp8-era backend targeted the
+  `glm_model_fp8` slice, which was removed from `main` and lives on branch `fp8`; this
+  backend was retargeted to the on-main `glm_model_q4k`.)*
+- **`USBBackend`** (to build at D1) — the real USB-C driver: **does not exist yet.** No
+  libusb/pyusb/CDC-NCM transport is implemented; everything today is loopback over
+  `127.0.0.1` to an in-process backend. The plan: enumerate the device, send the
+  token/control words over the bulk endpoint, read back `next_tok` (the CDC host
   interface is already in the RTL). Pairs with the GLM tokenizer + a chat template.
 
 ```sh
-python3 host/aipu_server.py --backend sim        # real RTL slice (SLOW, slice tokens)
+make model-q4k                                   # build the RTL slice sim first (once)
+python3 host/aipu_server.py --backend sim        # real RTL slice (SLOW, fixed-vector slice tokens)
 ```

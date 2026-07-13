@@ -126,24 +126,26 @@ def test_glm_tokenizer_if_available():
 
 
 def test_simulator_backend_parse():
-    """SimulatorBackend parse + protocol via a fake `vvp` (echo the argmax lines the
-       real slice sim prints). The real vvp run is separately validated to emit
-       exactly these tokens {4,31,20} in ~752 s -- too slow for CI, so we stub the
-       subprocess and check the parse + device protocol."""
+    """SimulatorBackend parse + protocol via a fake `vvp` (echo the per-case lines the
+       real glm_model_q4k slice sim prints). The full vvp run is separately validated
+       (`make model-q4k`) -- minutes-long, too slow for CI -- so we stub the subprocess
+       with the exact TB output format and check the parse + device protocol. The stub
+       tokens {13,3,13} are the real SPEC_SLICE argmax vectors (build/mq4k_s)."""
     import os
     import tempfile
     from aipu_sim_backend import SimulatorBackend
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        f.write("PASS[t] worst_rel=0 argmax dut=4 ref=4\n"
-                "PASS argmax dut=31 ref=31\nPASS argmax dut=20 ref=20\n"
-                "ALL 3 TESTS PASSED\n")
+        f.write("case 0: token=3 pos=1 s_len=2 -> argmax=13 (golden 13)    MATCH\n"
+                "case 1: token=7 pos=3 s_len=2 -> argmax=3 (golden 3)    MATCH\n"
+                "case 2: token=11 pos=0 s_len=1 -> argmax=13 (golden 13)    MATCH\n"
+                "ALL 99 TESTS PASSED\n")
         path = f.name
     try:
         dev = SimulatorBackend(vvp="cat", vvp_binary=path, cwd="/tmp")
         dev.power_on()
-        assert list(dev.generate([1, 2, 3], max_new_tokens=16)) == [4, 31, 20]
+        assert list(dev.generate([1, 2, 3], max_new_tokens=16)) == [13, 3, 13]
         dev.reset_session()
-        assert list(dev.generate([9], max_new_tokens=16)) == [4, 31, 20]   # cached
+        assert list(dev.generate([9], max_new_tokens=16)) == [13, 3, 13]   # cached
     finally:
         os.unlink(path)
 
