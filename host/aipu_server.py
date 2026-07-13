@@ -371,11 +371,16 @@ def main(argv=None):
                    help="modelled device boot (resident-set load) time")
     p.add_argument("--tokenizer", default=None,
                    help="path to GLM tokenizer.json (else byte-level fallback)")
-    p.add_argument("--backend", choices=["mock", "sim", "llama"], default="mock",
-                   help="mock (canned, default); sim (real RTL glm_model_q4k slice via "
-                        "vvp -- SLOW, untrained slice tokens from FIXED TB vectors); "
-                        "llama (v0.1 SOFTWARE full-model backend: REAL tokens from a GGUF "
-                        "via llama.cpp -- needs --model <gguf>. Software, not the accelerator.)")
+    p.add_argument("--backend", choices=["mock", "sim", "modal", "llama"], default="mock",
+                   help="mock (canned, default); modal (v0.1 SOFTWARE full-model demo: "
+                        "REAL GLM family via vLLM on Modal GPU cloud -- needs --modal-url); "
+                        "llama (local small GGUF via llama.cpp, offline -- needs --model); "
+                        "sim (RTL glm_model_q4k slice via vvp -- SLOW, fixed-vector tokens). "
+                        "modal/llama are SOFTWARE, not the accelerator.")
+    p.add_argument("--modal-url", default=None,
+                   help="OpenAI /v1 base URL of the Modal vLLM server "
+                        "(deploy tools/modal_glm_server.py) for --backend modal")
+    p.add_argument("--modal-key", default="aipu-local", help="bearer key for --backend modal")
     p.add_argument("--model", default=None, help="GGUF path for --backend llama")
     p.add_argument("--llama-cli", default=None, help="path to a llama.cpp llama-cli binary")
     p.add_argument("--manifest", default=None,
@@ -386,7 +391,19 @@ def main(argv=None):
                         "flatten (the byte-scaffold / debug path)")
     args = p.parse_args(argv)
 
-    if args.backend == "llama":
+    if args.backend == "modal":
+        from aipu_modal_backend import ModalBackend
+        if not args.modal_url:
+            p.error("--backend modal requires --modal-url (deploy tools/modal_glm_server.py)")
+        device = ModalBackend(args.modal_url, api_key=args.modal_key,
+                              boot_seconds=args.boot_seconds)
+        tok = make_tokenizer(args.tokenizer)          # used only for prompt fmt + usage counts
+        backend_name = f"ModalBackend(software cloud, {device.model_id})"
+        print("NOTE: --backend modal is the v0.1 SOFTWARE full-model demo -- REAL GLM "
+              "family text from vLLM on Modal GPU cloud. It is software on cloud GPUs, "
+              "NOT the AIPU accelerator; the accelerator replaces it behind this same "
+              "API once silicon exists (docs/PRODUCT_SPEC.md).")
+    elif args.backend == "llama":
         from aipu_llama_backend import LlamaCppBackend
         if not args.model:
             p.error("--backend llama requires --model <gguf>")

@@ -22,14 +22,22 @@ lands.
   present) and a **GLM-5.2 chat template** (text path).
 - A **device-protocol driver** (`aipu_device.py`) that mirrors the `glm_q4k_system_cdc`
   host handshake exactly, with host-side `max_tokens` / `stop` / `finish_reason`.
-- **Three backends**: a **mock** (canned, self-labelled reply — proves the plumbing,
-  default); an **on-main RTL co-sim** (`--backend sim`: real but slow, untrained-slice,
-  fixed-vector `glm_model_q4k` argmax tokens — a datapath witness, **not** a chatbot);
-  and — new (Stage 1 / v0.1) — a **software full-model backend**
-  (`--backend llama --model <gguf>`, `aipu_llama_backend.py`): **REAL tokens** from a
-  real GGUF via a local llama.cpp. It is *software* (CPU/GPU), **not** the accelerator;
-  swap the GGUF for GLM-5.2 on the box for the product experience. This makes the
-  end-to-end path real *today*: a standard OpenAI client → this server → real text.
+- **Backends** (`--backend`): a **mock** (canned, self-labelled, default); an
+  **on-main RTL co-sim** (`sim`: real but slow, untrained-slice, fixed-vector
+  `glm_model_q4k` tokens — a datapath witness, not a chatbot); and — the Stage 1 /
+  v0.1 **software full-model demo backends** producing **REAL tokens**:
+  - **`modal`** (recommended, `aipu_modal_backend.py`) — proxies to the **REAL GLM
+    family** (GLM-4.5-Air-FP8, the model we measured) served by vLLM on **Modal GPU
+    cloud** (`tools/modal_glm_server.py`, 2× H100, scales to zero when idle). Deploy
+    it, pass `--modal-url <url>`, and a standard OpenAI client → this server → real
+    GLM text.
+  - **`llama`** (`aipu_llama_backend.py`) — a **local small GGUF** via llama.cpp,
+    offline / zero-cost; good for a laptop demo without cloud.
+
+  Both are *software* (cloud/CPU GPUs), **NOT** the accelerator; the accelerator
+  replaces them behind this same API once silicon exists (`docs/PRODUCT_SPEC.md`,
+  Stage 3). The host side is proven end-to-end (the `modal` proxy chain was verified
+  against a local OpenAI endpoint; the `llama` path against real GGUFs).
 - A **management console** (`GET /console`, the control plane — NOT a chat GUI):
   health/telemetry (`/api/status`), settings (`/api/settings`), and a provisioning
   panel (`/api/provisioning`) that reads a `tools/provision_image.py` manifest
