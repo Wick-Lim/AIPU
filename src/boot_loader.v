@@ -71,6 +71,22 @@ module boot_loader #(
     parameter integer SEG_MAX = 4,    // max resident-set segments
     parameter integer BURST   = 8,    // skid-FIFO depth / max reads in flight
     parameter integer LEN_W   = 16,   // per-segment length field width (words)
+    // ---- boot-time INTEGRITY + VERSION gate (ADDITIVE, DEFAULT-OFF) ----------
+    //   INTEGRITY==0 (default): byte-identical to the pre-gate, BMC-proven engine
+    //     -- `done` releases unconditionally on copy-complete; the manifest ports
+    //     are sunk and boot_fail/err_code stay 0.  INTEGRITY!=0: before `done` is
+    //     asserted, the latched manifest header (MAGIC / VERSION / total-length /
+    //     expected-CRC over the loaded words) must match; on ANY mismatch the
+    //     engine FAILS CLOSED -- registers boot_fail + an err_code and NEVER
+    //     asserts done (inference stays gated -- a bad image is never released).
+    parameter integer INTEGRITY = 0,  // 0: legacy release; 1: manifest gate
+    parameter integer MAGIC_W   = 32, // manifest MAGIC field width  (<=32)
+    parameter integer VER_W     = 16, // manifest VERSION field width (<=32)
+    parameter integer CRC_W     = 32, // running-CRC width           (<=32)
+    parameter [31:0]  MAGIC     = 32'h4D4F_444C, // expected image magic ("MODL")
+    parameter [31:0]  VERSION   = 32'h0000_0001, // supported format/model version
+    parameter [31:0]  CRC_POLY  = 32'h04C1_1DB7, // CRC-32 (IEEE 802.3) polynomial
+    parameter [31:0]  CRC_INIT  = 32'hFFFF_FFFF, // running-CRC seed
     // ---- derived geometry ----
     localparam integer SEGW   = (SEG_MAX < 2) ? 1 : $clog2(SEG_MAX + 1),
     localparam integer DEPTHW = (BURST   < 2) ? 1 : $clog2(BURST),     // FIFO ptr
@@ -86,6 +102,12 @@ module boot_loader #(
     input  wire [SEG_MAX*ADDR_W-1:0]  seg_flash_base, // per-seg Flash base (packed)
     input  wire [SEG_MAX*ADDR_W-1:0]  seg_ddr_base,   // per-seg DDR5  base (packed)
     input  wire [SEG_MAX*LEN_W-1:0]   seg_len,        // per-seg length, words (packed)
+
+    // ---- boot manifest / header (LATCHED at `start`; used ONLY if INTEGRITY!=0) ----
+    input  wire [MAGIC_W-1:0]         mf_magic,    // image magic word   (header)
+    input  wire [VER_W-1:0]           mf_version,  // image format/model version
+    input  wire [PROG_W-1:0]          mf_len,      // declared total resident words
+    input  wire [CRC_W-1:0]           mf_crc,      // expected CRC over loaded words
 
     // ---- Flash READ port (req -> data, latency FLASH_LAT; TB-stubbed) ----
     output reg                        flash_req,   // read request strobe (comb)
@@ -103,7 +125,11 @@ module boot_loader #(
     // ---- status ----
     output reg                        busy,        // engine is copying
     output reg                        done,        // LEVEL: resident set in DDR5
-    output reg  [PROG_W-1:0]          words_done   // # words retired (progress)
+    output reg  [PROG_W-1:0]          words_done,  // # words retired (progress)
+
+    // ---- INTEGRITY gate status (registered; inert & held 0 when INTEGRITY==0) ----
+    output reg                        boot_fail,   // 1 => manifest/version/len/CRC bad
+    output reg  [2:0]                 err_code     // failure class (ERR_* below)
 );
     // -----------------------------------------------------------------------
     // sized occupancy constant
@@ -111,6 +137,39 @@ module boot_loader #(
     localparam integer    IDXW    = (SEG_MAX < 2) ? 1 : $clog2(SEG_MAX); // array index
     localparam [OCCW-1:0] DEPTHC  = OCCW'(BURST);    // FIFO depth, sized
     localparam [SEGW-1:0] SEGMAXC = SEGW'(SEG_MAX);  // SEG_MAX, sized
+
+    // -----------------------------------------------------------------------
+    // INTEGRITY gate: failure classes + latched manifest header + running CRC
+    // (all of this is DEAD when INTEGRITY==0 -- it drives only boot_fail/err_code
+    //  and the done-fail branch, both gated by the compile-time `INTEGRITY!=0`)
+    // -----------------------------------------------------------------------
+    localparam [2:0] ERR_NONE  = 3'd0, // no fault
+                     ERR_MAGIC = 3'd1, // header MAGIC mismatch (not a model image)
+                     ERR_VER   = 3'd2, // unsupported/wrong format-model VERSION
+                     ERR_LEN   = 3'd3, // loaded words != declared total (truncated)
+                     ERR_CRC   = 3'd4; // CRC over loaded words != expected
+
+    reg [MAGIC_W-1:0] mf_magic_q;  // latched header magic
+    reg [VER_W-1:0]   mf_ver_q;    // latched header version
+    reg [PROG_W-1:0]  mf_len_q;    // latched declared total-length (words)
+    reg [CRC_W-1:0]   mf_crc_q;    // latched expected CRC
+    reg [CRC_W-1:0]   crc_acc;     // running CRC over words retired to DDR5
+
+    // one-word CRC fold (MSB-first over the DATA_W-bit word); a fixed
+    // combinational function -> synthesizable, and it flips on ANY bit change.
+    function [CRC_W-1:0] crc_fold;
+        input [CRC_W-1:0]  c0;
+        input [DATA_W-1:0] d;
+        integer b;
+        reg [CRC_W-1:0] c;
+        begin
+            c = c0;
+            for (b = DATA_W-1; b >= 0; b = b - 1)
+                c = (c[CRC_W-1] ^ d[b]) ? ((c << 1) ^ CRC_POLY[CRC_W-1:0])
+                                        :  (c << 1);
+            crc_fold = c;
+        end
+    endfunction
 
     // -----------------------------------------------------------------------
     // latched descriptor (so caller may change inputs after `start`)
@@ -152,6 +211,17 @@ module boot_loader #(
     // segment "still has work" flags
     wire read_active  = running & (rseg < ncount_q) & (rlen != {LEN_W{1'b0}});
     wire write_active = running & (wseg < ncount_q) & (wlen != {LEN_W{1'b0}});
+
+    // -----------------------------------------------------------------------
+    // MANIFEST VERDICT -- pure combinational function of REGISTERED state only
+    // (latched header + final words_done + final crc_acc); sampled at the
+    // completion cycle to decide release vs. fail-closed.  Dead when INTEGRITY==0.
+    // -----------------------------------------------------------------------
+    wire magic_bad = (mf_magic_q != MAGIC  [MAGIC_W-1:0]);
+    wire ver_bad   = (mf_ver_q   != VERSION[VER_W-1:0]);
+    wire len_bad   = (words_done != mf_len_q);
+    wire crc_bad   = (crc_acc    != mf_crc_q);
+    wire manifest_ok = ~(magic_bad | ver_bad | len_bad | crc_bad);
 
     // -----------------------------------------------------------------------
     // combinational port drives (fully defaulted -> no latch; pure functions of
@@ -199,6 +269,13 @@ module boot_loader #(
             wseg <= {SEGW{1'b0}}; woff <= {LEN_W{1'b0}};
             head <= {DEPTHW{1'b0}}; tail <= {DEPTHW{1'b0}};
             occ  <= {OCCW{1'b0}};  fcnt <= {OCCW{1'b0}};
+            boot_fail  <= 1'b0;
+            err_code   <= ERR_NONE;
+            mf_magic_q <= {MAGIC_W{1'b0}};
+            mf_ver_q   <= {VER_W{1'b0}};
+            mf_len_q   <= {PROG_W{1'b0}};
+            mf_crc_q   <= {CRC_W{1'b0}};
+            crc_acc    <= CRC_INIT[CRC_W-1:0];
             for (i = 0; i < SEG_MAX; i = i + 1) begin
                 fbase_q[i] <= {ADDR_W{1'b0}};
                 dbase_q[i] <= {ADDR_W{1'b0}};
@@ -214,6 +291,14 @@ module boot_loader #(
             wseg <= {SEGW{1'b0}}; woff <= {LEN_W{1'b0}};
             head <= {DEPTHW{1'b0}}; tail <= {DEPTHW{1'b0}};
             occ  <= {OCCW{1'b0}};  fcnt <= {OCCW{1'b0}};
+            // ---- INTEGRITY: latch the manifest header, re-seed CRC & fail state ----
+            boot_fail  <= 1'b0;
+            err_code   <= ERR_NONE;
+            crc_acc    <= CRC_INIT[CRC_W-1:0];
+            mf_magic_q <= mf_magic;
+            mf_ver_q   <= mf_version;
+            mf_len_q   <= mf_len;
+            mf_crc_q   <= mf_crc;
             for (i = 0; i < SEG_MAX; i = i + 1) begin
                 fbase_q[i] <= seg_flash_base[i*ADDR_W +: ADDR_W];
                 dbase_q[i] <= seg_ddr_base [i*ADDR_W +: ADDR_W];
@@ -267,11 +352,32 @@ module boot_loader #(
                 woff <= {LEN_W{1'b0}};
             end
 
+            // ============ INTEGRITY: running CRC over retired words =============
+            // Fold each word AS IT RETIRES to DDR5 (in-order retirement == the
+            // header's word order).  Dead logic when INTEGRITY==0.
+            if ((INTEGRITY != 0) && write_fire)
+                crc_acc <= crc_fold(crc_acc, ddr_wdata);
+
             // ============ completion gate ======================================
-            // Every active segment fully written -> raise the (level) done gate.
+            // Every active segment fully written.  At this cycle words_done and
+            // crc_acc are FINAL (wseg==ncount_q => write_active==0 => no retire).
             if (wseg == ncount_q) begin
                 busy <= 1'b0;
-                done <= 1'b1;
+                if (INTEGRITY == 0) begin
+                    // ---- legacy path: release unconditionally (byte-identical) ----
+                    done <= 1'b1;
+                end else if (manifest_ok) begin
+                    // ---- manifest MAGIC/VERSION/length/CRC all match -> release ----
+                    done <= 1'b1;
+                end else begin
+                    // ---- FAIL CLOSED: never release a bad/partial/wrong image -----
+                    done      <= 1'b0;      // inference stays gated
+                    boot_fail <= 1'b1;
+                    err_code  <= magic_bad ? ERR_MAGIC :
+                                 ver_bad   ? ERR_VER   :
+                                 len_bad   ? ERR_LEN   :
+                                             ERR_CRC;
+                end
             end
         end
     end

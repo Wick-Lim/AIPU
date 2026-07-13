@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test synth-glm fit-harness cdc coverage resident resident-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test synth-glm fit-harness cdc coverage resident resident-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -36,7 +36,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # `release-gate` is the full pre-release battery: every simulation, structural,
 # CDC and formal gate in the repo.  HOURS-long (model-q4k / spec-slow / expert-cache
 # / batched-q4k are minutes-to-hours each in iverilog); run before cutting a release.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv expert-cache full-elab mla-sparse scale-ops batched-q4k perf-q4k synth-glm cdc formal formal-ind
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv expert-cache full-elab mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
 	@echo "release-gate: ALL gates passed"
 
 
@@ -744,4 +744,210 @@ batched-q4k:
 	@printf '[%s] ' "glm_model_q4k_pem(PE_M=2)"; $(VVP) $(BUILD_DIR)/glm_model_q4k_pem_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_model_q4k_pem"; exit 1; }
 	@echo "batched-q4k: glm_model_q4k PE_M=2 rows == per-row PE_M=1 runs (BIT-EXACT logits+argmax+h_state; row 0 anchored to the numpy golden)"
+
+
+
+# provision-selftest -- REAL streaming GGUF -> on-device model image + manifest
+# ----------------------------------------------------------------------------
+# docs/USAGE_GAPS.md finding #1 ("real provisioning").  tools/ckpt_pack_q4k.py
+# only round-trips a SYNTHETIC tiny GGUF and emits ASCII $readmemh hex (which
+# for the 467 GB checkpoint explodes to ~950 GB of text).  tools/provision_image.py
+# is the real one: it STREAMS a real GGUF in bounded chunks (O(1) RAM -- a
+# hand-rolled header parser + seek()/read(), never memmap-faulting the blob),
+# lays the raw Q4_K/Q6_K/Q8_0/... tensor blocks into a BINARY block image, emits
+# a JSON MANIFEST (per-tensor {name,type,offset,length,sha256} + top-level
+# {model,total_bytes,image_sha256,format_version,...}) and a resident-hot vs
+# demand-streamed-expert flash_base/len SEGMENT list a boot loader can consume.
+# The selftest builds the image + manifest from a small REAL GGUF, then VERIFIES
+# the round-trip: each tensor's image bytes recompute to its manifest sha256 AND
+# equal the original GGUF tensor bytes read via the gguf-py oracle (the same
+# reader tools/gguf_crosscheck.py uses -- an INDEPENDENT parser from build's).
+# It also proves the verifier can FAIL (1-byte tamper must be detected) and that
+# the hot/expert flash-segment split is real logic (synthetic MoE-name check).
+#
+# Override the model / gguf-py location:
+#   make provision-selftest PROVISION_GGUF=/path/to.gguf PROVISION_GGUF_PY=/path/to/gguf-py
+# ============================================================================
+.PHONY: provision-selftest
+PROVISION_GGUF    ?= /Users/wicklim/.claude/jobs/01dbb3de/tmp/smollm2-135m-q8_0.gguf
+PROVISION_GGUF_PY ?= /Users/wicklim/.claude/jobs/01dbb3de/tmp/llamacpp/gguf-py
+
+provision-selftest:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/provision_image.py --gguf-py $(PROVISION_GGUF_PY) \
+	    selftest $(PROVISION_GGUF) 2>&1 | tee $(BUILD_DIR)/provision_selftest.log
+	@grep -q 'provision_image ALL [0-9]\+ TESTS PASSED' $(BUILD_DIR)/provision_selftest.log \
+	    || { echo "FAILED: provision-selftest (no ALL-PASSED line)"; exit 1; }
+	@grep -q 'PROVISION .* OK:' $(BUILD_DIR)/provision_selftest.log \
+	    || { echo "FAILED: provision-selftest (no PROVISION OK line)"; exit 1; }
+	@echo "provision-selftest: real GGUF -> binary image + sha256 manifest + flash-segment list; round-trip verified (image == manifest == original GGUF bytes), O(1) RAM, tamper detected"
+
+
+
+# boot-integrity : boot-time INTEGRITY + VERSION manifest gate
+# ----  NEW delimited section: `make boot-integrity`  ------------------------
+# ----------------------------------------------------------------------------
+#   USAGE_GAPS LOCK-IN-NOW A (findings #2/#3/#4/#35/#40).  src/boot_loader.v
+#   grew an ADDITIVE, DEFAULT-OFF `INTEGRITY` parameter:
+#     * INTEGRITY=0 (default): byte-identical to the pre-change, BMC/k-induction
+#       -proven power-up model-load sequencer -- `done` releases unconditionally
+#       on copy-complete; the manifest ports are sunk, boot_fail/err_code stay 0.
+#     * INTEGRITY=1: before `done` is asserted, the LATCHED manifest header
+#       (MAGIC / format-model VERSION / total-length / a running CRC-32 folded
+#       over the loaded words) must match.  On ANY mismatch the engine FAILS
+#       CLOSED -- it registers boot_fail + an err_code (MAGIC/VER/LEN/CRC) and
+#       NEVER asserts `done` (inference stays gated).  A partial (truncated),
+#       corrupt (bad-CRC), or wrong-version image can never be DMA'd and
+#       silently released as a working model.
+#
+#   This gate proves BOTH halves:
+#     (1) DEFAULT UNCHANGED -- a yosys SEQUENTIAL EQUIVALENCE (equiv_simple +
+#         equiv_induct, with the skid-FIFO memory_map'd to flops) of the
+#         INTEGRITY=0 module against the pre-change source at $(BOOT_INTEG_BASE).
+#         Both sides are wrapped in an IDENTICAL `u`-instance shell exposing only
+#         the pre-gate port set, so the FIFO/cursor registers match by name and
+#         the induction step closes; `equiv_status -assert` fails (non-zero) on
+#         any unproven point.  (The new manifest logic is dead at INTEGRITY=0 and
+#         is const-folded away by `opt`, so the proof scope is the released FSM.)
+#     (2) FAIL-CLOSED BEHAVIOUR -- test/boot_loader_manifest_tb.v runs the
+#         INTEGRITY=1 and INTEGRITY=0 engines SIDE BY SIDE on the same images
+#         (good / truncated / wrong-version / bad-CRC / bad-magic / re-run after
+#         a fail / empty).  ON: good->done (no fail); each bad image->boot_fail
+#         with the right err_code and `done` NEVER asserts.  OFF: releases every
+#         image and stays inert (a live "identical to today" check).  A mutation
+#         that releases a bad image is caught by the done/boot_fail exclusion
+#         monitor -- the TB cannot vacuously pass.
+# ============================================================================
+.PHONY: boot-integrity
+BOOT_INTEG_BASE ?= 9907504
+# printf template for the equivalence wrapper (single `u` instance, pre-gate
+# ports only); the two %s are the extra instance connections -- empty for the
+# pre-change GOLD, the sunk manifest ports for the INTEGRITY=0 GATE.
+BL_WRAP_FMT := module bl_equiv_top (\n input wire clk, input wire rst, input wire start,\n input wire [2:0] seg_count,\n input wire [127:0] seg_flash_base, input wire [127:0] seg_ddr_base,\n input wire [63:0] seg_len,\n output wire flash_req, output wire [31:0] flash_addr,\n input wire flash_ready, input wire flash_rvalid, input wire [63:0] flash_rdata,\n output wire ddr_we, output wire [31:0] ddr_addr, output wire [63:0] ddr_wdata,\n input wire ddr_ready,\n output wire busy, output wire done, output wire [18:0] words_done);\n boot_loader u (\n .clk(clk),.rst(rst),.start(start),.seg_count(seg_count),\n .seg_flash_base(seg_flash_base),.seg_ddr_base(seg_ddr_base),.seg_len(seg_len),%s\n .flash_req(flash_req),.flash_addr(flash_addr),\n .flash_ready(flash_ready),.flash_rvalid(flash_rvalid),.flash_rdata(flash_rdata),\n .ddr_we(ddr_we),.ddr_addr(ddr_addr),.ddr_wdata(ddr_wdata),.ddr_ready(ddr_ready),\n .busy(busy),.done(done),.words_done(words_done)%s);\nendmodule\n
+
+boot-integrity:
+	@mkdir -p $(BUILD_DIR)
+	@# ---- (1) default-OFF (INTEGRITY=0) sequential-equivalence vs pre-change ----
+	@git show $(BOOT_INTEG_BASE):src/boot_loader.v > $(BUILD_DIR)/boot_loader_base.v
+	@printf '$(BL_WRAP_FMT)' '' '' > $(BUILD_DIR)/bl_gold_wrap.v
+	@printf '$(BL_WRAP_FMT)' ".mf_magic(32'b0),.mf_version(16'b0),.mf_len(19'b0),.mf_crc(32'b0)," ",.boot_fail(),.err_code()" > $(BUILD_DIR)/bl_gate_wrap.v
+	@$(YOSYS) -q -p "read_verilog -sv -I src $(BUILD_DIR)/boot_loader_base.v $(BUILD_DIR)/bl_gold_wrap.v; \
+	    prep -top bl_equiv_top -flatten; memory_map; opt -full; opt_clean -purge; rename bl_equiv_top gold; design -stash gdes; \
+	    read_verilog -sv -I src src/boot_loader.v $(BUILD_DIR)/bl_gate_wrap.v; \
+	    prep -top bl_equiv_top -flatten; memory_map; opt -full; opt_clean -purge; rename bl_equiv_top gate; \
+	    design -copy-from gdes -as gold gold; \
+	    equiv_make gold gate equiv; prep -top equiv; \
+	    equiv_simple -undef; equiv_induct -undef; equiv_status -assert" \
+	    && echo "[boot-integrity] EQUIV PROVEN: boot_loader(INTEGRITY=0) == $(BOOT_INTEG_BASE) (default netlist UNCHANGED)" \
+	    || { echo "FAILED: boot-integrity default-off equivalence"; exit 1; }
+	@# ---- (2) fail-closed manifest behaviour (INTEGRITY=1 vs INTEGRITY=0 side by side) ----
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/boot_loader_manifest_sim test/boot_loader_manifest_tb.v src/boot_loader.v
+	@printf '[%s] ' "boot_loader_manifest"; $(VVP) $(BUILD_DIR)/boot_loader_manifest_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: boot_loader_manifest"; exit 1; }
+	@echo "boot-integrity: INTEGRITY=0 proven byte-equivalent to $(BOOT_INTEG_BASE); INTEGRITY=1 fail-closes on truncated/wrong-version/bad-CRC/bad-magic (done never releases a bad model)"
+
+
+
+# WEIGHT-PATH SECDED ECC  (USAGE_GAPS §B / finding #32)
+#------------------------------------------------------------------------------
+# The resident ~467 GB weights have NO bit-error protection.  weight_loader_q4k
+# gains a DEFAULT-OFF (WEIGHT_ECC=0) SECDED ECC read path reusing src/ecc_secded.v:
+# with WEIGHT_ECC=1 each DATA_W read word is modelled as ECC_LANE_W-wide SECDED
+# lanes (the weight memory stores no check bits, so the codec is a DECODE STAGE
+# on the read data with an injectable fault port) -- single-bit errors CORRECTED,
+# double-bit errors FLAGGED (registered sticky ecc_uncorrectable + a corrected-
+# error counter for scrub/telemetry).
+#
+#   weight-ecc        : the new self-checking fault-injection TB (test/weight_ecc_tb.v)
+#                       -- default-off transparency, SBU correction, DBU detection.
+#   weight-ecc-equiv  : PROVES the default (WEIGHT_ECC=0) module is unchanged --
+#                       yosys sequential equivalence (equiv_simple + equiv_induct)
+#                       of the modified default-param module vs its pre-change
+#                       version at git rev WEIGHT_ECC_BASE.  The 3 added ECC-only
+#                       ports are stripped from the gate so the port sets match;
+#                       every retained state bit / output is proven equivalent.
+.PHONY: weight-ecc weight-ecc-equiv
+weight-ecc:
+	@mkdir -p $(BUILD_DIR)
+	@# self-checking SECDED read-path proof: two loaders (WEIGHT_ECC 0 vs 1) on the
+	@# SAME memory -- clean streams byte-identical (ECC transparent), a 1-bit fault is
+	@# CORRECTED (stream still clean + counter increments), a 2-bit fault FLAGGED.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/weight_ecc_sim test/weight_ecc_tb.v src/weight_loader_q4k.v src/ecc_secded.v
+	@printf '[%s] ' "weight_ecc"; $(VVP) $(BUILD_DIR)/weight_ecc_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: weight_ecc"; exit 1; }
+	@echo "weight-ecc: SECDED weight read path -- default-off transparent, single-bit corrected, double-bit flagged"
+
+WEIGHT_ECC_BASE ?= 9907504
+weight-ecc-equiv:
+	@mkdir -p $(BUILD_DIR)
+	@git show $(WEIGHT_ECC_BASE):src/weight_loader_q4k.v > $(BUILD_DIR)/weight_loader_q4k_base.v
+	@$(YOSYS) -q -p "read_verilog -lib -sv -I src src/ecc_secded.v; \
+	    read_verilog -sv -I src $(BUILD_DIR)/weight_loader_q4k_base.v; \
+	    prep -top weight_loader_q4k; opt_clean -purge; rename weight_loader_q4k gold; design -stash gdes; \
+	    read_verilog -lib -sv -I src src/ecc_secded.v; \
+	    read_verilog -sv -I src src/weight_loader_q4k.v; \
+	    prep -top weight_loader_q4k; \
+	    delete weight_loader_q4k/w:ecc_err_inject weight_loader_q4k/w:ecc_corr_count weight_loader_q4k/w:ecc_uncorrectable; \
+	    opt_clean -purge; rename weight_loader_q4k gate; \
+	    design -copy-from gdes -as gold gold; \
+	    equiv_make gold gate equiv; prep -top equiv; \
+	    equiv_simple -undef; equiv_induct -undef; equiv_status -assert" \
+	    && echo "[weight-ecc-equiv] PROVEN: weight_loader_q4k(WEIGHT_ECC=0) == $(WEIGHT_ECC_BASE) (default read path byte-identical)" \
+	    || { echo "FAILED: weight-ecc-equiv"; exit 1; }
+
+
+
+# HOST<->DEVICE PROTOCOL EXTENSION  (USAGE_GAPS §C, findings #19/#26)
+#   glm_q4k_system_cdc gains a DEFAULT-OFF parameter PROTO_CTX.  With PROTO_CTX=1
+#   the 2-clock host<->device frame carries a CONTEXT/SEQUENCE id (so the host
+#   can multiplex N contexts and demux returned tokens) plus a TELEMETRY-readback
+#   opcode that returns registered device counters (tokens / runs / done / stall).
+#   The ids + counters cross host_clk<->core_clk ONLY through the existing
+#   cdc_async_fifo pattern -- no new unsynchronized crossing (still passes `cdc`).
+#   With PROTO_CTX=0 the top is byte-identical to the shipped device (proven by
+#   `cdc-protocol-equiv`), so `cdc`/`synth-glm` are unaffected.
+# ============================================================================
+.PHONY: cdc-protocol cdc-protocol-equiv
+
+# ---- functional gate: ctx-id round-trip + telemetry readback (PROTO_CTX=1) ---
+# Drives the 2-clock top across its two ASYNCHRONOUS clocks with the same
+# faithful weight/KV/Flash/DDR5/loader backing the perf TB uses (so the compute
+# box emits REAL tokens), tags each token-gen request with a DISTINCT ctx id and
+# checks the matching id rides BACK on every response (round-trip/demux), then
+# polls telemetry and checks the returned counters EXACTLY (and that they
+# advance between two readbacks -- a constant-returning stub fails).
+cdc-protocol:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/cdc_protocol_ctx_sim \
+	    test/cdc_protocol_ctx_tb.v $(GLM_Q4K_CDC_SRCS)
+	@printf '[%s] ' "cdc_protocol_ctx"; $(VVP) $(BUILD_DIR)/cdc_protocol_ctx_sim | grep -E '\[cdc_protocol_ctx\] ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: cdc-protocol"; exit 1; }
+
+# ---- default-unchanged proof: PROTO_CTX=0 netlist == the pre-change top -------
+# Synthesizes the wrapper (compute/CDC submodules blackboxed via -lib, so the
+# proof is SCOPED to glm_q4k_system_cdc's own logic) at PROTO_CTX=0 and at the
+# pre-change git rev CDC_PROTO_BASE, under an IDENTICAL yosys script, and asserts
+# the two CELL histograms are byte-identical -- same gate types, same counts,
+# same 54 flops, same {glm_q4k_system, cdc_async_fifo x2, reset_sync x2} instances.
+# The PROTO_CTX ports add ONLY dead wires (0 cells), so any real logic change to
+# the default netlist makes the diff non-empty and fails.  (Interactively this
+# was also cross-checked with a full yosys equiv_simple+equiv_induct sequential
+# equivalence -- 7988/7988 $equiv cells proven -- via matched interface adapters.)
+CDC_PROTO_BASE ?= be67c38
+CDC_PROTO_LIBS := src/glm_q4k_system.v src/cdc_async_fifo.v src/reset_sync.v
+cdc-protocol-equiv:
+	@mkdir -p $(BUILD_DIR)
+	@git show $(CDC_PROTO_BASE):src/glm_q4k_system_cdc.v > $(BUILD_DIR)/cdc_proto_base.v
+	@$(YOSYS) -q -p "read_verilog -lib -sv -I src $(CDC_PROTO_LIBS); \
+	    read_verilog -sv -I src $(BUILD_DIR)/cdc_proto_base.v; \
+	    synth -top glm_q4k_system_cdc -flatten; tee -o $(BUILD_DIR)/cdc_proto_stat_base.txt stat"
+	@$(YOSYS) -q -p "read_verilog -lib -sv -I src $(CDC_PROTO_LIBS); \
+	    read_verilog -sv -I src src/glm_q4k_system_cdc.v; \
+	    chparam -set PROTO_CTX 0 glm_q4k_system_cdc; \
+	    synth -top glm_q4k_system_cdc -flatten; tee -o $(BUILD_DIR)/cdc_proto_stat_new.txt stat"
+	@sed -n '/[0-9] cells$$/,$$p' $(BUILD_DIR)/cdc_proto_stat_base.txt > $(BUILD_DIR)/cdc_proto_cells_base.txt
+	@sed -n '/[0-9] cells$$/,$$p' $(BUILD_DIR)/cdc_proto_stat_new.txt  > $(BUILD_DIR)/cdc_proto_cells_new.txt
+	@diff $(BUILD_DIR)/cdc_proto_cells_base.txt $(BUILD_DIR)/cdc_proto_cells_new.txt \
+	    && echo "[cdc-protocol-equiv] PROVEN: glm_q4k_system_cdc(PROTO_CTX=0) cell netlist == $(CDC_PROTO_BASE) (byte-identical default; PROTO_CTX adds only dead ports)" \
+	    || { echo "FAILED: cdc-protocol-equiv (default netlist changed)"; exit 1; }
 

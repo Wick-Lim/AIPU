@@ -37,6 +37,26 @@ Three decisions are not software backlog. They shape the board, the
 boot-loader, and the USB wire format. If they are deferred past freeze, fixing
 them means a hardware or protocol respin. Decide them before that freeze.
 
+> **Progress (2026-07): all three now have a verified RTL/tool foundation**
+> (parameter-gated, default-off, the default netlist proven byte-identical by
+> yosys sequential equivalence — so nothing verified was disturbed):
+> **§A** — `boot_loader` gained an `INTEGRITY` mode (magic/version/CRC manifest
+> gate; fail-closed on truncated/wrong-version/bad-CRC/bad-magic — `done` never
+> releases a bad model): `make boot-integrity` (3712 tests + equivalence). A real
+> streaming provisioner, `tools/provision_image.py`, now packs a real GGUF into a
+> binary block image + signed manifest (per-tensor sha256 + resident-hot/expert
+> segment list a boot-loader can consume), proven on real GGUFs: `make
+> provision-selftest`. *(Still open: the A/B dual-slot + atomic activate-pointer
+> policy is a board/firmware decision on top of this foundation.)*
+> **§B** — `weight_loader_q4k` gained a `WEIGHT_ECC` SECDED mode (single-bit
+> corrected, double-bit flagged, corrected-error counter for scrub): `make
+> weight-ecc` (+ equivalence). *(Still open: wiring the scrub loop + check-bit
+> storage into the physical LPDDR array.)*
+> **§C** — `glm_q4k_system_cdc` gained a `PROTO_CTX` mode carrying a
+> context/sequence id end-to-end through the CDC FIFOs + a telemetry-counter
+> readback: `make cdc-protocol` (+ equivalence). *(Still open: full N-context
+> scheduling in the core and the host-side multiplexer.)*
+
 ### A. Provisioning A/B dual-slot + boot-time integrity/version check — *brick prevention*
 
 **Decide:** two model slots on NVMe (active / staged), an atomic

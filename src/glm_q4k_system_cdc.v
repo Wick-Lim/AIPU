@@ -135,6 +135,28 @@ module glm_q4k_system_cdc #(
     // ---- CDC FIFO depths (this wrapper) ----
     parameter integer REQ_AW      = 2,      // request FIFO addr width (depth 2**AW)
     parameter integer TOK_AW      = 3,      // token   FIFO addr width (depth 2**AW)
+    // ---- PROTOCOL EXTENSION (USAGE_GAPS §C, findings #19/#26) ------------
+    // DEFAULT OFF (PROTO_CTX=0): the host<->device wire format is EXACTLY
+    //   {prompt_tok,start_pos,s_len} -> {busy,done,tok_valid,next_tok}, byte-
+    //   identical to the shipped top (the new ports are dead: req_ctx_id/
+    //   req_opcode ignored, resp_* tied to 0; both CDC FIFOs keep their
+    //   original DATA_W; every new gate constant-folds away).
+    // PROTO_CTX=1 turns on the multiplexable protocol WITHOUT touching any
+    //   arithmetic or CDC primitive:
+    //     * the REQUEST carries a CONTEXT/SEQUENCE id + a 2-bit OPCODE
+    //       (OP_TOKEN=token-gen, OP_TELEM=telemetry readback), packed in the
+    //       HIGH bits of the SAME request FIFO word (low bits unchanged), so
+    //       the host can multiplex N contexts;
+    //     * the emitted-token RESPONSE carries the run's ctx id back so the
+    //       host can DEMUX returned tokens to their context;
+    //     * an OP_TELEM request pops a snapshot of registered core-domain
+    //       counters (tokens / runs started / runs done / demand-stall cycles)
+    //       back through the SAME response FIFO tagged resp_is_telem, so a host
+    //       can poll device state.  The ctx id and counters cross domains ONLY
+    //       through the existing cdc_async_fifo pattern -- no new raw crossing.
+    parameter integer PROTO_CTX   = 0,      // 0 = OFF (byte-identical). 1 = ctx-id + telemetry.
+    parameter integer CTX_W       = 8,      // context/sequence id width (host multiplexes 2**CTX_W ctx)
+    parameter integer TELEM_W     = 32,     // per-counter width in the telemetry readback
     // ====================================================================
     // derived (do NOT override) -- mirror glm_q4k_system's port-width derivations
     // ====================================================================
@@ -202,6 +224,23 @@ module glm_q4k_system_cdc #(
     output reg                           done,
     output reg  [TOKW-1:0]               next_tok,
     output reg                           tok_valid,
+
+    //===== PROTOCOL EXTENSION (PROTO_CTX=1) -- context id + telemetry readback ==
+    //  host_clk domain.  DEFAULT OFF: req_ctx_id/req_opcode are ignored and
+    //  resp_ctx_id/resp_is_telem/resp_telem are driven to constant 0 (dead
+    //  logic -> byte-identical default netlist).  When PROTO_CTX=1:
+    //    req_ctx_id/req_opcode   : sampled with `start` (aligned to the request)
+    //    resp_ctx_id             : ctx id of the response, valid with tok_valid
+    //    resp_is_telem           : 1 => this response is a telemetry snapshot
+    //                              (resp_telem valid, next_tok is don't-care),
+    //                              0 => this response is a generated token.
+    //    resp_telem              : packed counters {stall,done,runs,tokens},
+    //                              each TELEM_W wide (LSB-first: tokens in [0]).
+    input  wire [CTX_W-1:0]              req_ctx_id,
+    input  wire [1:0]                    req_opcode,
+    output wire [CTX_W-1:0]              resp_ctx_id,
+    output wire                          resp_is_telem,
+    output wire [4*TELEM_W-1:0]          resp_telem,
 
     //====== everything below is the core_clk domain, passed straight through ===
     output wire [VOCAB*16-1:0]           logits,
@@ -339,6 +378,22 @@ module glm_q4k_system_cdc #(
     // ======================================================================
     localparam integer RST_SYNC_STAGES = 2;
 
+    // ======================================================================
+    // PROTOCOL-EXTENSION derived widths (all fold to the ORIGINAL widths when
+    // PROTO_CTX=0, so the default FIFO/instance parameters are unchanged).
+    //   REQ_W_EFF  : request FIFO word  = {ctx,opcode, prompt_tok,pos,s_len}
+    //   RESP_W_EFF : response FIFO word = {is_telem, ctx, payload}
+    //                payload holds EITHER a token (low TOKW bits) OR the packed
+    //                telemetry counters (NCTR*TELEM_W), whichever is wider.
+    // ======================================================================
+    localparam [1:0]   OP_TOKEN   = 2'd0;                 // token-generation request
+    localparam [1:0]   OP_TELEM   = 2'd1;                 // telemetry-readback request
+    localparam integer REQ_W_EFF  = PROTO_CTX ? (REQ_W + CTX_W + 2) : REQ_W;
+    localparam integer NCTR       = 4;                    // tokens, runs, done, stall
+    localparam integer TELEM_PAY  = NCTR * TELEM_W;       // packed counter payload
+    localparam integer RESP_PAY   = (TOKW > TELEM_PAY) ? TOKW : TELEM_PAY;
+    localparam integer RESP_W_EFF = PROTO_CTX ? (1 + CTX_W + RESP_PAY) : TOKW;
+
     wire host_rst_sync;   // host_clk-domain reset, active-high, sync-deasserted
     wire core_rst_sync;   // core_clk-domain reset, active-high, sync-deasserted
 
@@ -373,20 +428,30 @@ module glm_q4k_system_cdc #(
     end
     wire start_rise = start & ~start_d;
 
-    wire             req_wr_full;
-    wire             req_wr_en   = start_rise & ~req_wr_full;
-    wire [REQ_W-1:0] req_wr_data = {prompt_tok, start_pos, s_len};
+    wire                 req_wr_full;
+    wire                 req_wr_en   = start_rise & ~req_wr_full;
+    // request word: ctx/opcode ride in the HIGH bits, so the low REQ_W bits are
+    // BIT-IDENTICAL to today's {prompt_tok,start_pos,s_len} and the core-side
+    // unpack (which reads the low bits) is unchanged.
+    wire [REQ_W_EFF-1:0] req_wr_data;
+    generate
+        if (PROTO_CTX) begin : g_req_pack
+            assign req_wr_data = {req_ctx_id, req_opcode, prompt_tok, start_pos, s_len};
+        end else begin : g_req_pack_off
+            assign req_wr_data = {prompt_tok, start_pos, s_len};
+        end
+    endgenerate
 
     // ======================================================================
     // REQUEST cdc_async_fifo : host_clk (write) -> core_clk (read).
     //  The ONLY path the multi-bit host request takes across the boundary.
     // ======================================================================
-    wire             req_rd_empty;
-    wire [REQ_W-1:0] req_rd_data;
-    wire             req_rd_en;
+    wire                 req_rd_empty;
+    wire [REQ_W_EFF-1:0] req_rd_data;
+    wire                 req_rd_en;
 
     cdc_async_fifo #(
-        .DATA_W (REQ_W),
+        .DATA_W (REQ_W_EFF),
         .ADDR_W (REQ_AW)
     ) u_req_fifo (
         .wclk   (host_clk), .wrst_n (host_rst_n),
@@ -411,6 +476,24 @@ module glm_q4k_system_cdc #(
 
     assign req_rd_en = ~req_rd_empty & ~req_rd_d;
 
+    // Decode of the popped request word (core_clk domain).  When PROTO_CTX=0
+    // these fold to constants (req_launch==1, req_is_telem==0) so the unpack
+    // below is functionally identical to today's unconditional sys_start pulse.
+    wire              req_launch;      // launch the compute box for this request
+    wire              req_is_telem;    // this request is a telemetry readback
+    wire [CTX_W-1:0]  req_ctx_popped;  // ctx id carried by this request
+    generate
+        if (PROTO_CTX) begin : g_req_dec
+            assign req_ctx_popped = req_rd_data[REQ_W_EFF-1 -: CTX_W];
+            assign req_is_telem   = (req_rd_data[REQ_W +: 2] == OP_TELEM);
+            assign req_launch     = ~req_is_telem;
+        end else begin : g_req_dec_off
+            assign req_ctx_popped = {CTX_W{1'b0}};
+            assign req_is_telem   = 1'b0;
+            assign req_launch     = 1'b1;
+        end
+    endgenerate
+
     always @(posedge core_clk) begin
         if (core_rst_sync) begin
             req_rd_d       <= 1'b0;
@@ -422,8 +505,10 @@ module glm_q4k_system_cdc #(
             sys_start <= 1'b0;
             req_rd_d  <= req_rd_en;
             if (req_rd_d) begin
+                // LHS is REQ_W bits wide -> keeps the LOW REQ_W bits of the
+                // (possibly wider) word == {prompt_tok,start_pos,s_len}.
                 {sys_prompt_tok, sys_start_pos, sys_s_len} <= req_rd_data;
-                sys_start <= 1'b1;
+                sys_start <= req_launch;   // OP_TELEM requests do NOT launch a run
             end
         end
     end
@@ -498,22 +583,85 @@ module glm_q4k_system_cdc #(
     );
 
     // ======================================================================
-    // TOKEN cdc_async_fifo : core_clk (write) -> host_clk (read).
-    //  Push the produced token on each sys_tok_valid pulse.
+    // TELEMETRY counters + RESPONSE formation (core_clk domain).
+    //   PROTO_CTX=0: resp_wr_en/resp_wr_data == today's tok_wr_en/sys_next_tok
+    //     (RESP_W_EFF==TOKW) -> the response FIFO is byte-identical.
+    //   PROTO_CTX=1: registered counters advance on real activity; a popped
+    //     OP_TELEM request pushes a counter SNAPSHOT (tagged is_telem) through
+    //     the SAME FIFO; a produced token pushes {is_telem=0, run-ctx, token}.
+    //     Token pushes have priority; a pending telemetry push waits for a free
+    //     write cycle, so nothing is dropped.
     // ======================================================================
-    wire            tok_wr_full;
-    wire            tok_wr_en   = sys_tok_valid & ~tok_wr_full;
+    wire                  tok_wr_full;
+    wire                  resp_wr_en;
+    wire [RESP_W_EFF-1:0] resp_wr_data;
 
-    wire            tok_rd_empty;
-    wire [TOKW-1:0] tok_rd_data;
-    wire            tok_rd_en;
+    generate
+        if (PROTO_CTX) begin : g_proto_core
+            // registered telemetry counters (core_clk domain)
+            reg [TELEM_W-1:0] ctr_tok;    // tokens produced (sys_tok_valid)
+            reg [TELEM_W-1:0] ctr_run;    // token-gen runs started (sys_start)
+            reg [TELEM_W-1:0] ctr_done;   // runs completed (sys_done)
+            reg [CTX_W-1:0]   cur_ctx;    // ctx of the in-flight run (attached to tokens)
+            reg               telem_pend; // an OP_TELEM snapshot is waiting to push
+            reg [CTX_W-1:0]   telem_ctx;  // ctx of the pending telemetry response
+
+            wire telem_push = telem_pend & ~sys_tok_valid & ~tok_wr_full;
+
+            always @(posedge core_clk) begin
+                if (core_rst_sync) begin
+                    ctr_tok    <= {TELEM_W{1'b0}};
+                    ctr_run    <= {TELEM_W{1'b0}};
+                    ctr_done   <= {TELEM_W{1'b0}};
+                    cur_ctx    <= {CTX_W{1'b0}};
+                    telem_pend <= 1'b0;
+                    telem_ctx  <= {CTX_W{1'b0}};
+                end else begin
+                    if (req_rd_d) begin
+                        cur_ctx <= req_ctx_popped;          // remember ctx for this run's tokens
+                        if (req_launch)   ctr_run <= ctr_run + 1'b1;
+                        if (req_is_telem) begin
+                            telem_pend <= 1'b1;
+                            telem_ctx  <= req_ctx_popped;
+                        end
+                    end
+                    if (sys_tok_valid) ctr_tok  <= ctr_tok  + 1'b1;
+                    if (sys_done)      ctr_done <= ctr_done + 1'b1;
+                    if (telem_push)    telem_pend <= 1'b0;  // cleared once its snapshot is pushed
+                end
+            end
+
+            // packed telemetry payload (LSB-first: tokens, runs, done, stall).
+            // ec_demand_stall_cycles is a live core-domain observability output.
+            wire [TELEM_PAY-1:0] telem_pack =
+                { ec_demand_stall_cycles[TELEM_W-1:0], ctr_done, ctr_run, ctr_tok };
+            wire [RESP_PAY-1:0]  tok_pay = { {(RESP_PAY-TOKW){1'b0}}, sys_next_tok };
+
+            assign resp_wr_en   = (sys_tok_valid | telem_pend) & ~tok_wr_full;
+            assign resp_wr_data = telem_push
+                ? { 1'b1, telem_ctx, telem_pack }                        // telemetry snapshot
+                : { 1'b0, cur_ctx,   tok_pay    };                       // generated token
+        end else begin : g_proto_core_off
+            assign resp_wr_en   = sys_tok_valid & ~tok_wr_full;
+            assign resp_wr_data = sys_next_tok;
+        end
+    endgenerate
+
+    // ======================================================================
+    // RESPONSE cdc_async_fifo : core_clk (write) -> host_clk (read).
+    //  (Named u_tok_fifo -- the token/response path.)  Push the produced token
+    //  (and, when PROTO_CTX=1, telemetry snapshots + ctx tags) on resp_wr_en.
+    // ======================================================================
+    wire                  tok_rd_empty;
+    wire [RESP_W_EFF-1:0] tok_rd_data;
+    wire                  tok_rd_en;
 
     cdc_async_fifo #(
-        .DATA_W (TOKW),
+        .DATA_W (RESP_W_EFF),
         .ADDR_W (TOK_AW)
     ) u_tok_fifo (
         .wclk   (core_clk), .wrst_n (core_rst_n),
-        .wr_en  (tok_wr_en), .wr_data(sys_next_tok), .full(tok_wr_full),
+        .wr_en  (resp_wr_en), .wr_data(resp_wr_data), .full(tok_wr_full),
         .rclk   (host_clk), .rrst_n (host_rst_n),
         .rd_en  (tok_rd_en), .rd_data(tok_rd_data), .empty(tok_rd_empty)
     );
@@ -535,11 +683,43 @@ module glm_q4k_system_cdc #(
             tok_valid <= 1'b0;
             tok_rd_d  <= tok_rd_en;
             if (tok_rd_d) begin
-                next_tok  <= tok_rd_data;
+                next_tok  <= tok_rd_data;   // low TOKW bits == the token
                 tok_valid <= 1'b1;
             end
         end
     end
+
+    // ----------------------------------------------------------------------
+    // host_clk RESPONSE tag extraction (PROTO_CTX=1): latch ctx id / telemetry
+    // fields from the SAME popped FIFO word, aligned to tok_valid (same tok_rd_d
+    // timing).  All fields come from tok_rd_data (a host-domain FIFO output) --
+    // no cross-domain register is sampled here.  Default OFF: outputs tied to 0.
+    // ----------------------------------------------------------------------
+    generate
+        if (PROTO_CTX) begin : g_proto_host
+            reg [CTX_W-1:0]     resp_ctx_r;
+            reg                 resp_tel_r;
+            reg [TELEM_PAY-1:0] resp_tel_pay_r;
+            always @(posedge host_clk) begin
+                if (host_rst_sync) begin
+                    resp_ctx_r     <= {CTX_W{1'b0}};
+                    resp_tel_r     <= 1'b0;
+                    resp_tel_pay_r <= {TELEM_PAY{1'b0}};
+                end else if (tok_rd_d) begin
+                    resp_tel_r     <= tok_rd_data[RESP_W_EFF-1];          // MSB: is_telem
+                    resp_ctx_r     <= tok_rd_data[RESP_W_EFF-2 -: CTX_W]; // next CTX_W: ctx id
+                    resp_tel_pay_r <= tok_rd_data[TELEM_PAY-1:0];         // low bits: counters
+                end
+            end
+            assign resp_ctx_id   = resp_ctx_r;
+            assign resp_is_telem = resp_tel_r;
+            assign resp_telem    = resp_tel_pay_r;
+        end else begin : g_proto_host_off
+            assign resp_ctx_id   = {CTX_W{1'b0}};
+            assign resp_is_telem = 1'b0;
+            assign resp_telem    = {(4*TELEM_W){1'b0}};
+        end
+    endgenerate
 
     // ======================================================================
     // STATUS crossings core_clk -> host_clk (single-bit only).
@@ -590,12 +770,24 @@ module glm_q4k_system_cdc #(
     //   before the (sync-delayed) core busy rises, so busy is asserted immediately
     //   on accept and stays high until the host-visible completion.
     // ----------------------------------------------------------------------
+    // A pure telemetry readback (OP_TELEM) does NOT start a run, so it must not
+    // raise the run-pending flag (there is no done edge to clear it).  Folds to
+    // constant 1 when PROTO_CTX=0 -> byte-identical default behavior.
+    wire req_sets_pending;
+    generate
+        if (PROTO_CTX) begin : g_pending_gate
+            assign req_sets_pending = (req_opcode == OP_TOKEN);
+        end else begin : g_pending_gate_off
+            assign req_sets_pending = 1'b1;
+        end
+    endgenerate
+
     reg host_pending;
     always @(posedge host_clk) begin
         if (host_rst_sync) host_pending <= 1'b0;
         else begin
-            if (req_wr_en)       host_pending <= 1'b1;
-            else if (done_edge)  host_pending <= 1'b0;
+            if (req_wr_en & req_sets_pending) host_pending <= 1'b1;
+            else if (done_edge)               host_pending <= 1'b0;
         end
     end
 
