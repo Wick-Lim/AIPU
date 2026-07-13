@@ -22,6 +22,7 @@ Test:  curl -s localhost:8000/v1/models
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,12 +67,41 @@ def _stop_scan(text: str, stops: list) -> "tuple[int | None, int]":
 # Server
 # ---------------------------------------------------------------------------
 class AIPUServer:
-    def __init__(self, device: AIPUDevice, tokenizer, raw: bool = False):
+    def __init__(self, device, tokenizer, raw: bool = False,
+                 backend_name: str = "", manifest_path: str | None = None):
         self.device = device
         self.tok = tokenizer
         #: raw=True forces the naive "role: content" flatten (byte scaffold / debug),
         #: bypassing the GLM chat template even when the GLM tokenizer is active.
         self.raw = raw
+        self.backend_name = backend_name
+        self.manifest_path = manifest_path
+        #: control-plane settings surfaced/editable via the management console.
+        self.settings = {
+            "default_max_tokens": 256,
+            "default_temperature": 0.0,
+            "eco_mode": "device-only (no physical device in the software demo)",
+            "caching": "prefix/KV reuse -- v0.2 (see docs/PRODUCT_SPEC.md)",
+        }
+
+    def provisioning_info(self) -> dict:
+        """Read a provision_image.py manifest if one was supplied; else report the
+           software-demo state honestly (host reads the GGUF directly, no NVMe image)."""
+        if self.manifest_path and os.path.exists(self.manifest_path):
+            try:
+                m = json.load(open(self.manifest_path))
+                return {"source": "provision manifest", "manifest": self.manifest_path,
+                        "model": m.get("model"), "total_bytes": m.get("total_bytes"),
+                        "image_sha256": m.get("image_sha256"),
+                        "tensor_count": m.get("tensor_count"),
+                        "resident_hot_bytes": m.get("resident_hot_bytes"),
+                        "streamed_expert_bytes": m.get("streamed_expert_bytes")}
+            except Exception as e:
+                return {"source": "manifest error", "error": str(e)}
+        return {"source": "software demo",
+                "note": "no NVMe image in the software demo -- the host reads the GGUF "
+                        "directly. On the box, tools/provision_image.py writes an image "
+                        "+ manifest that this panel would show (model/size/sha/segments)."}
 
     # ---- prompt formatting ---------------------------------------------------
     def prompt_text(self, messages: list[dict]) -> str:
@@ -107,6 +137,10 @@ class AIPUServer:
            StopIteration.value). Enforces `stop` sequences and `max_tokens` host-side;
            `temperature`/`top_p`/`top_k`/`seed` are programmed into the device (honored
            device-side; the mock is greedy)."""
+        # Text backend (software full-model, e.g. llama.cpp): it owns its own
+        # tokenizer and emits text directly -> use the text path, not the id path.
+        if hasattr(self.device, "stream_text"):
+            return (yield from self._decode_text(messages, sampling))
         prompt = self.prompt_text(messages)
         prompt_ids = self.tok.encode(prompt)
         self._prime_mock(prompt)
@@ -173,6 +207,35 @@ class AIPUServer:
         """Legacy streaming API: yield text deltas (finish_reason discarded)."""
         yield from self._decode(messages, SamplingParams(max_tokens=max_tokens))
 
+    # ---- text-backend decode (software full-model; llama.cpp owns tokenization) ----
+    def _decode_text(self, messages, sampling: SamplingParams):
+        """Stream real text from a text backend (`device.stream_text`), enforcing
+           `stop` sequences host-side. `return`s the same info dict as `_decode`."""
+        prompt = self.prompt_text(messages)
+        prompt_tok = len(self.tok.encode(prompt))
+        stops = sampling.stop
+        acc, emitted = "", 0
+
+        def _finish(reason):
+            return {"finish_reason": reason, "prompt_tokens": prompt_tok,
+                    "completion_tokens": max(0, len(self.tok.encode(acc)))}
+
+        for piece in self.device.stream_text(prompt, sampling):
+            if not piece:
+                continue
+            acc += piece
+            cut, safe = _stop_scan(acc, stops)
+            if cut is not None:
+                if cut > emitted:
+                    yield acc[emitted:cut]
+                return _finish("stop")
+            if safe > emitted:
+                yield acc[emitted:safe]
+                emitted = safe
+        if len(acc) > emitted:
+            yield acc[emitted:]
+        return _finish("stop")
+
 
 def _now() -> int:
     return int(time.time())
@@ -194,16 +257,45 @@ def make_handler(server: AIPUServer):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path.rstrip("/") == "/v1/models":
+            path = self.path.rstrip("/")
+            if path == "/v1/models":
                 self._json(200, {"object": "list", "data": [
                     {"id": server.device.model_id, "object": "model",
                      "created": _now(), "owned_by": "aipu"}]})
-            elif self.path.rstrip("/") in ("/health", "/v1/health"):
+            elif path in ("/health", "/v1/health"):
                 server.device.poll_ready()
                 self._json(200, {"state": server.device.state,
                                  "model": server.device.model_id})
+            # ---- management console (control plane; not a chat GUI) --------------
+            elif path in ("", "/console"):
+                self._serve_console()
+            elif path == "/api/status":
+                d = server.device
+                d.poll_ready()
+                tel = dict(getattr(d, "telemetry", {}) or {})
+                self._json(200, {
+                    "state": d.state, "model": d.model_id,
+                    "backend": server.backend_name, "tokenizer": server.tok.name,
+                    "telemetry": tel})
+            elif path == "/api/provisioning":
+                self._json(200, server.provisioning_info())
+            elif path == "/api/settings":
+                self._json(200, server.settings)
             else:
                 self._json(404, {"error": {"message": f"no route {self.path}"}})
+
+        def _serve_console(self):
+            try:
+                html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "console.html"), "rb").read()
+            except OSError:
+                self._json(500, {"error": {"message": "console.html missing"}})
+                return
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
 
         def do_POST(self):
             if self.path.rstrip("/") != "/v1/chat/completions":
@@ -279,16 +371,33 @@ def main(argv=None):
                    help="modelled device boot (resident-set load) time")
     p.add_argument("--tokenizer", default=None,
                    help="path to GLM tokenizer.json (else byte-level fallback)")
-    p.add_argument("--backend", choices=["mock", "sim"], default="mock",
-                   help="mock (canned, default) or sim (real RTL glm_model_q4k slice via "
-                        "vvp -- SLOW minutes/run, untrained slice tokens from FIXED TB "
-                        "vectors, not your prompt; needs `make model-q4k` first)")
+    p.add_argument("--backend", choices=["mock", "sim", "llama"], default="mock",
+                   help="mock (canned, default); sim (real RTL glm_model_q4k slice via "
+                        "vvp -- SLOW, untrained slice tokens from FIXED TB vectors); "
+                        "llama (v0.1 SOFTWARE full-model backend: REAL tokens from a GGUF "
+                        "via llama.cpp -- needs --model <gguf>. Software, not the accelerator.)")
+    p.add_argument("--model", default=None, help="GGUF path for --backend llama")
+    p.add_argument("--llama-cli", default=None, help="path to a llama.cpp llama-cli binary")
+    p.add_argument("--manifest", default=None,
+                   help="provision_image.py manifest json (shown in the console's "
+                        "provisioning panel)")
     p.add_argument("--raw", action="store_true",
                    help="skip the GLM chat template; use the naive 'role: content' "
                         "flatten (the byte-scaffold / debug path)")
     args = p.parse_args(argv)
 
-    if args.backend == "sim":
+    if args.backend == "llama":
+        from aipu_llama_backend import LlamaCppBackend
+        if not args.model:
+            p.error("--backend llama requires --model <gguf>")
+        device = LlamaCppBackend(args.model, llama_cli=args.llama_cli,
+                                 boot_seconds=args.boot_seconds)
+        tok = make_tokenizer(args.tokenizer)          # used only for prompt fmt + usage counts
+        backend_name = f"LlamaCppBackend(software, {device.model_id})"
+        print("NOTE: --backend llama is the v0.1 SOFTWARE full-model backend -- REAL tokens "
+              "from your GGUF via llama.cpp. It is software (CPU/GPU), NOT the AIPU "
+              "accelerator; swap the GGUF for GLM-5.2 on the box for the product experience.")
+    elif args.backend == "sim":
         from aipu_sim_backend import SimulatorBackend
         device = SimulatorBackend()                  # slice VOCAB=256 glm_model_q4k
         tok = make_tokenizer(args.tokenizer)          # decode is best-effort (slice tokens)
@@ -303,14 +412,18 @@ def main(argv=None):
         device = MockDevice(boot_seconds=args.boot_seconds,
                             eos_token=tok.eos_id, vocab_size=tok.vocab_size)
         backend_name = "MockDevice"
-    device.power_on()
-    server = AIPUServer(device, tok, raw=args.raw)
+    if hasattr(device, "power_on"):
+        device.power_on()
+    server = AIPUServer(device, tok, raw=args.raw, backend_name=backend_name,
+                        manifest_path=args.manifest)
     template = "raw-flatten" if server.raw else ("glm" if tok.name == "glm" else "flatten")
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(server))
-    print(f"AIPU server on http://{args.host}:{args.port}/v1  "
+    base = f"http://{args.host}:{args.port}"
+    print(f"AIPU server on {base}/v1  "
           f"(model={device.model_id}, backend={backend_name}, tokenizer={tok.name}, "
           f"template={template})")
-    print("  GET  /v1/models   GET /health   POST /v1/chat/completions [stream]")
+    print(f"  chat:    POST {base}/v1/chat/completions [stream]   GET {base}/v1/models")
+    print(f"  console: {base}/console   (health / settings / provisioning -- the control plane)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

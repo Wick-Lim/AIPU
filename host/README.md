@@ -22,24 +22,35 @@ lands.
   present) and a **GLM-5.2 chat template** (text path).
 - A **device-protocol driver** (`aipu_device.py`) that mirrors the `glm_q4k_system_cdc`
   host handshake exactly, with host-side `max_tokens` / `stop` / `finish_reason`.
-- Two backends: a **mock** (canned, self-labelled reply — proves the plumbing, default)
-  and an **on-main RTL co-sim** (`--backend sim`: real but slow, untrained-slice,
-  fixed-vector `glm_model_q4k` argmax tokens — a datapath witness, **not** a chatbot).
+- **Three backends**: a **mock** (canned, self-labelled reply — proves the plumbing,
+  default); an **on-main RTL co-sim** (`--backend sim`: real but slow, untrained-slice,
+  fixed-vector `glm_model_q4k` argmax tokens — a datapath witness, **not** a chatbot);
+  and — new (Stage 1 / v0.1) — a **software full-model backend**
+  (`--backend llama --model <gguf>`, `aipu_llama_backend.py`): **REAL tokens** from a
+  real GGUF via a local llama.cpp. It is *software* (CPU/GPU), **not** the accelerator;
+  swap the GGUF for GLM-5.2 on the box for the product experience. This makes the
+  end-to-end path real *today*: a standard OpenAI client → this server → real text.
+- A **management console** (`GET /console`, the control plane — NOT a chat GUI):
+  health/telemetry (`/api/status`), settings (`/api/settings`), and a provisioning
+  panel (`/api/provisioning`) that reads a `tools/provision_image.py` manifest
+  (model / size / sha256 / resident-hot vs streamed-expert segments). See
+  [`docs/PRODUCT_SPEC.md`](../docs/PRODUCT_SPEC.md) for the control-plane vs data-plane
+  split (chat = ecosystem clients; device management = this console).
 
-**IT IS NOT (none of this is built here — it is the future software track, see
-[`docs/USBC_PRODUCT_PLAN.md`](../docs/USBC_PRODUCT_PLAN.md)):**
-- **No RAG** — no document ingestion, embedder, or vector store.
-- **No GUI / web app** — no chat UI, no visualization (knowledge-graph / timeline), no
-  tuning dashboard, and no telemetry endpoints to feed one.
-- **No USB-C transport** — no libusb/pyusb/CDC-NCM driver; all traffic is loopback over
-  `127.0.0.1` to an in-process backend (`USBBackend` is a D1 to-build).
-- **No multi-context / sessions** — the server is single-user; concurrent requests
-  share one device object with no session routing or locking.
-- **No persistence** — fully stateless; no conversation history / KV reuse across
-  requests, nothing written to disk.
-- **No real model tokens for your prompt** — the mock echoes a canned string; the sim
-  emits fixed-vector slice tokens. Real language needs the full-model / hardware
-  backend (D1+).
+**IT IS NOT (still the future software track; personal-beachhead non-goals per
+[`docs/PRODUCT_SPEC.md`](../docs/PRODUCT_SPEC.md) / gaps in
+[`docs/USAGE_GAPS.md`](../docs/USAGE_GAPS.md)):**
+- **No RAG** — no document ingestion, embedder, or vector store (org beachhead).
+- **No chat GUI** — chat/code is via standard OpenAI clients (Open WebUI, Continue,
+  Cursor …); we deliberately don't build one. *(The management console above is the
+  control plane, a different thing.)*
+- **No USB-C transport** — no libusb/pyusb/CDC-NCM driver; v0.1 software runs the
+  backend in-process / over loopback (`USBBackend` arrives with hardware).
+- **No multi-context / sessions** — single-session; the RTL protocol now carries a
+  context-id (`PROTO_CTX`) but the core scheduler + host session manager are v0.2.
+- **No persistence** — conversation history / KV reuse across turns is v0.2.
+- **On the box, real GLM-5.2** — the software backend proves the experience on any
+  GGUF; real GLM-5.2 at product speed needs the silicon (the tapeout gate).
 
 ## What's real vs. scaffold (honest)
 
