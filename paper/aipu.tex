@@ -302,7 +302,11 @@ rate from it.
 
 \paragraph{Projected throughput.} Combining the measured bandwidth of a resident
 LPDDR5X pool with the measured $U(K)$ and $r$ inputs, the roofline projects a
-residency design point of order $80$--$110$\,\tps\est\ for the single-user box,
+residency design point of order $80$--$110$\,\tps\est\ for the single-user box
+--- presuming a MAC array sized to consume that bandwidth ($\sim$5.2K dequant lanes
+at 490\,MHz for the 1.1\,TB/s point, $\sim$7.3K for 1.54\,TB/s); with a smaller
+array it is the array, not the memory, that binds, and the roofline is not
+reached ---
 against $\sim$7\,\tps\ observed on a four-GPU offloading rig (bandwidth-starved)
 and $\sim$15--25\,\tps\ reported for a same-class 512\,GB unified-memory
 workstation. These are projections with measured inputs, not silicon

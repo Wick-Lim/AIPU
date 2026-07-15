@@ -47,7 +47,7 @@ subscription-free come as the *result*.
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
 | **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp; the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype` — see §2) |
 | **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST] — updated 2026-07: these **streaming** points now apply to rung ① / the hybrid upside SKU / >512 GB checkpoints; the rung-③ primary is **full residency, design point ≈80 tok/s [measured-inputs EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); spec multiplier = A/U(K), U now GLM-4.5-Air measured — U(4)=2.60–2.71, superseding the OLMoE proxy)* |
-| **Power** | **~40–60 W** (v3-volume residency SKU, self-powered) · ~50–80 W v3-proto · down to ~30 W eco/throttle (15 W bus-powered travel mode) [EST] — config-labeled canonical envelope in §7 / [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4. *(The old ~80–110 W figure was the pre-pivot streaming SKU; see §7.)* |
+| **Power** | **≥50–78 W** (v3-volume residency SKU, self-powered) · **≥64–99 W** v3-proto · eco/throttle ~30 W and 15 W travel mode **[UNVERIFIED — no static/self-refresh model for 480 GB exists]** — all **[EST, 재도출 2026-07]**, all **floors with an UNVERIFIED SoC term on top**, not budgets. See §7 / [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4. *(Old published: ~40–60 / ~50–80 W — retired, never derived. The old ~80–110 W was the pre-pivot streaming SKU: the new floor overlaps it by coincidence of arithmetic, NOT because the pivot came undone — see §7.)* |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
 | **Host** | thin driver + a local OpenAI-compatible endpoint → existing chat UIs / editors point at it |
 | **Target user** | air-gap / offline-mandated users (SCIF, defense-forward, isolated OT/critical-infra, field/edge), privacy-critical individuals, local-AI enthusiasts, cost-heavy power users |
@@ -329,21 +329,36 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 
 ## 7. Power & thermal (the hard constraint)
 
-**Canonical power envelope (config-labeled — [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4, the
-honest v1→v3 revision history):**
+**Power envelope — NOT canonical, and NOT a budget (config-labeled; re-derived 2026-07):** these are
+**floors with an open term on top**. The DRAM rail is defensible from [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)
+§4's own coefficient; the **SoC rail is UNVERIFIED** — the repo contains no pJ/op for the lane, no
+gate-density→W model, and no answer to whether the 4–6 pJ/bit already includes the SoC-side PHY (if it
+does not, a large term is missing; if it does, part is double-counted). The old ~15–25 W SoC figure was
+written when §3 said 3,072 lanes; §3 now says ~7,263. **Do not scale it by 1.4× or 1.8× to make a total
+appear — neither factor has a basis.** This heading previously read "Canonical" while citing a source
+that now disowns the number (R3 §3 미해결); that is fixed here.
 
 | config | draw [EST] | what it is |
 |---|---|---|
-| **v3-volume** (primary residency SKU) | **~40–60 W** | LPDDR5X rail ~25–40 W + SoC ~15–25 W; the shipping box — **plan your adapter around this** |
-| **v3-proto** (1.54 TB/s higher-BW variant) | **~50–80 W** | DRAM rail ~35–55 W + SoC ~15–25 W (§5a); same cooling class |
+| **v3-volume** (primary residency SKU) | **≥50–78 W [EST, 재도출]** | LPDDR5X rail **35–53 W** (= 1.1 TB/s × 8 × 4–6 pJ/bit, R3 §4's own coefficient and own method) + SoC **UNVERIFIED**. The old ~25–40 W rail figure is **retired: it reproduces at no design point this project has ever held** (it back-solves to ~780–830 GB/s, which never existed) — R3 §4. **Plan an adapter around the ≥ sign, not the number.** |
+| **v3-proto** (1.54 TB/s higher-BW variant) | **≥64–99 W [EST, 재도출]** | DRAM rail **49–74 W** (= 1.54 TB/s × 8 × 4–6 pJ/bit) + SoC **UNVERIFIED**. The old ~35–55 W rail was the retired ~25–40 W scaled ×1.4 — its span ratio (1.571) still carries that base's 40/25 = 1.600 signature, where a true 4–6 pJ/bit sweep must give exactly 6/4 = 1.500. Right scaling, wrong base. Cooling **method** (vapor chamber + fan) carries over; **"same cooling class" and the 저소음 qualifier do not** — ~64–99 W in ~1 L is ~1.6× the heat R3 §7 specced. (§5c — the earlier "(§5a)" cross-ref was wrong.) |
 | **eco / throttle** | **down to ~30 W**, or **15 W bus-powered "travel mode"** | `clk_throttle` runs the die f/div (byte-identical, BMC-proven, [`LOW_POWER.md`](LOW_POWER.md) §4) → single-digit tok/s |
 
 > **Note on the older ~80–110 W figure.** Earlier drafts of this doc cited **~80–110 W** at
 > interactive. That is the **pre-residency-pivot (v2-era) streaming-SKU** number, when NAND streaming
 > dominated the thermal budget (~40–90 W on the NAND read — R3 §4 v2 = ~70–120 W). The residency pivot
-> **deletes the NAND-stream term**, so the primary SKU is **~40–60 W (v3-volume)**, not ~80–110 W. The
-> ~80–110 W band is retained here only as history; it is **not** the number a residency-box user plans
-> around.
+> **deletes the NAND-stream term**, so that particular ~80–110 W band is history and is **not** what a
+> residency box draws for that reason.
+>
+> **But read this before concluding the pivot is undone (2026-07 재도출).** The honest v3-proto number
+> — **≥64–99 W** — lands *inside* the very band this note disowns. **Same number, different physics,
+> and the coincidence is meaningless.** The v2 ~80–110 W was **NAND read energy** (~40–90 W of it), a
+> term the pivot genuinely deleted and which has not returned. The new ≥64–99 W is **LPDDR5X rail
+> energy at 1.54 TB/s** — a term that grew because the *design point's bandwidth* grew (650 GB/s →
+> 1.1 → 1.54), computed with R3 §4's own 4–6 pJ/bit by R3 §4's own method. The pivot's thermal win is
+> real and intact; the box is nonetheless hotter than published, because **the published number was
+> never derived** (§4's ~25–40 W rail reproduces at no rate this project has held). Two independent
+> facts, not one walked back.
 
 All configs are **above the 15 W USB-C default** (except the deliberate travel-mode throttle), so pick
 an adapter for the v3 draw:
@@ -351,8 +366,8 @@ an adapter for the v3 draw:
 | USB-PD tier | budget | verdict for the v3 residency box |
 |---|---|---|
 | USB-C default | 15 W | ✗ full speed — but = the **15 W bus-powered "travel/eco" throttle** (single-digit tok/s) |
-| PD SPR | 60 / 100 W | **100 W ✓** for v3-volume (~40–60 W) with headroom, and covers v3-proto peak (~80 W); 60 W △ (throttled) |
-| PD 3.1 EPR | 140–240 W | ✓ full headroom (R3's DC 19 V / USB-PD 100–140 W recommendation), but needs a compatible host **and** cable (rare) |
+| PD SPR | 60 / 100 W | **100 W: v3-volume only, and only if the re-derived 50–78 W [EST] band holds** — the SoC term in it is UNVERIFIED, so this is a floor, not a budget. **Does NOT cover v3-proto** (≥64–99 W [EST]): at the top of that band a 100 W brick has ~1 W of margin *before* the SoC term is counted. 60 W △ (throttled) |
+| PD 3.1 EPR | 140–240 W | **v3-proto requires EPR** on the re-derived numbers — and this row's own warning applies: it needs a compatible host **and** cable (**rare**), so this is a plugability constraint on the product, not spare headroom. NOTE: **do not claim 140 W is *sufficient* either** — that needs the UNVERIFIED SoC term. (R3's DC 19 V / USB-PD 100–140 W recommendation is unchanged; what changed is the claim that 100 W suffices.) |
 
 **Conclusion: a self-powered box (own DC/PD input, ~100–140 W adapter per R3 §4) with USB-C as the data
 link** — the eGPU / NAS model. A laptop port cannot both source the box's draw **and** have the host
