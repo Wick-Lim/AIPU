@@ -95,6 +95,11 @@ module glm_model_q4k #(
     parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions via pos_vec (P1.3a)
     parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents via s_len_vec (P1.3d)
     parameter integer PER_ROW_SEQ = 0,  // 1 = per-row sequence ids via seq_vec (A2; kc_seq out)
+    // DSA_REAL_IDX: threaded model -> decoder -> mla_attn_q4k (that file's header, :153-162).
+    //   0 (default): indexer fed ZERO key-index vectors -> top-K keeps keys 0..min(S,TOPK)-1
+    //     by tie-break = QUERY-INDEPENDENT.  1: real query-dependent selection.
+    //   No-op while DENSE (S <= TOPK); load-bearing once S_MAX > TOPK_ATTN.
+    parameter integer DSA_REAL_IDX = 0,
     // ====================================================================
     // derived (do NOT override) -- mirror decoder_block_q4k's port-width derivations
     // ====================================================================
@@ -277,7 +282,7 @@ module glm_model_q4k #(
         .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M),
         .ACT_HW(ACT_HW),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
-        .PER_ROW_SEQ(PER_ROW_SEQ)
+        .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX)
     ) u_block (
         .clk(clk), .rst(rst), .start(db_start), .busy(db_busy), .done(db_done),
         .mode(db_mode), .pos(pos), .s_len(s_len),

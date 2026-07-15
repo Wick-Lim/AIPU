@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test synth-glm fit-harness cdc coverage resident resident-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -36,7 +36,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # `release-gate` is the full pre-release battery: every simulation, structural,
 # CDC and formal gate in the repo.  HOURS-long (model-q4k / spec-slow / expert-cache
 # / batched-q4k are minutes-to-hours each in iverilog); run before cutting a release.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv expert-cache full-elab mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-thread-equiv expert-cache full-elab mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
 	@echo "release-gate: ALL gates passed"
 
 
@@ -538,6 +538,63 @@ resident-equiv:
 	    equiv_simple -undef; equiv_induct -undef; equiv_status -assert" \
 	    && echo "[resident-equiv] PROVEN: glm_q4k_system(default) == $(RESIDENT_BASE)" \
 	    || { echo "FAILED: resident-equiv"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# dsa-thread-equiv : DSA_REAL_IDX threaded system -> model -> decoder -> mla_attn.
+#
+#   WHY THIS EXISTS.  DSA_REAL_IDX used to be a parameter of mla_attn_q4k ONLY: no
+#   parent passed it, so the production hierarchy hard-wired it to its default 0 and
+#   =1 was UNREACHABLE from any top.  At 0 the indexer is fed zero key-index vectors,
+#   so every key scores 0 and top-K keeps keys 0..min(S,TOPK)-1 by tie-break --
+#   QUERY-INDEPENDENT (mla_attn_q4k.v:155-158).  That is invisible at the committed
+#   S_MAX=8/TOPK_ATTN=8 (dense: min(8,8)=8 = every key, and mla_attn_q4k.v:165-169
+#   says the dense path never pulls keys at all, so it is a no-op for ANY value) --
+#   and it is catastrophic the moment S_MAX > TOPK_ATTN, where every query at every
+#   position would attend ONLY to the first TOPK tokens of the sequence.  Fluent
+#   output, frozen prefix, and green tests: nothing asserts WHICH keys were selected.
+#   So raising the context window must be a DECISION about attention, not an accident
+#   of an unthreaded default.  =1 is already proven bit-exact at the leaf by
+#   `make mla-sparse` (PE_M=3, per-row q-dependent DSA); this gate proves the
+#   THREADING changed nothing at the default.
+#
+#   WHAT THIS GATE PROVES WHEN IT PASSES: glm_decoder_block_q4k at DSA_REAL_IDX=0
+#   (default) is equivalent to the pre-threading netlist -- with mla_attn_q4k
+#   elaborated as a REAL module, not a blackbox, so the parameter's whole journey to
+#   its consumer is exercised.  The levels above (model, system, cdc) only forward a
+#   constant, and this is the innermost changed module, so proving it here covers the
+#   thread.
+#
+#   STATUS (2026-07): NOT YET GREEN.  equiv_induct over a full decoder with the
+#   attention as a real module has not completed inside this machine's budget (>13 min,
+#   killed; a small-config RTLIL diff was also tried and did not finish).  What IS
+#   established without it: the source diff is exactly the parameter declaration plus
+#   one instance connection per level, every level defaults to 0 and forwards it, so
+#   mla_attn_q4k receives the same 0 it previously defaulted to.  That is a sound
+#   ARGUMENT, not a machine-checked proof -- which is why this gate exists and is
+#   wired into release-gate rather than being declared unnecessary.  Run it somewhere
+#   with a bigger time budget before trusting "byte-identical".
+DSA_EQUIV_BASE ?= d8f8f8f
+DSA_EQUIV_DEPS := src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v \
+	src/glm_matmul_q4k.v src/rmsnorm_unit.v src/rope_interleave_unit.v \
+	src/glm_softmax.v src/dsa_indexer.v src/topk_select.v src/glm_act.v \
+	src/glm_matmul_pipe.v src/glm_fp_pipe.v
+dsa-thread-equiv:
+	@mkdir -p $(BUILD_DIR)
+	@git show "$(DSA_EQUIV_BASE):src/glm_decoder_block_q4k.v" > $(BUILD_DIR)/dblk_base.v
+	@printf '[dsa-thread-equiv] '; $(YOSYS) -q -p "\
+	    read_verilog -sv -I src $(DSA_EQUIV_DEPS); \
+	    read_verilog -sv -I src $(BUILD_DIR)/dblk_base.v; \
+	    prep -top glm_decoder_block_q4k; opt_clean -purge; \
+	    rename glm_decoder_block_q4k gold; design -stash gdes; \
+	    read_verilog -sv -I src $(DSA_EQUIV_DEPS); \
+	    read_verilog -sv -I src src/glm_decoder_block_q4k.v; \
+	    prep -top glm_decoder_block_q4k; opt_clean -purge; rename glm_decoder_block_q4k gate; \
+	    design -copy-from gdes -as gold gold; \
+	    equiv_make gold gate equiv; prep -top equiv; \
+	    equiv_simple -undef; equiv_induct -undef; equiv_status -assert" \
+	    && echo "PROVEN: glm_decoder_block_q4k(DSA_REAL_IDX=0) == $(DSA_EQUIV_BASE) (pre-threading)" \
+	    || { echo "FAILED: dsa-thread-equiv"; exit 1; }
+
 
 # ---- FULL-CONFIG (753B-shape) elaboration gate (PRODUCT_ROADMAP P1.2) -------
 # Elaborates glm_model_q4k with EVERY parameter at the REAL 753B GLM-5.2

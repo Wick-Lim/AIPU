@@ -22,7 +22,17 @@
 #   * no sky130/OpenLane on this machine, and sky130 is 130nm anyway (wrong node) --
 #     a real PDK number remains [측정필요].
 #
-# Runtime: ~10 min (fp32 combinational MAC at KMAX=256 is heavy).
+# KMAX=32, not 256: KMAX sets the k-counter/accumulator width, which is FIXED overhead,
+# not per-lane -- verified, PE_N=1 measures 44,747 GE at KMAX=256 vs 41,563 at KMAX=32, a
+# constant 3,184 that the SLOPE cancels. KMAX=256 makes PE_N=2/3 synthesis blow up (it did,
+# twice) for a number the slope does not depend on.
+#
+# Result (yosys 0.66, PE_M=4): PE_N=1/2/3 = 41,563 / 80,787 / 121,550 GE
+#   -> slope = 39,994 GE per lane, intercept 1,570; deltas 39,225 and 40,763 = 3.8% spread,
+#      i.e. genuinely linear. §3's '2-3만/lane' is the right order, low by ~1.3-1.6x.
+#      §3's '3K lanes ~= 다이 수 mm²' is NOT: 3,072 lanes = 122.9M GE = 14.0-19.3 mm².
+#
+# Runtime: ~10 min.
 # Usage: tools/lane_area_sweep.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -34,7 +44,7 @@ for N in 1 2 3; do
   echo "  synthesizing PE_N=$N ..." >&2
   cat > "$OUT/s$N.ys" <<EOF
 read_verilog -I src src/glm_matmul_q4k.v
-chparam -set PE_M 4 -set PE_N $N -set KMAX 256 glm_matmul_q4k
+chparam -set PE_M 4 -set PE_N $N -set KMAX 32 glm_matmul_q4k
 hierarchy -top glm_matmul_q4k
 synth -top glm_matmul_q4k -flatten
 abc -g simple

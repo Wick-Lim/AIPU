@@ -176,7 +176,7 @@ to ~45). The new primary design point:
   (9.6 Gbps) is buyable retail** — so the rung-③ build sequence now leads with
   **v3-proto: 24 GB ×20, 1280-bit, 480 GB resident, PCB-HDI direct mount
   (~130×110 mm board), ~1.54 TB/s → ~110 tok/s [EST]** (which presumes a MAC array
-  sized to consume 1.54 TB/s — ~7.3K lanes @490 MHz, re-derived in
+  sized to consume 1.54 TB/s — ~6.6K–7.3K lanes @490 MHz, re-derived in
   [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §3; a smaller array, not bandwidth,
   becomes the bottleneck), deferring both the
   NDA procurement and the on-substrate-16-package packaging (the two hardest

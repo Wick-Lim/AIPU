@@ -102,6 +102,14 @@ module glm_decoder_block_q4k #(
     parameter integer PER_ROW_POS = 0,   // 1 = per-row query positions via pos_vec (P1.3a)
     parameter integer PER_ROW_SLEN= 0,   // 1 = per-row causal extents via s_len_vec (P1.3d)
     parameter integer PER_ROW_SEQ = 0,   // 1 = per-row sequence ids via seq_vec (A2; kc_seq out)
+    // DSA_REAL_IDX: threaded straight to mla_attn_q4k (see its header at :153-162).
+    //   0 (default) = the indexer is fed ZERO key-index vectors, so every key scores 0
+    //     and top-K keeps keys 0..min(S,TOPK)-1 by tie-break -- QUERY-INDEPENDENT.
+    //   1 = real, query-dependent key-index vectors, so top-K actually depends on the query.
+    // This is a NO-OP in the DENSE regime (S <= TOPK: no keys are pulled at all, per
+    // mla_attn_q4k.v:165-169), which is why the committed S_MAX=8/TOPK_ATTN=8 slice shows
+    // no difference for either value. It becomes load-bearing the moment S_MAX > TOPK_ATTN.
+    parameter integer DSA_REAL_IDX = 0,
     parameter integer H_HEADS    = 4,
     parameter integer NOPE       = 16,
     parameter integer ROPE       = 16,
@@ -333,7 +341,7 @@ module glm_decoder_block_q4k #(
         .V_DIM(V_DIM), .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX),
         .TOPK(TOPK_ATTN), .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
         .PE_M(PE_M), .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
-        .PER_ROW_SEQ(PER_ROW_SEQ)
+        .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX)
     ) u_attn (
         .clk(clk), .rst(rst), .start(at_start), .busy(at_busy), .done(at_done),
         .pos(pos_q), .s_len(slen_q), .x_vec(nrm_vec),

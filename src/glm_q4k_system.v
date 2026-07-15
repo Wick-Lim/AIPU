@@ -139,6 +139,16 @@ module glm_q4k_system #(
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 4,
     parameter integer ACT_HW     = 0,   // activation HW lanes (0 = full) -- result-invariant knob
+    // DSA_REAL_IDX (default 0 == the committed netlist, byte-identical -- `make dsa-thread-equiv`):
+    //   0: the DSA indexer is fed ZERO key-index vectors, so every key scores 0 and top-K keeps
+    //      keys 0..min(S,TOPK)-1 by lower-index tie-break -- QUERY-INDEPENDENT selection.
+    //   1: real query-dependent key-index vectors (proven bit-exact at the leaf by `make mla-sparse`).
+    // A NO-OP while DENSE (S <= TOPK: no keys are pulled at all, mla_attn_q4k.v:165-169), which is
+    // why the committed S_MAX=8/TOPK_ATTN=8 slice is identical either way. It becomes LOAD-BEARING
+    // the moment S_MAX > TOPK_ATTN: at 0, a scaled-up window would attend ONLY to the first TOPK
+    // tokens of the sequence, for every query, at every position -- fluent-looking and wrong.
+    // Threaded so that raising S_MAX is a decision about attention, not an accident of defaults.
+    parameter integer DSA_REAL_IDX = 0,
     // ---- memory-system config ----
     parameter integer CACHE_SLOTS = 4,      // GDDR6 expert-cache slots (slice)
     parameter integer FLASH_LAT   = 8,      // Flash fetch latency (doc; TB models)
@@ -469,7 +479,7 @@ module glm_q4k_system #(
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW)
+        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW), .DSA_REAL_IDX(DSA_REAL_IDX)
     ) u_model (
         .clk(die_clk), .rst(rst),
         .start(mdl_start), .busy(mdl_busy), .done(mdl_done),
