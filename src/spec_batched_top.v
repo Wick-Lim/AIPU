@@ -12,7 +12,25 @@
 //
 //     verify rows (PE_M = DRAFT_K+1):
 //        row 0      = cur_tok   (the last committed token, position t)
-//        row j (1..K) = d_j     (the j-th chained MTP draft, position t+j)
+//        row j (1..K) = d_j     (the j-th chained MTP draft, LOGICALLY position t+j)
+//
+//   HONEST SCOPE -- READ THIS BEFORE TRUSTING THE "position t+j" ABOVE.
+//   "position t+j" is the ROLE each row plays in the spec-decode algorithm, NOT what
+//   this module asks the model to compute. Every row is driven at the SAME scalar
+//   position: `.pos(cur_pos)` / `.s_len(s_len_q)` below, and PER_ROW_POS /
+//   PER_ROW_SLEN are never enabled here (they exist, and are proven at PE_M=3 by
+//   `make mla-sparse`, but no spec top turns them on). All rows also SHARE one KV
+//   cache, and the die has no KV egress path at all (src/mla_attn_q4k.v:381-386 --
+//   the computed latent is write-only), so draft j cannot attend to draft j-1's key:
+//   that key is never produced anywhere in the design.
+//   Therefore this module demonstrates the ÷K WEIGHT-LOAD MECHANISM -- one weight
+//   fetch feeding K+1 rows -- and NOT a position-accurate causal verify. The
+//   spec==greedy invariant lives in the committed spec_decode_seq, not here.
+//   (Carried forward from the fp8 ancestor's commit fee8501, which stated this in its
+//   message only; the caveat did not survive into the Q4_K header, leaving the file
+//   claiming more than it does. Every spec TB's "greedy" reference is ALSO shared-pos
+//   -- test/spec_chain_top_tb.v:12-14 -- so no test measures the drift from a
+//   position-accurate verify. Whether that drift is small or fatal is UNKNOWN.)
 //
 //   glm_model_q4k at PE_M=K+1 pushes all K+1 rows through the model in LOCKSTEP:
 //   ONE weight fetch per (layer, projection, expert) feeds every row (the aw_*/
