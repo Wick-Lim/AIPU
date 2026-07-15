@@ -164,6 +164,31 @@ class AIPUDevice(abc.ABC):
         re-feeding tokens whose KV no longer exists, silently corrupting attention."""
         self._kv_ids = []
 
+    # ---- context bound (the ring aliases; see context_capacity) -------------------
+    class ContextOverflow(RuntimeError):
+        """The turn would run past the resident KV ring, where positions alias."""
+
+    def _check_context_fits(self, n_prompt: int, max_new_tokens: int,
+                            start_pos: int = 0) -> None:
+        """Refuse a turn that would address a position beyond the ring.
+
+        Checked against the LAST position the turn would touch -- prompt AND the tokens
+        it is allowed to generate -- because the aliasing happens on write, so catching
+        it after prefill would already have clobbered live rows. The caller's policy
+        (clear the context and start fresh, or compact it) belongs in the host/UI; this
+        layer's job is only to make the failure visible instead of silent."""
+        if self.context_capacity is None:
+            return
+        last = start_pos + n_prompt + max(0, max_new_tokens)
+        if last > self.context_capacity:
+            raise self.ContextOverflow(
+                f"turn needs positions up to {last:,} but the resident KV ring holds "
+                f"{self.context_capacity:,} (prompt {n_prompt:,} + up to "
+                f"{max_new_tokens:,} new, from {start_pos:,}). The ring addresses by "
+                f"bit-slice modulo, so going past it would silently overwrite the "
+                f"oldest rows and corrupt attention rather than error. Clear the "
+                f"context (reset_session) and start a fresh one, or shorten the input.")
+
     # ---- prefix cache (D5: 캐싱 = 무조건, docs/PRODUCT_SPEC.md) -------------------
     def _prefix_reuse(self, prompt_ids: list[int]) -> int:
         """How many leading prompt tokens are ALREADY resident (so must not be re-fed).
@@ -202,6 +227,19 @@ class AIPUDevice(abc.ABC):
     #: the token id that ends generation (EOS). Real value comes from the tokenizer.
     eos_token: int = -1
 
+    #: Resident KV ring capacity, in token positions. None = unknown/unbounded (replay
+    #: stubs). Set it on any backend whose KV is a real ring, because THE RING ALIASES:
+    #: `kv_cache_pager.v:73-74` states "RESIDENT must be a POWER OF TWO (the ring uses
+    #: bit-slice modulo slot = pos[RPTRW-1:0])", so position `capacity` lands on slot 0
+    #: and SILENTLY OVERWRITES position 0. Nothing errors; the model keeps emitting
+    #: fluent tokens while attention reads clobbered keys. For this product's buyers
+    #: that reads as hallucination, which is why the guard below fails LOUDLY instead:
+    #: a refusal is recoverable, a silently wrong answer is not.
+    #: The box is single-context by construction -- the production top never passes
+    #: NSEQ (it defaults to 1; multi-context lives only in the unshipped
+    #: `glm_q4k_soc_ms`) -- so this one ring is the whole context budget.
+    context_capacity: int | None = None
+
     #: sampling programmed for the current generate() (None => greedy/argmax).
     _sampling: "SamplingParams | None" = None
 
@@ -237,6 +275,7 @@ class AIPUDevice(abc.ABC):
            logits-capable backend; the mock is greedy and ignores it."""
         self.wait_ready()
         prompt_ids = list(prompt_ids)
+        self._check_context_fits(len(prompt_ids), max_new_tokens, start_pos)
         # Prefix cache: re-feed ONLY the tokens the device does not already hold. The
         # cache is keyed on absolute position, so it applies to a sequence indexed from
         # 0; a caller placing the prompt elsewhere is managing positions itself.

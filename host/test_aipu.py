@@ -365,6 +365,43 @@ def test_prefix_cache_saves_real_work():
     assert cached.prefix_stats["reused"] > cached.prefix_stats["fed"]
 
 
+def test_context_overflow_refuses_instead_of_aliasing():
+    """The KV ring addresses by bit-slice modulo (kv_cache_pager.v:73-74), so a turn
+       past its capacity would overwrite the oldest rows and corrupt attention while
+       still emitting fluent tokens. Refuse loudly instead -- for this product's buyers
+       a silently wrong answer is the one failure that cannot be recovered from."""
+    d = _KVDevice()
+    d.context_capacity = 64
+    list(d.generate([1, 2, 3], max_new_tokens=4))                 # 7 <= 64: fine
+    try:
+        list(d.generate(list(range(1, 60)), max_new_tokens=10))   # 69 > 64
+    except AIPUDevice.ContextOverflow as e:
+        assert "64" in str(e), e
+    else:
+        raise AssertionError("ran past the ring instead of refusing")
+
+
+def test_context_overflow_counts_generated_tokens_too():
+    """The bound must include what the turn will GENERATE, not just the prompt: the
+       aliasing happens on write, so a prompt that fits but whose reply does not would
+       clobber live rows mid-generation -- after the caller has already seen output."""
+    d = _KVDevice()
+    d.context_capacity = 20
+    try:
+        list(d.generate([1, 2, 3], max_new_tokens=100))           # prompt fits, reply doesn't
+    except AIPUDevice.ContextOverflow:
+        pass
+    else:
+        raise AssertionError("only bounded the prompt; generation can still alias")
+
+
+def test_context_capacity_unset_is_unbounded():
+    """Replay stubs have no real ring; the guard must not invent a limit for them."""
+    d = _KVDevice()
+    assert d.context_capacity is None
+    list(d.generate([1, 2, 3], max_new_tokens=4))                 # no raise
+
+
 def test_prefix_cache_records_generated_tokens():
     """The reply must join the cache EXACTLY: after a turn the device holds the prompt
        followed by the tokens it generated, at those positions.
