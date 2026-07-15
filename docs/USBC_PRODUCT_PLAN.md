@@ -334,7 +334,7 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 §4's own coefficient; the **SoC rail is UNVERIFIED** — the repo contains no pJ/op for the lane, no
 gate-density→W model, and no answer to whether the 4–6 pJ/bit already includes the SoC-side PHY (if it
 does not, a large term is missing; if it does, part is double-counted). The old ~15–25 W SoC figure was
-written when §3 said 3,072 lanes; §3 now says ~7,263. **Do not scale it by 1.4× or 1.8× to make a total
+written when §3 said 3,072 lanes; §3 now says ~6,590 (at the checkpoint's measured 0.62 B/param). **Do not scale it by 1.4× or 1.8× to make a total
 appear — neither factor has a basis.** This heading previously read "Canonical" while citing a source
 that now disowns the number (R3 §3 미해결); that is fixed here.
 
