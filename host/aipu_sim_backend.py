@@ -63,7 +63,12 @@ class SimulatorBackend(AIPUDevice):
     def _boot_seconds(self) -> float:
         return 0.0                                   # the binary is already built
 
+    # The slice sim REPLAYS the argmax stream of ONE fixed vvp run (prefill() below
+    # ignores prompt_ids), so there is no position-addressed KV to reuse.
+    supports_prefix_cache = False
+
     def reset_session(self) -> None:
+        super().reset_session()
         self._cursor = 0                             # keep the cached RTL tokens
 
     def _binary_path(self) -> str:

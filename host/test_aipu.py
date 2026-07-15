@@ -32,7 +32,10 @@ class _FixedDevice(AIPUDevice):
     def _boot_seconds(self):
         return 0.0
 
+    supports_prefix_cache = False        # replays a fixed list; no position-addressed KV
+
     def reset_session(self):
+        super().reset_session()
         self._c = 0
 
     def configure_sampling(self, sampling):
@@ -285,6 +288,206 @@ def test_mockdevice_accepts_and_ignores_sampling():
     out = bytes(d.generate([1, 2, 3], max_new_tokens=100, sampling=sp)).decode()
     assert out == "XYZ", out                       # output unaffected by sampling
     assert d._sampling is sp                        # accepted/recorded
+
+
+# ---------------------------------------------------------------------------
+# PREFIX / KV CACHE  (D5 "캐싱 = 무조건", docs/PRODUCT_SPEC.md)
+# ---------------------------------------------------------------------------
+class _KVDevice(AIPUDevice):
+    """Device that models POSITION-ADDRESSED KV honestly, so these tests have real
+       power to catch a cache bug.
+
+       `step(tok, pos, s_len)` writes row `pos` and returns a next token derived from
+       the WHOLE attended window rows[0:s_len] -- exactly the dependency a real
+       attention has. So any prefix-cache error changes the output:
+         * a row never fed        -> a HOLE in the window (asserted below),
+         * a stale row reused     -> different window contents -> different token,
+         * a token fed at the wrong position -> different window order -> different token.
+       A cache that merely *skips work* cannot pass by accident."""
+    supports_prefix_cache = True
+    eos_token = -1                                   # unreachable: outputs are >= 1
+
+    def __init__(self):
+        super().__init__()
+        self.rows: dict[int, int] = {}
+        self.steps = 0                               # real work done (die passes)
+        self.state = DeviceState.READY
+
+    def _boot_seconds(self):
+        return 0.0
+
+    def reset_session(self):
+        super().reset_session()
+        self.rows = {}
+
+    def step(self, prompt_tok, start_pos, s_len):
+        self.rows[start_pos] = prompt_tok            # KV of `prompt_tok` lands at row pos
+        self.steps += 1
+        win = [self.rows.get(i) for i in range(s_len)]
+        assert all(v is not None for v in win), \
+            f"attention window [0,{s_len}) has a HOLE: {win} -- a token was never fed"
+        h = 0
+        for i, v in enumerate(win):                  # order-sensitive over the window
+            h = (h * 31 + v * (i + 1)) % 251
+        return h + 1
+
+
+def _chat(dev, n_turns=4, sys_len=40, reply_len=5):
+    """Drive a realistic chat: the server re-sends the WHOLE conversation each turn,
+       so turn N's prompt = turn N-1's prompt + reply + the new user message."""
+    convo, replies = list(range(1, sys_len + 1)), []
+    for t in range(n_turns):
+        convo = convo + [200 + t]                    # this turn's user message
+        reply = list(dev.generate(convo, max_new_tokens=reply_len))
+        replies.append(reply)
+        convo = convo + reply                        # the reply joins the history
+    return replies
+
+
+def test_prefix_cache_is_output_equivalent():
+    """THE load-bearing test: the cache must be BEHAVIOUR-PRESERVING -- identical
+       tokens to the uncached path, just less work. Same discipline as the RTL
+       equivalence gates: prove it changes nothing, THEN claim the win."""
+    cached, plain = _KVDevice(), _KVDevice()
+    plain.supports_prefix_cache = False              # the pre-cache behaviour
+    assert _chat(cached) == _chat(plain), "prefix cache CHANGED the output"
+    assert cached.steps < plain.steps, (cached.steps, plain.steps)
+
+
+def test_prefix_cache_saves_real_work():
+    """The win must be large and must grow with conversation length."""
+    cached, plain = _KVDevice(), _KVDevice()
+    plain.supports_prefix_cache = False
+    _chat(cached, n_turns=6), _chat(plain, n_turns=6)
+    assert cached.steps * 3 < plain.steps, (cached.steps, plain.steps)
+    # Every prompt token past turn 1 should be a hit except the fork (user msg + the
+    # one always-fed token), so reuse must dominate the tokens fed.
+    assert cached.prefix_stats["reused"] > cached.prefix_stats["fed"]
+
+
+def test_prefix_cache_records_generated_tokens():
+    """The reply must join the cache EXACTLY: after a turn the device holds the prompt
+       followed by the tokens it generated, at those positions.
+
+       Pinned as an invariant because drifting it is INVISIBLE to the equivalence test:
+       if `_kv_ids` is off by one, reuse stops at the reply boundary and the whole reply
+       is re-fed every turn -- output stays correct, most of the win silently vanishes.
+       Chat re-sends the reply next turn, so this is where the win actually comes from."""
+    d = _KVDevice()
+    prompt = [1, 2, 3]
+    reply = list(d.generate(prompt, max_new_tokens=4))
+    assert d._kv_ids == prompt + reply, (d._kv_ids, prompt + reply)
+
+
+def test_prefix_cache_reuses_the_previous_reply():
+    """Turn 2 must re-feed only the fork: the new user message (+ the always-fed one)."""
+    d = _KVDevice()
+    convo = [1, 2, 3]
+    reply = list(d.generate(convo, max_new_tokens=4))
+    convo = convo + reply + [99]                     # history + reply + new user msg
+    n0 = d.steps
+    list(d.generate(convo, max_new_tokens=2))
+    fed = d.steps - n0 - 2                           # minus the 2 decode steps
+    assert fed <= 2, f"re-fed {fed} prompt tokens; the reply should have been cached"
+
+
+def test_prefix_cache_tracks_positions_on_continuation():
+    """start_pos != 0 means "continue this session": the prompt lands at rows start_pos
+       onward, NOT row 0. Recording it as row 0 would corrupt the NEXT turn's reuse --
+       an error invisible on the turn that causes it."""
+    d = _KVDevice()
+    list(d.generate([1, 2, 3], max_new_tokens=2))
+    held = list(d._kv_ids)
+    list(d.generate([7, 8], max_new_tokens=1, start_pos=len(held)))
+    assert d._kv_ids[:len(held)] == held, "continuation clobbered the resident rows"
+    assert d._kv_ids[len(held):len(held) + 2] == [7, 8], d._kv_ids
+
+
+class _LenientKVDevice(_KVDevice):
+    """As _KVDevice but does NOT police the caller (a real device need not assert on a
+       hole). Used to test the host's own bookkeeping in isolation."""
+    def step(self, prompt_tok, start_pos, s_len):
+        self.rows[start_pos] = prompt_tok
+        self.steps += 1
+        return (prompt_tok + start_pos) % 251 + 1
+
+
+def test_prefix_cache_drops_rather_than_guesses():
+    """If the rows before start_pos are unaccounted for, the cache must DROP itself, not
+       guess. Recording the prompt as if it began at row 0 would claim rows the host
+       never placed -- and the device may not police that for us."""
+    d = _LenientKVDevice()
+    list(d.generate([1, 2], max_new_tokens=1, start_pos=9))    # rows 0..8 unaccounted
+    assert d._kv_ids == [], f"cache claimed rows it never placed: {d._kv_ids}"
+
+
+def test_prefix_cache_survives_reasoning_strip():
+    """GLM's template CLEARS historical <think> reasoning, but the device generated it
+       and so its KV holds it. Turn N+1's prompt therefore FORKS from the KV at the last
+       reply's <think> -- structural to a thinking model, not a bug.
+
+       What must hold: the fork costs only the LAST reply + the new message. Everything
+       before it (system prompt + earlier history) must still hit, because after the
+       fork the cache records the STRIPPED rendering that later turns re-send. If this
+       ever regresses to re-feeding the whole conversation, the win mostly vanishes."""
+    tok = ByteTokenizer()
+    sys_prompt = "You are a helpful assistant. " * 40
+    gen = "<think>" + ("reasoning. " * 20) + "</think>the answer"
+    d = _LenientKVDevice()
+    msgs = [{"role": "system", "content": sys_prompt}]
+    fed = []
+    for t in range(3):
+        msgs = msgs + [{"role": "user", "content": f"q{t}"}]
+        prompt_ids = tok.encode(apply_chat_template(msgs))
+        n0 = d.steps
+        gen_ids = tok.encode(gen)
+        list(d.generate(prompt_ids, max_new_tokens=len(gen_ids)))
+        fed.append(d.steps - n0 - len(gen_ids))
+        d._kv_ids = d._kv_ids[:len(prompt_ids)] + gen_ids     # KV holds what was GENERATED
+        msgs = msgs + [{"role": "assistant", "content": gen}]
+    # Turn 1 pays full price; later turns must NOT -- and must not grow with history.
+    assert fed[1] < fed[0] / 2, fed
+    assert fed[2] <= fed[1] + 8, f"re-feed grew with history: {fed}"
+
+
+def test_prefix_cache_handles_divergence():
+    """A prompt that FORKS from the cached prefix must not reuse the stale tail."""
+    d = _KVDevice()
+    a = list(d.generate([1, 2, 3, 4, 5], max_new_tokens=3))
+    forked = list(d.generate([1, 2, 9, 9], max_new_tokens=3))     # forks at index 2
+    ref = _KVDevice()
+    ref.supports_prefix_cache = False
+    assert list(ref.generate([1, 2, 9, 9], max_new_tokens=3)) == forked, \
+        "divergent prompt reused a stale row"
+    assert a  # turn 1 produced output
+
+
+def test_prefix_cache_invalidated_by_reset_session():
+    """reset_session() drops device KV; the host must not then claim it is resident."""
+    d = _KVDevice()
+    list(d.generate([1, 2, 3, 4], max_new_tokens=2))
+    d.reset_session()
+    assert d._kv_ids == [], "reset_session() left a stale prefix claim"
+    n0 = d.steps
+    list(d.generate([1, 2, 3, 4], max_new_tokens=2))
+    assert d.steps - n0 >= 4, "re-fed fewer tokens than the (now empty) device holds"
+
+
+def test_prefix_cache_off_for_replay_backends():
+    """Backends that replay canned ids have no position-addressed KV to reuse."""
+    assert MockDevice().supports_prefix_cache is False
+    assert _FixedDevice([1, 2]).supports_prefix_cache is False
+
+
+def test_prefix_cache_always_feeds_one_token():
+    """A fully-cached prompt still needs the last token fed: the device's output is the
+       response to the LAST token fed, so reuse is capped at len(prompt)-1."""
+    d = _KVDevice()
+    list(d.generate([1, 2, 3], max_new_tokens=2))
+    n0 = d.steps
+    out = list(d.generate([1, 2, 3], max_new_tokens=2))           # identical prompt
+    assert out, "fully-cached prompt produced nothing"
+    assert d.steps > n0, "no token was fed at all"
 
 
 def main():

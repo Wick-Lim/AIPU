@@ -109,9 +109,21 @@ class AIPUDevice(abc.ABC):
     #: model identifier surfaced to OpenAI clients.
     model_id: str = "aipu-glm-5.2-q4k"
 
+    #: False on backends that cannot resume a session mid-sequence (replay stubs that
+    #: ignore prompt_ids, or any device whose KV is not position-addressed). Setting
+    #: this False makes generate() re-feed every prompt token, i.e. the pre-cache
+    #: behaviour -- correctness never depends on the cache being ON.
+    supports_prefix_cache: bool = True
+
     def __init__(self) -> None:
         self.state = DeviceState.OFF
         self._boot_t0 = None
+        #: token ids whose KV is resident in the device for the CURRENT session, in
+        #: position order: _kv_ids[i] was fed at position i, so its KV occupies row i.
+        #: This is the ONLY thing the prefix cache trusts; reset_session() clears it.
+        self._kv_ids: list[int] = []
+        #: prefix-cache counters (surfaced by the console / telemetry).
+        self.prefix_stats = {"reused": 0, "fed": 0, "turns": 0}
 
     # ---- lifecycle (mirrors power-on -> boot_loader.done -> ready) ---------------
     @abc.abstractmethod
@@ -144,7 +156,41 @@ class AIPUDevice(abc.ABC):
     # ---- session (KV lives in the device's DDR5, per session) --------------------
     @abc.abstractmethod
     def reset_session(self) -> None:
-        """Clear the KV cache / conversation state for a fresh sequence."""
+        """Clear the KV cache / conversation state for a fresh sequence.
+
+        Implementations MUST call `super().reset_session()` (this body). Dropping the
+        device's KV without clearing `_kv_ids` would leave the host believing a prefix
+        is resident that the device just discarded -- the prefix cache would then skip
+        re-feeding tokens whose KV no longer exists, silently corrupting attention."""
+        self._kv_ids = []
+
+    # ---- prefix cache (D5: 캐싱 = 무조건, docs/PRODUCT_SPEC.md) -------------------
+    def _prefix_reuse(self, prompt_ids: list[int]) -> int:
+        """How many leading prompt tokens are ALREADY resident (so must not be re-fed).
+
+        Chat re-sends the whole conversation every turn (aipu_server.py formats all
+        messages), so turn N's prompt is turn N-1's prompt + reply + the new user
+        message -- a long shared prefix. Reusing it is the single biggest lever on the
+        box: prefill is ~25.3 GB of weight traffic PER TOKEN with no speculation to
+        amortise it (tokens are known, so U=1/A=1), i.e. ~61 tok/s [EST] -- far slower
+        per token than decode.
+
+        Device contract this relies on (mirrors the RTL host handshake):
+          * `step(tok, pos, s_len)` addresses KV BY POSITION -- token fed at `pos`
+            occupies row `pos` -- so resuming at `pos = n` simply continues the row.
+          * `s_len` bounds the attention window to rows [0, s_len), so on divergence we
+            just overwrite from the fork point: rows beyond it are never attended and
+            need no explicit invalidation.
+        Capped at len(prompt_ids)-1 so at least ONE token is always fed: the device's
+        next-token output is the response to the LAST token fed, so a fully-cached
+        prompt would otherwise produce nothing to return."""
+        if not self.supports_prefix_cache or not self._kv_ids:
+            return 0
+        limit = min(len(self._kv_ids), len(prompt_ids) - 1)
+        n = 0
+        while n < limit and self._kv_ids[n] == prompt_ids[n]:
+            n += 1
+        return max(0, n)
 
     # ---- one decode step (mirrors: assert start+inputs -> tok_valid+next_tok) ----
     @abc.abstractmethod
@@ -190,16 +236,43 @@ class AIPUDevice(abc.ABC):
            into the device via configure_sampling() -- honored device-side by a
            logits-capable backend; the mock is greedy and ignores it."""
         self.wait_ready()
-        self.reset_session()
+        prompt_ids = list(prompt_ids)
+        # Prefix cache: re-feed ONLY the tokens the device does not already hold. The
+        # cache is keyed on absolute position, so it applies to a sequence indexed from
+        # 0; a caller placing the prompt elsewhere is managing positions itself.
+        n_reuse = self._prefix_reuse(prompt_ids) if start_pos == 0 else 0
+        # Clear ONLY for a fresh sequence that reuses nothing. start_pos != 0 says
+        # "continue the session that already holds rows [0, start_pos)" -- resetting
+        # there would destroy the very rows the caller is continuing from.
+        if start_pos == 0 and n_reuse == 0:
+            self.reset_session()                    # also clears _kv_ids (see contract)
         if sampling is not None:
             self.configure_sampling(sampling)
-        cur = self.prefill(prompt_ids, start_pos)
+        self.prefix_stats["turns"] += 1
+        self.prefix_stats["reused"] += n_reuse
+        self.prefix_stats["fed"] += len(prompt_ids) - n_reuse
+        # Feed the uncached tail at its true positions. On divergence (n_reuse < len(
+        # _kv_ids)) this overwrites from the fork point; s_len bounds attention to the
+        # live rows, so the stale tail beyond is never read.
+        cur = self.prefill(prompt_ids[n_reuse:], start_pos + n_reuse)
+        # Track what the device now holds, BY POSITION. Rows [0, start_pos) are whatever
+        # the session already held (start_pos != 0 means "continue this session"); the
+        # prompt occupies rows start_pos onward. If those leading rows are unaccounted
+        # for we must not guess -- claiming a row we did not place would silently
+        # corrupt a later turn's reuse -- so we drop the cache and stop tracking for
+        # this turn (the decode loop below must honour that, or it would rebuild a
+        # cache whose positions are wrong).
+        track = len(self._kv_ids) >= start_pos
+        self._kv_ids = self._kv_ids[:start_pos] + prompt_ids if track else []
         pos = start_pos + len(prompt_ids)
         produced = 0
         while produced < max_new_tokens and cur is not None and cur != self.eos_token:
             yield cur
             produced += 1
-            cur = self.step(cur, pos, pos + 1)
+            fed = cur                               # the token whose KV this step lands
+            cur = self.step(fed, pos, pos + 1)
+            if track:
+                self._kv_ids.append(fed)            # ...record `fed`, not the output
             pos += 1
 
 
@@ -224,10 +297,16 @@ class MockDevice(AIPUDevice):
     def _boot_seconds(self) -> float:
         return self._boot
 
+    # This mock REPLAYS a canned list: its "session" is a decode cursor, not
+    # position-addressed KV, and it ignores prompt_ids entirely. Skipping tokens would
+    # therefore change what it replays rather than save real work -- so no prefix cache.
+    supports_prefix_cache = False
+
     def reset_session(self) -> None:
         # New sequence: reset the decode cursor (analogous to clearing the device's
         # DDR5 KV). The per-turn reply ids set by the server survive (set just before
         # generate()).
+        super().reset_session()
         self._cursor = 0
 
     def set_reply_ids(self, ids) -> None:

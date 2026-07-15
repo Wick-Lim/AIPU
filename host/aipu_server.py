@@ -273,6 +273,14 @@ def make_handler(server: AIPUServer):
                 d = server.device
                 d.poll_ready()
                 tel = dict(getattr(d, "telemetry", {}) or {})
+                # Prefix cache (D5): report the REUSED/FED split so the win is visible
+                # rather than asserted. Text backends (Modal/llama.cpp) run their own
+                # caching upstream and expose no such counters -- absent, not faked.
+                ps = getattr(d, "prefix_stats", None)
+                if ps and (ps["reused"] + ps["fed"]):
+                    tel["prefix_cache"] = dict(
+                        ps, hit_rate=round(ps["reused"] / (ps["reused"] + ps["fed"]), 3),
+                        enabled=getattr(d, "supports_prefix_cache", False))
                 self._json(200, {
                     "state": d.state, "model": d.model_id,
                     "backend": server.backend_name, "tokenizer": server.tok.name,
