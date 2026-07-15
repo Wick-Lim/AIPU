@@ -24,19 +24,19 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
 # the assembled-forward smoke, the RESIDENT refill gate + its equivalence proof, and
 # the 753B-shape elaboration.  (model-q4k-smoke also runs inside `unittests`; listing
 # it here keeps `all` covering it even if the unittests tail changes.)
-all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab mla-sparse
+all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab full-elab-lanes mla-sparse
 
 # `release-gate` is the full pre-release battery: every simulation, structural,
 # CDC and formal gate in the repo.  HOURS-long (model-q4k / spec-slow / expert-cache
 # / batched-q4k are minutes-to-hours each in iverilog); run before cutting a release.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-thread-equiv expert-cache full-elab mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-thread-equiv expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
 	@echo "release-gate: ALL gates passed"
 
 
@@ -618,6 +618,43 @@ full-elab:
 	$(IVERILOG) -g2012 -I src -I configs -tnull -pfileline=1 $(FULL_ELAB_SRCS) \
 	    && echo "iverilog -tnull elaboration OK (glm_model_q4k @ MODEL_DIM=6144/L=78/VOCAB=154880)" \
 	    || { echo "FAILED: full-elab (iverilog -tnull)"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# full-elab-lanes : the 753B shape at a SILICON-SCALE lane width, not the toy tile.
+#
+#   WHY.  R3_APPLIANCE_SPEC §3 specs 13,176 lanes (expert 4 engines x 1,647 +
+#   hot 6,588), but what is committed is PE_N = TN = 4 -- in the slice AND in the
+#   real GLM-5.2 config (configs/full_glm52.vh). `full-elab` therefore only ever
+#   proved the 753B SHAPE at a 4-wide tile; nobody had elaborated the RTL at the
+#   lane width the spec actually asks for, so "the array scales" was an assumption.
+#
+#   WHAT THIS PROVES.  Both lane knobs reach the spec'd width at the true 753B shape:
+#     PE_N -> the attention path (mla_attn_q4k's matmuls)
+#     TN   -> the expert/dense path (swiglu_expert_q4k's, which passes TN as its
+#             matmul's PE_N -- src/swiglu_expert_q4k.v:25,104; the expert pool's
+#             lane knob is TN, NOT PE_N)
+#   Measured here: elaboration is near-flat in lane width (PE_N 4->1647: 12->31 s;
+#   TN 4->1647: 11->53 s), which is what you expect -- widening PE_N/TN adds
+#   parallel independent multipliers (glm_matmul_q4k.v:264,270), it does not
+#   lengthen the critical path.
+#
+#   WHAT THIS DOES *NOT* PROVE: synthesis, area, or timing at that width, and NOT
+#   the 4 parallel expert engines (the RTL still has ONE u_moe scanning the expert
+#   axis sequentially -- glm_decoder_block_q4k.v:422, T_ESCAN). Elaboration only
+#   says it compiles at that shape. Timing at TN=1,647 stays [측정필요] -- the FPGA
+#   campaign needed a 4.6x repipelining to reach 46.5 MHz at TN=4.
+LANE_ELAB_PE_N ?= 1647
+LANE_ELAB_TN   ?= 1647
+full-elab-lanes:
+	@mkdir -p $(BUILD_DIR)/lanecfg
+	@sed -e 's|^`define GLM52_PE_N .*|`define GLM52_PE_N $(LANE_ELAB_PE_N)|' \
+	     -e 's|^`define GLM52_TN .*|`define GLM52_TN $(LANE_ELAB_TN)|' \
+	     configs/full_glm52.vh > $(BUILD_DIR)/lanecfg/full_glm52.vh
+	@printf '[%s] ' "full-elab-lanes(PE_N=$(LANE_ELAB_PE_N) TN=$(LANE_ELAB_TN))"; \
+	$(IVERILOG) -g2012 -I src -I $(BUILD_DIR)/lanecfg -I configs -tnull -pfileline=1 \
+	    $(FULL_ELAB_SRCS) \
+	    && echo "elaboration OK at silicon lane width (753B shape)" \
+	    || { echo "FAILED: full-elab-lanes"; exit 1; }
 
 # ---- Whole-chip structural gate for the GLM-5.2 (UD-Q4_K_XL) product top ----
 # Elaborates the ENTIRE product hierarchy -- the 2-clock chip top
