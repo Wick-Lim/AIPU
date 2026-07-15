@@ -44,7 +44,8 @@ below for the exact status of every claim.
 > accept rate r both GLM-family measured; ~95 if GLM-5.2's deeper MTP hits its published accept depth
 > — [`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md)). **Execution order (2026-07-11): prototype-first** —
 > the *build sequence* leads with a retail-parts prototype (24GB×20, 1280-bit, 480GB, **~110 tok/s [EST]**;
-> §5c) that defers the 32GB NDA procurement and on-substrate packaging to the volume SKU. The streaming 54–127 tok/s point
+> §5c — presumes a MAC array sized to consume 1.54 TB/s, i.e. ~7.3K lanes @490MHz per §3; a smaller
+> array bottlenecks the box below its bandwidth) that defers the 32GB NDA procurement and on-substrate packaging to the volume SKU. The streaming 54–127 tok/s point
 > survives as the hybrid-SKU-if-h≥0.75 upside — see
 > [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md) and the update note below.) The design
 > is deliberately NVMe/PCIe-bandwidth-bound to keep it cheap. Where these docs mention *aggregate /
