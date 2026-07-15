@@ -12,7 +12,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AIPU">
 <meta property="og:title" content="AIPU — 어플라이언스 보드 개념 설계">
-<meta property="og:description" content="480GB LPDDR5X 상주 · ~110 tok/s [추정] · ~50–80W · 130×110mm — 전 부품 소매 조달 가능한 프로토타입 설계 (추정치 명시).">
+<meta property="og:description" content="480GB LPDDR5X 상주 · ~110 tok/s [추정] · ≥64–99W [추정·하한] · 130×110mm — 전 부품 소매 조달 가능한 프로토타입 설계 (추정치 명시).">
 <meta property="og:url" content="https://wick-lim.github.io/AIPU/board.html">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%2314181F'/%3E%3Crect%20x='11'%20y='7'%20width='4.5'%20height='18'%20rx='1.2'%20fill='%23C27C34'/%3E%3C/svg%3E">
 </head>
@@ -76,7 +76,7 @@
     <div class="chip">메모리 <b>LPDDR5X 480GB</b> · 1280-bit · <b>~1.54TB/s</b></div>
     <div class="chip">저장 <b>NVMe 1TB</b> · 부팅 시 모델 로드 ~70초</div>
     <div class="chip">속도 <b>~110 tok/s</b> <span class="est">[추정]</span> — 상용 API급 체감</div>
-    <div class="chip">전력 <b>~50–80W</b> <span class="est">[추정]</span> · 저소음</div>
+    <div class="chip">전력 <b>≥64–99W</b> <span class="est">[추정 · 하한]</span></div>
     <div class="chip">연결 <b>USB-C</b> 하나로 PC/폰과</div>
     <div class="chip">부품 <b>전량 소매 유통</b> — 특수 조달 불필요 (프로세서 제외)</div>
   </div>
@@ -317,10 +317,10 @@
   <div class="panel">
     <table>
       <tr><th>항목</th><th>값</th><th>설명</th></tr>
-      <tr><td>출력 속도</td><td><b>~110 tok/s</b></td><td>모델 전체가 ~1.54TB/s 메모리에 상주 → 상용 API(초당 수십 토큰)급 체감. 네트워크·대기열 지연 없음, 시간대 무관하게 일정</td></tr>
+      <tr><td>출력 속도</td><td><b>~110 tok/s</b></td><td>모델 전체가 ~1.54TB/s 메모리에 상주 → 상용 API(초당 수십 토큰)급 체감. 네트워크·대기열 지연 없음, 시간대 무관하게 일정. <b>전제:</b> 이 대역폭을 다 소화하는 연산 어레이(~7.3K lane @490MHz)가 있어야 하며, 더 작으면 메모리가 아니라 어레이가 병목이 됩니다</td></tr>
       <tr><td>첫 응답</td><td>즉시</td><td>로컬 연산 — 왕복 지연 없음</td></tr>
       <tr><td>부팅</td><td>~70초</td><td>NVMe → 메모리 1회 로드, 이후 저장장치 미사용</td></tr>
-      <tr><td>전력</td><td><b>~50–80W</b></td><td>노트북 어댑터급. USB-PD 또는 DC. 베이퍼챔버 + 저소음 팬</td></tr>
+      <tr><td>전력</td><td><b>≥64–99W</b> <span class="est">[추정 · 하한]</span></td><td>DC 19V 또는 <b>USB-PD 3.1 EPR(140W)</b> — 100W PD로는 부족합니다. 냉각은 베이퍼챔버 + 팬. LPDDR 레일(49–74W)만 자체 계수로 재도출된 값이고 <b>SoC 항목은 미검증</b>이라 총합은 하한입니다.</td></tr>
       <tr><td>프라이버시</td><td>완전 오프라인</td><td>프롬프트/응답이 기기 밖으로 나가지 않음</td></tr>
     </table>
     <p class="note" style="margin:12px 0 0">속도 수치는 대역폭 루프라인 모델에 <b>실측값</b>을 넣어 계산했습니다. 전문가 합집합 계수 U(K)와 투기 디코딩(MTP) 수락률은 GLM-4.5-Air에서 직접 측정한 값입니다 (U(2)=1.62, U(4)=2.65, U(8)=4.27; 위치별 수락률 0.87/0.60/0.32/…).</p>
@@ -343,11 +343,11 @@
   <div class="panel">
     <table>
       <tr><td>구동 모델</td><td>GLM-5.2 (753B, 4-bit 양자화 Q4_K) — 디퀀트는 실제 GGUF에서 llama.cpp 코드와, 전체 포워드는 골든 참조와 비트 단위로 일치 (시뮬레이션 검증)</td></tr>
-      <tr><td>출력 속도</td><td>~110 tok/s <span class="est">[추정]</span> (적응형 투기 디코딩 포함) — 양산형(1024-bit)은 ~80–95</td></tr>
+      <tr><td>출력 속도</td><td>~110 tok/s <span class="est">[추정]</span> (적응형 투기 디코딩 포함, 어레이 ~7.3K lane 전제) — 양산형(1024-bit)은 ~80–95</td></tr>
       <tr><td>메모리</td><td>LPDDR5X 480GB, 1280-bit, ~1.54TB/s — 24GB ×20 보드 직실장 (양산형: 512GB, 패키지 통합)</td></tr>
       <tr><td>저장</td><td>NVMe 1TB (모델 보관 + KV 오버플로)</td></tr>
       <tr><td>크기</td><td>메인보드 ~130×110mm — 소형 셋톱 폼팩터 (양산형 120×80mm)</td></tr>
-      <tr><td>전력 / 소음</td><td>~50–80W <span class="est">[추정]</span> / 저소음 (양산형 ~40–60W)</td></tr>
+      <tr><td>전력</td><td>≥64–99W <span class="est">[추정 · 하한]</span> (양산형 ≥50–78W)</td></tr>
       <tr><td>연결</td><td>USB-C ×1 (데이터) + 전원</td></tr>
       <tr><td>목표 가격대</td><td>~$3,500–5,000 <span class="est">[추정 · 양산 기준]</span></td></tr>
     </table>

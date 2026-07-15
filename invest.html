@@ -213,7 +213,7 @@
       <tr><td><span class="what">메모리-바운드 메커니즘</span></td><td>사이클 단위 측정 환경에서, 모델 상주 시 스토리지 스톨이 <b>73배 줄어드는</b> 것을 실제 RTL 사이클로 확인</td><td class="n"><span class="chip m"><span class="tick"></span>증명</span></td></tr>
       <tr><td><span class="what">메모리 컨트롤러</span></td><td>형식 검증(BMC + k-induction) 통과 — 반례 없음</td><td class="n"><span class="chip m"><span class="tick"></span>증명</span></td></tr>
       <tr><td><span class="what">보드 물리 성립</span></td><td>12층 HDI 130×110mm 보드에 DRAM 20개와 SoC 배치 — 배치 DRC 통과, escape 해석까지(실제 라우팅은 아니며 더미 SoC 볼아웃 기준)</td><td class="n"><span class="chip e"><span class="tick"></span>분석</span></td></tr>
-      <tr><td><span class="what">출력 속도 (~110 tok/s)</span></td><td>대역폭 루프라인 기반 <b>추정치</b> — 입력값(U·수락률 r)은 GLM-4.5-Air에서 실측했지만, 최종 tok/s는 아직 실리콘에서 측정하지 않음</td><td class="n"><span class="chip e"><span class="tick"></span>추정</span></td></tr>
+      <tr><td><span class="what">출력 속도 (~110 tok/s)</span></td><td>대역폭 루프라인 기반 <b>추정치</b> — 이 대역폭을 다 소화하는 연산 어레이(~7.3K lane @490MHz)를 전제하며, 더 작으면 어레이가 병목이 됩니다. 입력값(U·수락률 r)은 GLM-4.5-Air에서 실측했지만, 최종 tok/s는 아직 실리콘에서 측정하지 않음</td><td class="n"><span class="chip e"><span class="tick"></span>추정</span></td></tr>
       <tr><td><span class="what">SoC 실리콘</span></td><td>테이프아웃 아직 시작 전 — LPDDR5X PHY IP와 12–16nm NRE 필요(유일한 진짜 관문)</td><td class="n"><span class="chip o"><span class="tick"></span>열림</span></td></tr>
       <tr><td><span class="what">사업 트랙션</span></td><td>고객·매출·파트너 아직 0 — 지금 있는 건 검증된 코드베이스</td><td class="n"><span class="chip o"><span class="tick"></span>열림</span></td></tr>
     </tbody>
@@ -275,7 +275,7 @@
       <div class="rail"><div class="num">Stage 4 · 양산</div><div class="cost">~$1.8–2.4k</div><div class="costlab">BOM/대</div></div>
       <div>
         <h3>양산 SKU — 소형화 &amp; 스케일 <span class="chip o st"><span class="tick"></span>로드맵</span></h3>
-        <p>32GB×16 벤더 직거래와 온-서브스트레이트 패키징으로 보드를 120×80mm, ~40–60W까지 줄입니다. 소비자가는 ~$3.5–5k대(추정). 같은 다이 하나가 프로토타입과 양산 SKU를 모두 포괄합니다(1280-bit 수퍼셋).</p>
+        <p>32GB×16 벤더 직거래와 온-서브스트레이트 패키징으로 보드를 120×80mm까지 줄입니다(전력은 ≥50–78W 추정·하한). 소비자가는 ~$3.5–5k대(추정). 같은 다이 하나가 프로토타입과 양산 SKU를 모두 포괄합니다(1280-bit 수퍼셋).</p>
       </div>
     </div>
 
@@ -360,11 +360,11 @@
       <div class="specrow"><div class="k">출력 속도</div><div class="v">~80–110 <span class="u">tok/s</span> <span class="chip e"><span class="tick"></span>추정</span></div><div class="d">양산형(512GB·1024-bit) ~80–95, 소매부품 프로토(480GB·1280-bit) ~110. 상용 API급 체감에 첫 토큰 지연이나 대기열이 없습니다.</div></div>
       <div class="specrow"><div class="k">소비자 가격대</div><div class="v">~$3,500–5,000 <span class="chip e"><span class="tick"></span>추정</span></div><div class="d">BOM ~$1.8–2.4k 기준. Mac Studio 512GB($10k+, ~15–25 tok/s) 대비 절반 가격에 약 4배 속도를 목표로 합니다.</div></div>
       <div class="specrow"><div class="k">구동 모델</div><div class="v">GLM-5.2 · 753B</div><div class="d">4-bit Q4_K(~467GB)를 통째로 상주시킵니다. 신뢰할 수 있는 다른 오픈웨이트 GGUF로도 재타겟할 수 있습니다(설계 작업 필요).</div></div>
-      <div class="specrow"><div class="k">전력 / 소음</div><div class="v">~40–60 W · 저소음</div><div class="d">노트북 어댑터 수준의 전력. 베이퍼챔버와 저소음 팬.</div></div>
+      <div class="specrow"><div class="k">전력</div><div class="v">≥50–78 W <span class="est">[추정 · 하한]</span></div><div class="d">LPDDR 레일을 자체 계수(4–6 pJ/bit)로 재도출한 값. SoC 항목은 <b>아직 미검증</b>이라 총합은 예산이 아니라 <b>하한</b>입니다. 냉각은 베이퍼챔버+팬.</div></div>
       <div class="specrow"><div class="k">크기 / 연결</div><div class="v">셋톱급 · USB-C ×1</div><div class="d">보드 120×80mm(양산 기준). 완전 오프라인이라 프롬프트와 응답이 기기 밖으로 나가지 않습니다.</div></div>
     </div>
   </div>
-  <p class="body">프로토타입(Stage 3)은 ~130×110mm, ~50–80W로 조금 크고, 양산(Stage 4)에서는 메모리를 패키지 안으로 넣어 120×80mm로 줄입니다. <a href="board.html">보드 설계 페이지</a>에 실제 치수 배치와 근거를 정리해 뒀습니다.</p>
+  <p class="body">프로토타입(Stage 3)은 ~130×110mm, <b>≥64–99W</b>(추정·하한)로 조금 크고 — 이 구성은 USB-PD 100W로 부족해 <b>140W EPR</b>이 필요합니다 — 양산(Stage 4)에서는 메모리를 패키지 안으로 넣어 120×80mm로 줄입니다. <a href="board.html">보드 설계 페이지</a>에 실제 치수 배치와 근거를 정리해 뒀습니다.</p>
 </div></section>
 
 <section id="ask"><div class="wrap">
