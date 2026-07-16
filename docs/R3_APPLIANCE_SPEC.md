@@ -359,6 +359,22 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
   | K=1 투기 (§2 현행, A_eff=1.87 실측) | 13.87 GB/tok | **111 tok/s** |
   | **K=0 = 투기 없음 (프로덕션 탑의 실제 구성)** | **25.50 GB/tok** | **60 tok/s** |
 
+  **더 정확히: A로 나누는 것 자체가 `spec_batched_top`에만 있다 [RTL].** 스펙 탑은 셋인데
+  `glm_model_q4k`에 **`PE_M`을 넘기는 것은 `spec_batched_top`(`.PE_M(B)`) 하나뿐**이다.
+  `spec_decode_top`은 안 넘겨 PE_M=1이고, `spec_batched_top.v:8-9`가 그 뜻을 직접 적는다 —
+  *"The committed K=1 loop (spec_decode_top) runs **ONE full glm_model_q4k weight-load to
+  verify ONE drafted position** per pass"*. **상각이 0이라는 뜻이다.** §2의 `14·U/A + 11/A`가
+  A로 나누는 근거는 **한 번의 가중치 로드로 K+1행을 검증**하는 것이고, 그것은 `PE_M=B`,
+  즉 `spec_batched_top`뿐이다.
+
+  **그런데 그 탑도 `DSA_REAL_IDX`를 넘기지 않는다(=0).** 즉 배치 검증을 하는 유일한 탑에서도
+  어텐션은 쿼리와 무관하게 앞 k개만 본다. 그리고 그 탑은 (헤더 정정에서 확인했듯) **위치 정확
+  인과 검증이 아니다** — 모든 행이 `.pos(cur_pos)` 공유 스칼라다.
+
+  **정리하면 A_eff=1.87을 실제로 내려면 한 탑이 동시에: (a) 메모리 시스템, (b) `PE_M=K+1`,
+  (c) 위치 정확 검증(`PER_ROW_POS`), (d) `DSA_REAL_IDX=1`을 가져야 하는데, 넷을 다 가진 탑은
+  없고 어떤 탑도 셋 이상을 갖지 못한다.**
+
   **§2의 정본 상수와 §5의 110 tok/s는 프로덕션 탑이 낼 수 없는 구성의 값이다.** 닫으려면
   `glm_q4k_system`이 `PE_M`(+`SWIN`, `PER_ROW_POS/SLEN`)을 스레드하고 스펙체인을 품어야 하며,
   그건 **[설계필요]**다. *(관련: `SWIN` 기본식 `min(S_MAX,TOPK_ATTN)`의 안전성 논증은
