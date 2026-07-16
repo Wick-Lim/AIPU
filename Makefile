@@ -40,7 +40,19 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # machine we have (30m45s / 5.29 GB / unfinished; see its header ~line 543).  The thread
 # it guards is covered by dsa-sparse-correct, which runs =0 AND =1 end-to-end against the
 # reference.  Every prerequisite below must be a gate that can actually finish.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
+#
+# host-test is here because the RTL gates cannot see host/aipu_device.py at all, and 14
+# of its 32 tests are the prefix-cache / KV-reuse / context-capacity logic -- including
+# test_context_overflow_refuses_instead_of_aliasing, where the failure mode is a ring
+# that silently aliases rather than refuses.  2 s.  It was written, it passes, and until
+# now nothing but a human remembering to type `make host-test` ever ran it.
+#
+# STILL NOT HERE, and why: `lint` (verilator --lint-only -Wall).  It is the check that
+# caught the weight-loader SELRANGE iverilog silently zero-filled, so it earns a slot --
+# but -Wall yields 116 warnings and verilator exits 2 on them.  That predates any of this
+# (bisected against 43de204~1); triaging the 116 is its own job, and wiring it in before
+# that would just re-create the unrunnable-gate problem this NOTE exists to record.
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test
 	@echo "release-gate: ALL gates passed"
 
 
