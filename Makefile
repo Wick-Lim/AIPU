@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -637,10 +637,25 @@ full-elab:
 #   T_ACC 1.7%, T_ESCAN 0 (dead at PE_M=1). So lanes cap at ~1.9x here and
 #   attention -- not the accumulate, not the weight bus -- is what is left.
 #
-#   SCOPE: the perf TB is MODEL_DIM=16 / INTER_MOE=16 / TOPK=2 / L=4. The
-#   RATIOS do not transfer to the 753B config; what transfers is that a large
-#   lane-invariant residue EXISTS, that the affine model holds, and that T_ACC
-#   is not it. The real-shape ratio is [측정필요].
+#   RATIO-FAITHFUL RE-MEASUREMENT (the default config's ratios were wrong).
+#   The TB default is MODEL_DIM=16 / INTER_MOE=16 / TOPK=2, which misses 6 of the
+#   7 ratios that set the split -- MODEL_DIM/INTER_MOE is 1.0 there vs 3.0 real,
+#   H*NOPE/MODEL_DIM 0.5 vs 2.0, H*V_DIM/MODEL_DIM 0.5 vs 2.67 (up to 5.3x off).
+#   `make lane-scaling-ratio` re-runs on a config that reproduces the REAL ratios
+#   EXACTLY at 1/128 the size (MODEL_DIM=48 INTER_MOE=16 INTER_DENSE=96 TOPK=8
+#   H_HEADS=4 NOPE=24 ROPE=8 V_DIM=32 Q_LORA=16 KV_LORA=4):
+#     TN=4  PE_N=4  LM=4    53,961 cyc/tok  1.00x   attn 50.9%  expw 27.2%  acc 1.6%
+#     TN=16 PE_N=4  LM=4    36,591          1.47x   attn 75.0%  expw 10.6%  acc 2.4%
+#     TN=16 PE_N=16 LM=16   23,798          2.27x   attn 62.6%  expw 16.3%  acc 3.6%
+#   So at the REAL ratios: every lane knob 4x buys 2.27x, ATTENTION is 62.6% at max
+#   lanes (and rises to 75% if you widen only the expert path), and T_ACC is 3.6% --
+#   not the bottleneck at either the wrong ratios (1.7%) or the right ones.
+#
+#   STILL [측정필요]: absolute size (6144 vs 48). Ratios transfer, so the SPLIT does;
+#   absolute cycles and tok/s do not. A true full-shape run is impractical even under
+#   Verilator -- the generated C++ is 6,977 files / 4.4 GB (22 h at -Os single-thread;
+#   ~30 min at -j16 -O0) -- and it would run with a broken weight path anyway (the
+#   loader caps PE_N at 16; see R3 §3).
 #
 #   The histogram probe is pure observation (samples u_block.state; drives
 #   nothing), so it cannot perturb the timing it reports.
@@ -665,6 +680,25 @@ lane-scaling:
 	  vvp $(BUILD_DIR)/lane_$$1_$$2_$$3 2>/dev/null \
 	    | grep -oE 'cycles/token=[0-9]+' | head -1 \
 	    || { echo "FAILED: lane-scaling run"; exit 1; }; \
+	done
+
+RATIO_CFG := -GMODEL_DIM=48 -GINTER_MOE=16 -GINTER_DENSE=96 -GTOPK=8 -GQ_LORA=16 \
+	-GKV_LORA=4 -GH_HEADS=4 -GNOPE=24 -GROPE=8 -GV_DIM=32 -GS_MAX=8 -GTOPK_ATTN=8 \
+	-GN_DENSE=2 -GVOCAB=16 -GRESIDENT_CFG=1 -GN_EXPERT_CFG=16 -GL_CFG=4 -GTIMING_ONLY=1
+lane-scaling-ratio:
+	@command -v $(VERILATOR) >/dev/null 2>&1 || { echo "lane-scaling-ratio: needs verilator 5.x"; exit 1; }
+	@for cfg in "4 4 4" "16 16 16"; do \
+	  set -- $$cfg; \
+	  $(VERILATOR) --binary --timing -Isrc -Mdir $(BUILD_DIR)/vr_$$1_$$2_$$3 -o vr \
+	    --top-module glm_q4k_system_perf_tb --build-jobs 16 -CFLAGS -O0 \
+	    -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-PINMISSING \
+	    -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-SELRANGE \
+	    $(RATIO_CFG) -GTN=$$1 -GPE_N=$$2 -GLM_TN=$$3 \
+	    $(LANE_SCALE_SRCS) >/dev/null 2>&1 \
+	    || { echo "FAILED: lane-scaling-ratio build (TN=$$1 PE_N=$$2 LM_TN=$$3)"; exit 1; }; \
+	  printf '[lane-scaling-ratio] TN=%-2s PE_N=%-2s LM_TN=%-2s ' "$$1" "$$2" "$$3"; \
+	  $(BUILD_DIR)/vr_$$1_$$2_$$3/vr 2>/dev/null | grep -oE 'cycles/token=[0-9]+' | head -1 \
+	    || { echo "FAILED: lane-scaling-ratio run"; exit 1; }; \
 	done
 
 # ---------------------------------------------------------------------------
