@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -682,8 +682,12 @@ lane-scaling:
 	    || { echo "FAILED: lane-scaling run"; exit 1; }; \
 	done
 
+# TOPK_ATTN is deliberately NOT here: it selects the regime, and each gate must state
+# its own (dense = TOPK_ATTN==S_MAX, sparse = TOPK_ATTN<S_MAX). Leaving it in the shared
+# block meant lane-scaling-sparse passed -GTOPK_ATTN twice and relied on Verilator's
+# last-wins behaviour to pick the right one -- correct by accident, so it is now explicit.
 RATIO_CFG := -GMODEL_DIM=48 -GINTER_MOE=16 -GINTER_DENSE=96 -GTOPK=8 -GQ_LORA=16 \
-	-GKV_LORA=4 -GH_HEADS=4 -GNOPE=24 -GROPE=8 -GV_DIM=32 -GS_MAX=8 -GTOPK_ATTN=8 \
+	-GKV_LORA=4 -GH_HEADS=4 -GNOPE=24 -GROPE=8 -GV_DIM=32 -GS_MAX=8 \
 	-GN_DENSE=2 -GVOCAB=16 -GRESIDENT_CFG=1 -GN_EXPERT_CFG=16 -GL_CFG=4 -GTIMING_ONLY=1
 lane-scaling-ratio:
 	@command -v $(VERILATOR) >/dev/null 2>&1 || { echo "lane-scaling-ratio: needs verilator 5.x"; exit 1; }
@@ -693,12 +697,40 @@ lane-scaling-ratio:
 	    --top-module glm_q4k_system_perf_tb --build-jobs 16 -CFLAGS -O0 \
 	    -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-PINMISSING \
 	    -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-SELRANGE \
-	    $(RATIO_CFG) -GTN=$$1 -GPE_N=$$2 -GLM_TN=$$3 \
+	    $(RATIO_CFG) -GTOPK_ATTN=8 -GTN=$$1 -GPE_N=$$2 -GLM_TN=$$3 \
 	    $(LANE_SCALE_SRCS) >/dev/null 2>&1 \
 	    || { echo "FAILED: lane-scaling-ratio build (TN=$$1 PE_N=$$2 LM_TN=$$3)"; exit 1; }; \
 	  printf '[lane-scaling-ratio] TN=%-2s PE_N=%-2s LM_TN=%-2s ' "$$1" "$$2" "$$3"; \
 	  $(BUILD_DIR)/vr_$$1_$$2_$$3/vr 2>/dev/null | grep -oE 'cycles/token=[0-9]+' | head -1 \
 	    || { echo "FAILED: lane-scaling-ratio run"; exit 1; }; \
+	done
+
+# lane-scaling-sparse : the same sweep in the SPARSE regime, which is the real-use
+#   condition (a real context is far longer than TOPK_ATTN, so attention selects
+#   rather than keeping every key). The ratio gate above runs dense
+#   (TOPK_ATTN=8 = S_MAX=8): nothing to select, every key kept. Measured here with
+#   TOPK_ATTN=2 < S_MAX=8 and DSA_REAL_IDX=1:
+#     TN=4  PE_N=4    49,363 cyc/tok  1.00x   attn 46.3%  KV/score 21.8%
+#     TN=16 PE_N=16   20,586          2.40x   attn 56.7%  KV/score 36.5%
+#   vs dense at max lanes: 23,798 / attn 62.6% / KV-score 47.1%.
+#   So §3's lane story SURVIVES the real-use regime and only softens: attention still
+#   dominates at 56.7%, 36.5% of all cycles is still lane-invariant, and 4x the lanes
+#   still buys 2.40x -- against a roofline that promises linear.
+lane-scaling-sparse:
+	@command -v $(VERILATOR) >/dev/null 2>&1 || { echo "lane-scaling-sparse: needs verilator 5.x"; exit 1; }
+	@for cfg in "4 4 4" "16 16 16"; do \
+	  set -- $$cfg; \
+	  $(VERILATOR) --binary --timing -Isrc -Mdir $(BUILD_DIR)/vsp_$$1_$$2 -o vsp \
+	    --top-module glm_q4k_system_perf_tb --build-jobs 16 -CFLAGS -O0 \
+	    -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-PINMISSING \
+	    -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-SELRANGE \
+	    $(RATIO_CFG) -GTOPK_ATTN=2 -GDSA_REAL_IDX_CFG=1 \
+	    -GTN=$$1 -GPE_N=$$2 -GLM_TN=$$3 \
+	    $(LANE_SCALE_SRCS) >/dev/null 2>&1 \
+	    || { echo "FAILED: lane-scaling-sparse build (TN=$$1 PE_N=$$2)"; exit 1; }; \
+	  printf '[lane-scaling-sparse] TN=%-2s PE_N=%-2s ' "$$1" "$$2"; \
+	  $(BUILD_DIR)/vsp_$$1_$$2/vsp 2>/dev/null | grep -oE 'cycles/token=[0-9]+' | head -1 \
+	    || { echo "FAILED: lane-scaling-sparse run"; exit 1; }; \
 	done
 
 # ---------------------------------------------------------------------------
