@@ -74,6 +74,24 @@ module glm_q4k_system_perf_tb;
     always #5 clk = ~clk;
     reg rst;
 
+    //========================================================================
+    // FSM STATE HISTOGRAM (added 2026-07) -- decompose cycles/token by state.
+    //
+    //   WHY: sweeping every lane knob (TN / PE_N / LM_TN) 4x only bought 1.90x
+    //   and left 53% of cycles/token untouched. Lane count cannot reduce that
+    //   residue, so the question is WHICH STATE it is. glm_decoder_block_q4k's
+    //   T_ACC is the suspect -- its own comment says "1 elt/cycle/row" over
+    //   MODEL_DIM, which is TN-independent by construction.
+    //
+    //   Samples the single reused decoder block's state register every cycle.
+    //   Pure observation: no DUT signal is driven, nothing is timed differently.
+    //========================================================================
+    integer st_cyc [0:31];
+    integer st_i;
+    initial for (st_i = 0; st_i < 32; st_i = st_i + 1) st_cyc[st_i] = 0;
+    always @(posedge clk) if (!rst)
+        st_cyc[dut.u_model.u_block.state] <= st_cyc[dut.u_model.u_block.state] + 1;
+
     // ================= small-but-faithful slice =================
     //   (the fp8 perf TB's slice geometry, at the SPEC_SLICE-proven PE_N=2)
     localparam integer MODEL_DIM  = 16;
@@ -89,16 +107,21 @@ module glm_q4k_system_perf_tb;
     localparam integer S_MAX      = 4;
     localparam integer TOPK_ATTN  = 4;
     localparam integer THETA      = 8000000;
-    localparam integer PE_N       = 2;
+    parameter  integer PE_N        = 2;   // attention-path lane knob (sweepable)
     localparam integer POSW       = 20;
     localparam integer N_EXPERT   = N_EXPERT_CFG;
     localparam integer TOPK       = 2;
     localparam integer INTER_MOE  = 16;
     localparam integer INTER_DENSE= 32;
     localparam [31:0]  RSCALE     = 32'h40200000;
-    localparam integer TN         = 4;
+    // TN is a `parameter` (not localparam) so the sweep can override it with
+    // iverilog -P: it is the EXPERT/DENSE path's lane knob (swiglu_expert_q4k
+    // passes TN as its matmul's PE_N), and the question this TB can answer is
+    // whether cycles/token actually FALLS when lanes are added, or bottoms out
+    // on a TN-independent floor (the 1-elt/cycle T_ACC accumulate).
+    parameter integer TN          = 4;
     localparam integer BLK        = 128;
-    localparam integer LM_TN      = 4;
+    parameter  integer LM_TN       = 4;   // LM-head lane knob (sweepable)
     // ---- memory system (driven by the sweep knobs) ----
     localparam integer CACHE_SLOTS = CACHE_SLOTS_CFG;
     localparam integer FLASH_LAT   = FLASH_LAT_CFG;
@@ -822,6 +845,9 @@ module glm_q4k_system_perf_tb;
                  RESIDENT_CFG, EXPERT_STALL_CFG, N_TOK,
                  cyc_sum/N_TOK, stall_sum/N_TOK, (cyc_sum-stall_sum)/N_TOK,
                  cyc_sum, stall_sum, ec_hit_count, ec_miss_count, ec_dropped);
+        $display("PERF_STATE idle=%0d rn1=%0d attn=%0d radd1=%0d rn2=%0d ffnd=%0d route=%0d expw=%0d acc=%0d fcomb=%0d radd2=%0d done=%0d escan=%0d",
+                 st_cyc[0], st_cyc[1], st_cyc[2], st_cyc[3], st_cyc[4], st_cyc[5],
+                 st_cyc[6], st_cyc[8], st_cyc[9], st_cyc[10], st_cyc[11], st_cyc[12], st_cyc[13]);
         $display("PERF_DETAIL cyc_cold=%0d cyc_warm1=%0d cyc_warm2=%0d cyc_warm3=%0d final_stall=%0d final_hit=%0d final_miss=%0d",
                  cyc_tok[0], cyc_tok[1], cyc_tok[2], cyc_tok[3],
                  ec_demand_stall_cycles, ec_hit_count, ec_miss_count);

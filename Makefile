@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -618,6 +618,54 @@ full-elab:
 	$(IVERILOG) -g2012 -I src -I configs -tnull -pfileline=1 $(FULL_ELAB_SRCS) \
 	    && echo "iverilog -tnull elaboration OK (glm_model_q4k @ MODEL_DIM=6144/L=78/VOCAB=154880)" \
 	    || { echo "FAILED: full-elab (iverilog -tnull)"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# lane-scaling : does adding MAC lanes actually reduce cycles/token?
+#
+#   WHY.  R3_APPLIANCE_SPEC §3 specs the array from a ROOFLINE (bandwidth /
+#   bytes-per-token), a model in which lanes are the lever and the array is the
+#   thing standing between you and the memory. Nobody had checked that against
+#   real RTL cycles. This does, on the cycle-accurate perf harness.
+#
+#   MEASURED (RESIDENT=1; the numbers §3 quotes):
+#     TN=4  PE_N=2  LM_TN=4   10,902 cyc/tok   1.00x
+#     TN=16 PE_N=2  LM_TN=4    8,244           1.32x
+#     TN=16 PE_N=16 LM_TN=4    5,860           1.86x
+#     TN=16 PE_N=16 LM_TN=16   5,731           1.90x   <- every lane knob 4x
+#   cycles = 7,358 + 14,176/TN fits all four TN points to 0.00%.
+#   State histogram at max lanes: T_ATTN 66.7% (only -38% for 8x PE_N),
+#   T_ACC 1.7%, T_ESCAN 0 (dead at PE_M=1). So lanes cap at ~1.9x here and
+#   attention -- not the accumulate, not the weight bus -- is what is left.
+#
+#   SCOPE: the perf TB is MODEL_DIM=16 / INTER_MOE=16 / TOPK=2 / L=4. The
+#   RATIOS do not transfer to the 753B config; what transfers is that a large
+#   lane-invariant residue EXISTS, that the affine model holds, and that T_ACC
+#   is not it. The real-shape ratio is [측정필요].
+#
+#   The histogram probe is pure observation (samples u_block.state; drives
+#   nothing), so it cannot perturb the timing it reports.
+LANE_SCALE_SRCS := test/glm_q4k_system_perf_tb.v src/glm_q4k_system.v \
+	src/glm_model_q4k.v src/ddr5_xbar.v src/weight_loader_q4k.v \
+	src/expert_cache_pf.v src/expert_cache_ctrl.v src/kv_cache_pager.v \
+	src/glm_decoder_block_q4k.v src/mla_attn_q4k.v src/swiglu_expert_q4k.v \
+	src/moe_router_q4k.v src/glm_matmul_q4k.v src/rmsnorm_unit.v \
+	src/rope_interleave_unit.v src/glm_softmax.v src/dsa_indexer.v \
+	src/topk_select.v src/glm_act.v src/glm_matmul_pipe.v src/sampler.v \
+	src/glm_fp_pipe.v src/weight_decomp.v src/ecc_secded.v
+lane-scaling:
+	@mkdir -p $(BUILD_DIR)
+	@for cfg in "4 2 4" "16 16 16"; do \
+	  set -- $$cfg; \
+	  $(IVERILOG) -g2012 -I src -o $(BUILD_DIR)/lane_$$1_$$2_$$3 \
+	    -P glm_q4k_system_perf_tb.TN=$$1 -P glm_q4k_system_perf_tb.PE_N=$$2 \
+	    -P glm_q4k_system_perf_tb.LM_TN=$$3 -P glm_q4k_system_perf_tb.RESIDENT_CFG=1 \
+	    $(LANE_SCALE_SRCS) 2>/dev/null \
+	    || { echo "FAILED: lane-scaling compile (TN=$$1 PE_N=$$2 LM_TN=$$3)"; exit 1; }; \
+	  printf '[lane-scaling] TN=%-2s PE_N=%-2s LM_TN=%-2s ' "$$1" "$$2" "$$3"; \
+	  vvp $(BUILD_DIR)/lane_$$1_$$2_$$3 2>/dev/null \
+	    | grep -oE 'cycles/token=[0-9]+' | head -1 \
+	    || { echo "FAILED: lane-scaling run"; exit 1; }; \
+	done
 
 # ---------------------------------------------------------------------------
 # full-elab-lanes : the 753B shape at a SILICON-SCALE lane width, not the toy tile.
