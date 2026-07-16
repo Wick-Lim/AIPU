@@ -755,6 +755,16 @@ lane-scaling-sparse:
 #   Runs BOTH values: =0 is the shipped default and must stay green; =1 is the one this
 #   gate exists for. iverilog, self-check ON (TIMING_ONLY=0) -- this is a CORRECTNESS
 #   gate, so it uses the numeric reference simulator, not Verilator.
+#   CONTEXT SCALING (Verilator, same sparse config, DSA=1, TOPK_ATTN=2, S_MAX 8->64):
+#     S_MAX= 8  20,586 cyc/tok  system==ref   S_KEY 12,236 SOFT 8,064 CTX 9,728
+#     S_MAX=16  20,602 (+0.1%)  system==ref   identical
+#     S_MAX=32  20,634 (+0.2%)  system==ref   identical
+#     S_MAX=64  20,698 (+0.5%)  system==ref   identical
+#   An 8x window costs +0.5% and the KV/score cycles do not move at all -- TOPK_ATTN caps
+#   the key count, so window SIZE does not enter attention cost. Consistency holds at every
+#   point. The real cost of a bigger context is KV capacity (87.8 KB/token, R3 §5c), not
+#   compute.
+#
 #   Runtime ~15 min: =1 is several times slower than =0 under iverilog because it
 #   actually walks the DSA prefetch path (=0 never pulls a key). Verilator does the
 #   same run in seconds but is not the numeric reference (docs/COVERAGE.md).
