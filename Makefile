@@ -686,11 +686,20 @@ lane-scaling:
 #   parallel independent multipliers (glm_matmul_q4k.v:264,270), it does not
 #   lengthen the critical path.
 #
-#   WHAT THIS DOES *NOT* PROVE: synthesis, area, or timing at that width, and NOT
-#   the 4 parallel expert engines (the RTL still has ONE u_moe scanning the expert
-#   axis sequentially -- glm_decoder_block_q4k.v:422, T_ESCAN). Elaboration only
-#   says it compiles at that shape. Timing at TN=1,647 stays [측정필요] -- the FPGA
-#   campaign needed a 4.6x repipelining to reach 46.5 MHz at TN=4.
+#   WHAT THIS DOES *NOT* PROVE -- and one of these turned out to matter a lot:
+#     * SCOPE: FULL_ELAB_SRCS is the MODEL (glm_model_q4k and below). It does NOT
+#       include weight_loader_q4k / glm_q4k_system. So this gate says the MODEL
+#       scales; it says NOTHING about the weight path feeding it. It does not.
+#       weight_loader_q4k.v:231,237 part-select rd_data[4*PE_N-1:0] and
+#       rd_data[16*PE_N-1:0] out of a DATA_W=256 bus (glm_q4k_system.v:296), so the
+#       loader caps at PE_N=64 (w_q) / PE_N=16 (w_hp) -- 128x short of the spec'd
+#       2,048. iverilog ZERO-FILLS an out-of-range part-select without a peep, which
+#       is exactly why this gate went green at 1,647; Verilator flags it (SELRANGE).
+#       Registered in R3 §3.
+#     * synthesis, area, or timing at that width. Timing at TN=1,647 stays [측정필요]
+#       -- the FPGA campaign needed a 4.6x repipelining to reach 46.5 MHz at TN=4.
+#     * the 4 parallel expert engines (the RTL still has ONE u_moe scanning the
+#       expert axis sequentially -- glm_decoder_block_q4k.v:422, T_ESCAN).
 LANE_ELAB_PE_N ?= 1647
 LANE_ELAB_TN   ?= 1647
 full-elab-lanes:

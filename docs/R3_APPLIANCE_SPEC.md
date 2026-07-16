@@ -211,6 +211,16 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
 - FPGA 캠페인의 비트 정확 스테이지 분해(rope 10단/act 20단/matmul 5단)가 그대로 이월.
 
 **미해결 (재도출이 만든 숙제 — 정직하게 미검증으로 남긴다):**
+- **가중치 경로가 lane을 PE_N≤16에서 막는다 [RTL, 2026-07 발견]**: `weight_loader_q4k.v:231,237`이
+  `rd_data[4*PE_N-1:0]` / `rd_data[16*PE_N-1:0]`을 **DATA_W=256 버스**(`glm_q4k_system.v:296`)에서
+  part-select 한다. 성립 조건은 `4·PE_N ≤ 256` → **PE_N ≤ 64**, `16·PE_N ≤ 256` → **PE_N ≤ 16**.
+  §3이 요구하는 2,048은 **128× 초과**다. **즉 위 lane 표는 가중치를 실어 나를 수 없는 어레이를
+  기술하고 있다.**
+  *왜 여태 안 걸렸나*: `make full-elab-lanes`는 `FULL_ELAB_SRCS`가 **모델(glm_model_q4k 이하)뿐**이라
+  loader를 포함하지 않고, **iverilog는 범위 초과 part-select를 경고 없이 0/z로 채운다**(직접 확인).
+  Verilator가 `SELRANGE`로 잡았다. → **"PE_N이 스케일된다"는 이전 판의 주장은 모델에 한정된다.**
+  닫으려면 `WL_DATA_W`가 `PE_N`을 따라가야 하고(= 8,192b/32,768b 버스), 그건 메모리 인터페이스
+  재설계다 — **[측정필요]가 아니라 [설계필요]**.
 - **면적 — 게이트 수는 실측됨 (2026-07, `tools/lane_area_sweep.sh` — 재현 가능)**:
   `glm_matmul_q4k`의 `PE_N` 컬럼 하나 = Q4_K dequant 1개 + PE_M개 MAC = **§3 자체의
   "lane" 정의 그대로**다. 그래서 PE_N을 스윕한 **기울기**가 lane당 비용이고, 이 방식이
