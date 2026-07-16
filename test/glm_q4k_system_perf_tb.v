@@ -94,25 +94,25 @@ module glm_q4k_system_perf_tb;
 
     // ================= small-but-faithful slice =================
     //   (the fp8 perf TB's slice geometry, at the SPEC_SLICE-proven PE_N=2)
-    localparam integer MODEL_DIM  = 16;
+    parameter integer MODEL_DIM = 16;
     localparam integer L          = L_CFG;
-    localparam integer N_DENSE    = 2;
-    localparam integer VOCAB      = 16;
-    localparam integer H_HEADS    = 2;
-    localparam integer NOPE       = 4;
-    localparam integer ROPE       = 4;
-    localparam integer V_DIM      = 4;
-    localparam integer Q_LORA     = 8;
-    localparam integer KV_LORA    = 8;
-    localparam integer S_MAX      = 4;
-    localparam integer TOPK_ATTN  = 4;
+    parameter integer N_DENSE   = 2;
+    parameter integer VOCAB     = 16;
+    parameter integer H_HEADS   = 2;
+    parameter integer NOPE      = 4;
+    parameter integer ROPE      = 4;
+    parameter integer V_DIM     = 4;
+    parameter integer Q_LORA    = 8;
+    parameter integer KV_LORA   = 8;
+    parameter integer S_MAX     = 4;
+    parameter integer TOPK_ATTN = 4;
     localparam integer THETA      = 8000000;
     parameter  integer PE_N        = 2;   // attention-path lane knob (sweepable)
     localparam integer POSW       = 20;
     localparam integer N_EXPERT   = N_EXPERT_CFG;
-    localparam integer TOPK       = 2;
-    localparam integer INTER_MOE  = 16;
-    localparam integer INTER_DENSE= 32;
+    parameter integer TOPK      = 2;
+    parameter integer INTER_MOE = 16;
+    parameter integer INTER_DENSE= 32;
     localparam [31:0]  RSCALE     = 32'h40200000;
     // TN is a `parameter` (not localparam) so the sweep can override it with
     // iverilog -P: it is the EXPERT/DENSE path's lane knob (swiglu_expert_q4k
