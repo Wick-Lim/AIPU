@@ -105,6 +105,17 @@ module glm_q4k_system_perf_tb;
     always @(posedge clk) if (!rst)
         st_cyc[dut.u_model.u_block.state] <= st_cyc[dut.u_model.u_block.state] + 1;
 
+    // ATTENTION state histogram. The decoder-level histogram says T_ATTN is 62.6% of
+    // cycles at the real ratios with every lane knob maxed -- more than everything else
+    // combined, and no doc names it as the bottleneck. This decomposes it: which of
+    // mla_attn_q4k's 16 states is actually spending them (src/mla_attn_q4k.v:695-710).
+    // Same pure-observation contract: samples, drives nothing.
+    integer at_cyc [0:31];
+    integer at_i;
+    initial for (at_i = 0; at_i < 32; at_i = at_i + 1) at_cyc[at_i] = 0;
+    always @(posedge clk) if (!rst && dut.u_model.u_block.state == 5'd2)
+        at_cyc[dut.u_model.u_block.u_attn.state] <= at_cyc[dut.u_model.u_block.u_attn.state] + 1;
+
     // ================= small-but-faithful slice =================
     //   (the fp8 perf TB's slice geometry, at the SPEC_SLICE-proven PE_N=2)
     parameter integer MODEL_DIM = 16;
@@ -861,6 +872,10 @@ module glm_q4k_system_perf_tb;
                  RESIDENT_CFG, EXPERT_STALL_CFG, N_TOK,
                  cyc_sum/N_TOK, stall_sum/N_TOK, (cyc_sum-stall_sum)/N_TOK,
                  cyc_sum, stall_sum, ec_hit_count, ec_miss_count, ec_dropped);
+        $display("PERF_ATTN idle=%0d qdq=%0d qnorm=%0d quq=%0d qrope=%0d kvdkv=%0d kvkr=%0d krrope=%0d dsa=%0d key=%0d soft=%0d ctx=%0d out=%0d done=%0d union=%0d dsapf=%0d",
+                 at_cyc[0], at_cyc[1], at_cyc[2], at_cyc[3], at_cyc[4], at_cyc[5],
+                 at_cyc[6], at_cyc[7], at_cyc[8], at_cyc[9], at_cyc[10], at_cyc[11],
+                 at_cyc[12], at_cyc[13], at_cyc[14], at_cyc[15]);
         $display("PERF_STATE idle=%0d rn1=%0d attn=%0d radd1=%0d rn2=%0d ffnd=%0d route=%0d expw=%0d acc=%0d fcomb=%0d radd2=%0d done=%0d escan=%0d",
                  st_cyc[0], st_cyc[1], st_cyc[2], st_cyc[3], st_cyc[4], st_cyc[5],
                  st_cyc[6], st_cyc[8], st_cyc[9], st_cyc[10], st_cyc[11], st_cyc[12], st_cyc[13]);
