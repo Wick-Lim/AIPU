@@ -36,7 +36,11 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # `release-gate` is the full pre-release battery: every simulation, structural,
 # CDC and formal gate in the repo.  HOURS-long (model-q4k / spec-slow / expert-cache
 # / batched-q4k are minutes-to-hours each in iverilog); run before cutting a release.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-thread-equiv expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
+# NOTE: dsa-thread-equiv is deliberately NOT here -- it has never completed on any
+# machine we have (30m45s / 5.29 GB / unfinished; see its header ~line 543).  The thread
+# it guards is covered by dsa-sparse-correct, which runs =0 AND =1 end-to-end against the
+# reference.  Every prerequisite below must be a gate that can actually finish.
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind
 	@echo "release-gate: ALL gates passed"
 
 
@@ -557,22 +561,39 @@ resident-equiv:
 #   `make mla-sparse` (PE_M=3, per-row q-dependent DSA); this gate proves the
 #   THREADING changed nothing at the default.
 #
-#   WHAT THIS GATE PROVES WHEN IT PASSES: glm_decoder_block_q4k at DSA_REAL_IDX=0
-#   (default) is equivalent to the pre-threading netlist -- with mla_attn_q4k
-#   elaborated as a REAL module, not a blackbox, so the parameter's whole journey to
-#   its consumer is exercised.  The levels above (model, system, cdc) only forward a
-#   constant, and this is the innermost changed module, so proving it here covers the
-#   thread.
+#   WHAT THIS GATE WOULD PROVE IF IT PASSED: glm_decoder_block_q4k at DSA_REAL_IDX=0
+#   (default) is BYTE-IDENTICAL to the pre-threading netlist -- with mla_attn_q4k
+#   elaborated as a REAL module, not a blackbox.
 #
-#   STATUS (2026-07): NOT YET GREEN.  equiv_induct over a full decoder with the
-#   attention as a real module has not completed inside this machine's budget (>13 min,
-#   killed; a small-config RTLIL diff was also tried and did not finish).  What IS
-#   established without it: the source diff is exactly the parameter declaration plus
-#   one instance connection per level, every level defaults to 0 and forwards it, so
-#   mla_attn_q4k receives the same 0 it previously defaulted to.  That is a sound
-#   ARGUMENT, not a machine-checked proof -- which is why this gate exists and is
-#   wired into release-gate rather than being declared unnecessary.  Run it somewhere
-#   with a bigger time budget before trusting "byte-identical".
+#   STATUS (2026-07): NOT GREEN, AND OPT-IN -- deliberately NOT in release-gate.
+#   Measured on this machine (M-series, 20 cores, yosys 0.66), three ways, none finished:
+#     equiv_simple+equiv_induct, real mla_attn   30m45s, 5.29 GB RSS, still growing
+#     the same, earlier attempt                  >13 min, killed
+#     RTLIL diff, hierarchy+proc, NO memory pass  >9 min per side, still in proc
+#   `prep`/`proc` alone blow up on a decoder-sized module here; the SAT layer never even
+#   gets a fair run.  This is a property of the machine + tool, not of the design.
+#
+#   WHY THAT IS NOT A HOLE.  The load-bearing claim is that the parameter TRAVERSES
+#   system -> model -> decoder -> mla_attn, and that is machine-proven by
+#   `make dsa-sparse-correct` (below), which did not exist when this gate was written:
+#     DSA=0  tokens 12,14,14,14   system == standalone ref
+#     DSA=1  tokens 12,14, 2, 2   system == standalone ref
+#   If ANY link dropped the value, =1 would produce =0's tokens.  It does not.  The =0
+#   row is the same "threading changed nothing at the default" claim, checked
+#   behaviourally against the reference simulator instead of structurally.
+#   The residue this gate would add is BYTE-IDENTICAL NETLIST at =0 -- which no claim in
+#   docs/R3_APPLIANCE_SPEC.md rests on.  The area question ("what does =1 cost?") is
+#   answered by `make lane-scaling-sparse` with yosys stat: +0.2%.  Structurally,
+#   DSA_REAL_IDX occurs in glm_decoder_block_q4k.v exactly three times -- comment,
+#   declaration (default 0), and the one forwarding connection at line 344.  It sizes
+#   nothing and gates no generate, so at 0 forwarded to a callee that already defaulted
+#   to 0, the LRM gives identical elaboration.
+#
+#   So: a sound argument plus a behavioural machine check, with the structural check
+#   parked as opt-in.  Run it somewhere with a bigger budget before writing the words
+#   "byte-identical" anywhere.  Do NOT re-add it to release-gate without first showing
+#   it completes -- an unrunnable gate does not raise the bar, it makes the whole suite
+#   unrunnable, which is exactly what it did from 43de204 until this commit.
 DSA_EQUIV_BASE ?= d8f8f8f
 DSA_EQUIV_DEPS := src/mla_attn_q4k.v src/swiglu_expert_q4k.v src/moe_router_q4k.v \
 	src/glm_matmul_q4k.v src/rmsnorm_unit.v src/rope_interleave_unit.v \
@@ -755,6 +776,14 @@ lane-scaling-sparse:
 #   Runs BOTH values: =0 is the shipped default and must stay green; =1 is the one this
 #   gate exists for. iverilog, self-check ON (TIMING_ONLY=0) -- this is a CORRECTNESS
 #   gate, so it uses the numeric reference simulator, not Verilator.
+#
+#   IN RELEASE-GATE since 2026-07, taking over the slot dsa-thread-equiv could never
+#   finish (see that gate's header ~line 543).  This one IS the thread's machine check:
+#   the value has to survive system -> model -> decoder -> mla_attn for the =1 row to
+#   diverge from the =0 row, and both rows are held against the reference.
+#   RUNTIME: 1045 s wall (17.4 min), EXIT=0, both values green -- measured 2026-07 on
+#   M-series/20-core.  Slow because it is four full system sims, but FINITE: the whole
+#   point of the swap is that release-gate can now run to completion.
 #   CONTEXT SCALING (Verilator, same sparse config, DSA=1, TOPK_ATTN=2, S_MAX 8->64):
 #     S_MAX= 8  20,586 cyc/tok  system==ref   S_KEY 12,236 SOFT 8,064 CTX 9,728
 #     S_MAX=16  20,602 (+0.1%)  system==ref   identical
