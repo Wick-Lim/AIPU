@@ -80,7 +80,15 @@ module glm_q4k_system_perf_tb;
     //   So for cycle measurement Verilator is usable and ~50x faster; for the
     //   numeric golden it is not, and iverilog stays the reference.
     //   DEFAULT 0 = today's behaviour exactly: the check still fails the run.
-    parameter integer TIMING_ONLY      = 0;   // 1 = DDR-resident expert refills
+    parameter integer TIMING_ONLY      = 0;
+    // DSA_REAL_IDX: threaded to the DUT so the harness can actually TURN IT ON.
+    //   43de204 threaded it system -> model -> decoder -> attn, but no testbench
+    //   passed it, so =1 was still unreachable in simulation -- the thread ended one
+    //   level short of anything that runs. This closes that.
+    //   NOTE: DSA only does anything in the SPARSE regime (max causal extent > TOPK);
+    //   at S_MAX <= TOPK_ATTN the dense path never pulls keys and this is a no-op for
+    //   any value (mla_attn_q4k.v:165-169). So a measurement needs TOPK_ATTN < S_MAX.
+    parameter integer DSA_REAL_IDX_CFG = 0;   // 1 = DDR-resident expert refills
 
     // ---- clock / reset ----
     reg clk = 1'b0;
@@ -334,6 +342,7 @@ module glm_q4k_system_perf_tb;
         .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT), .KV_CTX(KV_CTX),
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
         .EXPERT_STALL(EXPERT_STALL_CFG), .RESIDENT(RESIDENT_CFG),
+        .DSA_REAL_IDX(DSA_REAL_IDX_CFG),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),
         .WL_KMAX(WL_KMAX), .WL_ADDR_W(WL_ADDR_W), .LOADER_KLEN(LOADER_KLEN)
@@ -475,7 +484,7 @@ module glm_q4k_system_perf_tb;
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN)
+        .BLK(BLK), .LM_TN(LM_TN), .DSA_REAL_IDX(DSA_REAL_IDX_CFG)
     ) u_ref (
         .clk(clk), .rst(rst),
         .start(r_start), .busy(r_busy), .done(r_done),
