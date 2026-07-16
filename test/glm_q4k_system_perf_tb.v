@@ -725,7 +725,12 @@ module glm_q4k_system_perf_tb;
     //   `start` asserts to the cycle `tok_valid` fires.  Token 0 = COLD cache.
     reg  [63:0] perf_cyc;
     always @(posedge clk) perf_cyc <= rst ? 64'd0 : perf_cyc + 64'd1;
-    localparam integer N_TOK = 4;
+    // N_TOK is a parameter so the sweep can grow the SEQUENCE, which is what
+    // actually drives the attention key count. S_MAX is the window CAPACITY, not
+    // its occupancy: sweeping S_MAX alone changes nothing (measured -- 8 vs 16 gave
+    // byte-identical S_KEY/S_SOFT/S_CTX) because 4 decoded tokens only ever occupy
+    // 4 positions. cyc_tok is [0:7], so N_TOK <= 8 without resizing it.
+    parameter integer N_TOK = 4;
     integer     n_meas;
     reg  [63:0] cyc_tok   [0:7];
     reg  [63:0] stall_tok [0:7];   // ec demand-stall accrued WITHIN this token's window
