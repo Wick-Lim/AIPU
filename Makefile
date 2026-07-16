@@ -1239,12 +1239,22 @@ weight-ecc:
 	    || { echo "FAILED: weight_ecc"; exit 1; }
 	@echo "weight-ecc: SECDED weight read path -- default-off transparent, single-bit corrected, double-bit flagged"
 
-WEIGHT_ECC_BASE ?= 9907504
+# REFERENCE for the byte-identical proof: an ECC-PHYSICALLY-REMOVED loader, NOT a
+# frozen commit.  It was originally `git show 9907504` (the pre-ECC commit).  That
+# broke the moment the loader's CORE changed for a reason unrelated to ECC -- the
+# pj_iss column-index width fix (a real bug: pj_iss was sized by super-block width
+# SBW, wrapping for PE_N > 2^SBW; see src/weight_loader_q4k.v).  A frozen pre-ECC
+# commit cannot carry that fix, so the reference is now a checked-in file =
+# (9907504's loader) + (the identical pj_iss fix), with the ECC ports/params/generate
+# genuinely absent.  The proof therefore stays honest: WEIGHT_ECC=0 elaborates to the
+# same netlist as a loader that never had ECC at all.  When the loader's non-ECC core
+# changes again, this reference must be updated in lockstep -- and this gate FAILS
+# until it is, which is the point (it guards the core netlist).
+WEIGHT_ECC_REF := test/ref/weight_loader_q4k_noecc_ref.v
 weight-ecc-equiv:
 	@mkdir -p $(BUILD_DIR)
-	@git show $(WEIGHT_ECC_BASE):src/weight_loader_q4k.v > $(BUILD_DIR)/weight_loader_q4k_base.v
 	@$(YOSYS) -q -p "read_verilog -lib -sv -I src src/ecc_secded.v; \
-	    read_verilog -sv -I src $(BUILD_DIR)/weight_loader_q4k_base.v; \
+	    read_verilog -sv -I src $(WEIGHT_ECC_REF); \
 	    prep -top weight_loader_q4k; opt_clean -purge; rename weight_loader_q4k gold; design -stash gdes; \
 	    read_verilog -lib -sv -I src src/ecc_secded.v; \
 	    read_verilog -sv -I src src/weight_loader_q4k.v; \
@@ -1254,7 +1264,7 @@ weight-ecc-equiv:
 	    design -copy-from gdes -as gold gold; \
 	    equiv_make gold gate equiv; prep -top equiv; \
 	    equiv_simple -undef; equiv_induct -undef; equiv_status -assert" \
-	    && echo "[weight-ecc-equiv] PROVEN: weight_loader_q4k(WEIGHT_ECC=0) == $(WEIGHT_ECC_BASE) (default read path byte-identical)" \
+	    && echo "[weight-ecc-equiv] PROVEN: weight_loader_q4k(WEIGHT_ECC=0) == ECC-removed reference (default read path byte-identical)" \
 	    || { echo "FAILED: weight-ecc-equiv"; exit 1; }
 
 
