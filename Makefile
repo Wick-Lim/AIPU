@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -731,6 +731,54 @@ lane-scaling-sparse:
 	  printf '[lane-scaling-sparse] TN=%-2s PE_N=%-2s ' "$$1" "$$2"; \
 	  $(BUILD_DIR)/vsp_$$1_$$2/vsp 2>/dev/null | grep -oE 'cycles/token=[0-9]+' | head -1 \
 	    || { echo "FAILED: lane-scaling-sparse run"; exit 1; }; \
+	done
+
+# dsa-sparse-correct : glm_q4k_system stays consistent with the standalone reference
+#   with DSA_REAL_IDX=1 -- the query-dependent key selection actually ON.
+#
+#   WHY THIS DID NOT EXIST.  `make mla-sparse` proves DSA_REAL_IDX=1 bit-exact at the
+#   LEAF (mla_attn_q4k, PE_M=3, dense+sparse). But nothing ever ran =1 through the whole
+#   glm_q4k_system (expert cache + KV pager + xbar + weight loader): the perf TB did not
+#   pass the parameter, so =1 was unreachable in any system-level simulation. 43de204
+#   threaded it to the system top and said =1 was "reachable"; it was reachable by a
+#   parameter override that no harness supplied. This gate closes that.
+#
+#   MEASURED (TOPK_ATTN=2 < S_MAX=8, i.e. the sparse regime where DSA does anything;
+#   at TOPK_ATTN==S_MAX it is a no-op for any value -- mla_attn_q4k.v:165-169):
+#     DSA=0  tokens 12,14,14,14   system == standalone ref
+#     DSA=1  tokens 12,14, 2, 2   system == standalone ref
+#   Both agree with the reference, and the TOKENS DIVERGE from each other at exactly
+#   s_len>TOPK_ATTN=2 -- where selection starts. That is the point: =1 keeps consistency
+#   while genuinely selecting different, query-dependent keys (S_DSAPF 0 -> 84).
+#   Cost measured separately (`make lane-scaling-sparse` config): +0.2%.
+#
+#   Runs BOTH values: =0 is the shipped default and must stay green; =1 is the one this
+#   gate exists for. iverilog, self-check ON (TIMING_ONLY=0) -- this is a CORRECTNESS
+#   gate, so it uses the numeric reference simulator, not Verilator.
+#   Runtime ~15 min: =1 is several times slower than =0 under iverilog because it
+#   actually walks the DSA prefetch path (=0 never pulls a key). Verilator does the
+#   same run in seconds but is not the numeric reference (docs/COVERAGE.md).
+DSA_CORR_CFG := -Pglm_q4k_system_perf_tb.MODEL_DIM=48 -Pglm_q4k_system_perf_tb.INTER_MOE=16 \
+	-Pglm_q4k_system_perf_tb.INTER_DENSE=96 -Pglm_q4k_system_perf_tb.TOPK=8 \
+	-Pglm_q4k_system_perf_tb.Q_LORA=16 -Pglm_q4k_system_perf_tb.KV_LORA=4 \
+	-Pglm_q4k_system_perf_tb.H_HEADS=4 -Pglm_q4k_system_perf_tb.NOPE=24 \
+	-Pglm_q4k_system_perf_tb.ROPE=8 -Pglm_q4k_system_perf_tb.V_DIM=32 \
+	-Pglm_q4k_system_perf_tb.S_MAX=8 -Pglm_q4k_system_perf_tb.TOPK_ATTN=2 \
+	-Pglm_q4k_system_perf_tb.N_DENSE=2 -Pglm_q4k_system_perf_tb.VOCAB=16 \
+	-Pglm_q4k_system_perf_tb.TN=16 -Pglm_q4k_system_perf_tb.PE_N=16 \
+	-Pglm_q4k_system_perf_tb.LM_TN=16 -Pglm_q4k_system_perf_tb.RESIDENT_CFG=1 \
+	-Pglm_q4k_system_perf_tb.N_EXPERT_CFG=16 -Pglm_q4k_system_perf_tb.L_CFG=4 \
+	-Pglm_q4k_system_perf_tb.TIMING_ONLY=0
+dsa-sparse-correct:
+	@mkdir -p $(BUILD_DIR)
+	@for d in 0 1; do \
+	  $(IVERILOG) -g2012 -I src -o $(BUILD_DIR)/dsacorr_$$d $(DSA_CORR_CFG) \
+	    -Pglm_q4k_system_perf_tb.DSA_REAL_IDX_CFG=$$d $(LANE_SCALE_SRCS) 2>/dev/null \
+	    || { echo "FAILED: dsa-sparse-correct compile (DSA_REAL_IDX=$$d)"; exit 1; }; \
+	  printf '[dsa-sparse-correct] DSA_REAL_IDX=%s ' "$$d"; \
+	  vvp $(BUILD_DIR)/dsacorr_$$d 2>/dev/null | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    | sed 's/  (.*//' \
+	    || { echo "FAILED: system != standalone ref at DSA_REAL_IDX=$$d"; exit 1; }; \
 	done
 
 # ---------------------------------------------------------------------------
