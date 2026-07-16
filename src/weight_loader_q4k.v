@@ -168,6 +168,20 @@ module weight_loader_q4k #(
     if (KMAX % 256 != 0)
         $fatal(1, "weight_loader_q4k: Q8_0 header-pack requires KMAX a whole multiple of 256 (NB8==8*NSB)");
 
+    // GENERATE-TIME PRECONDITION (lane ceiling): the CODE-region beat carries the
+    // per-column codes in ONE DATA_W word -- 4b/col for Q4_K (mm_w_q = rd_data[4*PE_N-1:0])
+    // and 16b/col for the mixed high-precision lane (mm_w_hp = rd_data[16*PE_N-1:0]).
+    // The 16b/col slice is the binding one: it needs DATA_W >= 16*PE_N.  Below that,
+    // a SELRANGE is flagged under --lint-only, but IVERILOG SILENTLY ZERO-FILLS the
+    // out-of-range bits and produces a wrong-but-running netlist -- exactly how PE_N>16
+    // at the shipped DATA_W=256 slipped through.  Scaling lanes past 16 is therefore a
+    // DELIBERATE memory-bus-width decision (DATA_W=256->16 lanes, 8192->512,
+    // 32768->2048), and this makes DATA_W < 16*PE_N a loud build failure in BOTH tools
+    // instead of a silent one in iverilog.  ($error, not $fatal: elaboration-time, so
+    // it also fails the --lint-only pass where the SELRANGE lives.)
+    if (16*PE_N > DATA_W)
+        $error("weight_loader_q4k: DATA_W must be >= 16*PE_N (the mixed-type code lane is 16b/col in one beat) -- widen DATA_W to scale lanes past DATA_W/16; see the lane-ceiling note in this header");
+
     reg [2:0]                state;
 
     // latched descriptor
