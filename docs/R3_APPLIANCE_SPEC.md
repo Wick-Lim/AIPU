@@ -343,6 +343,29 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
 - FPGA 캠페인의 비트 정확 스테이지 분해(rope 10단/act 20단/matmul 5단)가 그대로 이월.
 
 **미해결 (재도출이 만든 숙제 — 정직하게 미검증으로 남긴다):**
+- **투기 디코딩과 메모리 시스템이 합쳐진 탑이 없다 [RTL, 2026-07 발견 — 헤드라인을 직접 친다]**:
+  `glm_q4k_system_cdc`(프로덕션 2-clock 탑)는 **`glm_q4k_system` 하나만** 감싼다. 그런데
+  `glm_q4k_system`이 `glm_model_q4k`에 넘기는 25개 파라미터에 **`PE_M`이 없다**(`SWIN`·
+  `PER_ROW_POS`·`PER_ROW_SLEN`도 없음) → 모델 기본값 **PE_M=1**. 그리고 `PE_M = DRAFT_K+1`
+  (`spec_batched_top.v:13`)이므로 **PE_M=1 = K=0 = 투기 없음**이다.
+  반대로 스펙체인 탑들(`spec_decode_top` 등)에는 **메모리 시스템이 0개**다 —
+  `expert_cache_pf`/`kv_cache_pager`/`ddr5_xbar`/`weight_loader_q4k` 어느 것도 인스턴스하지
+  않고 `glm_model_q4k`를 직접 든다. **즉 투기 OR 메모리 시스템이지 둘 다가 아니다.**
+
+  **이것이 §2/§5의 헤드라인을 직접 친다:**
+
+  | 구성 | 상수 | 1.54TB/s에서 |
+  |---|---|---|
+  | K=1 투기 (§2 현행, A_eff=1.87 실측) | 13.87 GB/tok | **111 tok/s** |
+  | **K=0 = 투기 없음 (프로덕션 탑의 실제 구성)** | **25.50 GB/tok** | **60 tok/s** |
+
+  **§2의 정본 상수와 §5의 110 tok/s는 프로덕션 탑이 낼 수 없는 구성의 값이다.** 닫으려면
+  `glm_q4k_system`이 `PE_M`(+`SWIN`, `PER_ROW_POS/SLEN`)을 스레드하고 스펙체인을 품어야 하며,
+  그건 **[설계필요]**다. *(관련: `SWIN` 기본식 `min(S_MAX,TOPK_ATTN)`의 안전성 논증은
+  `mla_attn_q4k.v:113-118`이 밝히듯 **한 행이 최대 TOPK개를 고른다**는 것 — 즉 **PE_M=1 전용**이다.
+  PE_M>1이면 행별 선택의 union이 최대 `PE_M*TOPK`라 기본식이 PE_M× 부족하고, 이를 증명 TB는
+  알고 있어 `SWIN=PE_M*TOPK`를 명시한다(`test/mla_attn_q4k_sparse_perrow_tb.v:99`). 그런데
+  **`glm_q4k_system`엔 `SWIN` 파라미터가 없어 키울 수도 없고, assertion도 없다.**)*
 - **가중치 경로가 lane을 PE_N≤16에서 막는다 [RTL, 2026-07 발견]**: `weight_loader_q4k.v:231,237`이
   `rd_data[4*PE_N-1:0]` / `rd_data[16*PE_N-1:0]`을 **DATA_W=256 버스**(`glm_q4k_system.v:296`)에서
   part-select 한다. 성립 조건은 `4·PE_N ≤ 256` → **PE_N ≤ 64**, `16·PE_N ≤ 256` → **PE_N ≤ 16**.
