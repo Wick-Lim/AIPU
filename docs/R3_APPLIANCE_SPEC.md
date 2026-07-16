@@ -322,7 +322,8 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
 > **[남은 [측정필요]]** 절대 크기(6144 vs 48)는 여전히 다르다. 비율이 같으니 *비중*은 옮겨지지만,
 > 절대 사이클과 tok/s는 아니다. 실형상 런은 **verilator로도 비현실적**임이 확인됐다: 생성 C++이
 > 6,977 파일/4.4GB이고 `-Os` 단일 스레드로 22시간 (`-j16 -O0`로도 ~30분 + 메모리). 그리고 그
-> 런은 **weight loader가 PE_N을 16에서 막는 버그**(아래) 때문에 어차피 가중치가 0인 채 도는 셈이다.
+> 런은 **weight loader가 PE_N을 16에서 막는 버그**(아래 — pj_iss 폭, 2026-07 근본원인 규명+수정) 때문에
+> 어차피 가중치가 0인 채 도는 셈이었다. 그 "가중치 0" 증상이 바로 이 버그의 서명이다(초과 컬럼 헤더 미로드).
 >
 > *(부수 정정: `T_ESCAN`은 커밋된 PE_M=1에서 **진입하지 않는 죽은 코드**다(`:812` "expert union
 > scan (PE_M>1)"). 직렬화는 `T_ACC` 안의 `exp_i`/`sel_e[0][exp_nxt]` 루프(`:857-872`)에 있다.
@@ -382,16 +383,21 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
   PE_M>1이면 행별 선택의 union이 최대 `PE_M*TOPK`라 기본식이 PE_M× 부족하고, 이를 증명 TB는
   알고 있어 `SWIN=PE_M*TOPK`를 명시한다(`test/mla_attn_q4k_sparse_perrow_tb.v:99`). 그런데
   **`glm_q4k_system`엔 `SWIN` 파라미터가 없어 키울 수도 없고, assertion도 없다.**)*
-- **가중치 경로가 lane을 PE_N≤16에서 막는다 [RTL, 2026-07 발견]**: `weight_loader_q4k.v:231,237`이
-  `rd_data[4*PE_N-1:0]` / `rd_data[16*PE_N-1:0]`을 **DATA_W=256 버스**(`glm_q4k_system.v:296`)에서
-  part-select 한다. 성립 조건은 `4·PE_N ≤ 256` → **PE_N ≤ 64**, `16·PE_N ≤ 256` → **PE_N ≤ 16**.
-  §3이 요구하는 2,048은 **128× 초과**다. **즉 위 lane 표는 가중치를 실어 나를 수 없는 어레이를
-  기술하고 있다.**
-  *왜 여태 안 걸렸나*: `make full-elab-lanes`는 `FULL_ELAB_SRCS`가 **모델(glm_model_q4k 이하)뿐**이라
-  loader를 포함하지 않고, **iverilog는 범위 초과 part-select를 경고 없이 0/z로 채운다**(직접 확인).
-  Verilator가 `SELRANGE`로 잡았다. → **"PE_N이 스케일된다"는 이전 판의 주장은 모델에 한정된다.**
-  닫으려면 `WL_DATA_W`가 `PE_N`을 따라가야 하고(= 8,192b/32,768b 버스), 그건 메모리 인터페이스
-  재설계다 — **[측정필요]가 아니라 [설계필요]**.
+- **가중치 경로가 lane을 PE_N≤16에서 막았다 → ~~[설계필요]~~ RTL은 해소, 시스템/물리만 남음 (2026-07)**:
+  두 겹이었다. **(1) DATA_W cap**: `weight_loader_q4k.v:231,237`이 `rd_data[16*PE_N-1:0]`을
+  `DATA_W=256` 버스에서 part-select → `16·PE_N ≤ DATA_W`. iverilog가 범위 초과를 경고 없이 0으로
+  채우던 것을, `16*PE_N > DATA_W`이면 **양쪽 툴에서 loud $error**로 강제하는 elaboration 가드로 명시화
+  (7e43838). **(2) 진짜 blocker — pj_iss 폭 버그**: 컬럼 인덱스 `pj_iss`(0..PE_N-1)가 컬럼이 아니라
+  **슈퍼블록 폭 `SBW=$clog2(NSB+1)`**로 선언돼 `PE_N > 2^SBW`에서 wrap → 컬럼이 서로 헤더 슬롯을
+  덮어써 초과 컬럼 출력이 0. 출하 기본(PE_N=4, WL_KMAX=256→NSB=1→SBW=1)에서 이미 컬럼 2,3을
+  손상시켰으나, 로더 테스트는 NSB=3으로, 모델은 loader를 아예 안 써서(가중치를 직접 포트로 받음)
+  가려져 있었다. `pj_iss`를 `PJW=$clog2(PE_N+1)`로 수정(6a32b5a). **검증**: loader→GEMM ggml 골든
+  비트정확 PE_N=4/8/16/32/64 전부 통과(이전엔 8부터 실패), `make weight-loader-lanes`(PE_N=32)로
+  release-gate에 상주(24fd16c). `weight-ecc-equiv`는 넷리스트가 바뀌어 ECC-물리제거 참조본
+  (`test/ref/weight_loader_q4k_noecc_ref.v`)으로 재베이스라인, 여전히 PROVEN.
+  **남은 [설계필요]**: 로더 RTL은 이제 임의 PE_N을 지원하지만, 제품이 요구하는 큰 lane(예 512/2048)을
+  실제로 내려면 시스템이 `WL_DATA_W ≥ 16·WL_PE_N`(= 8,192b/32,768b)를 넘겨야 하고 그건 **물리 메모리
+  버스 폭 결정**이다 — RTL 장벽이 아니라 시스템/물리 통합.
 - **면적 — 게이트 수는 실측됨 (2026-07, `tools/lane_area_sweep.sh` — 재현 가능)**:
   `glm_matmul_q4k`의 `PE_N` 컬럼 하나 = Q4_K dequant 1개 + PE_M개 MAC = **§3 자체의
   "lane" 정의 그대로**다. 그래서 PE_N을 스윕한 **기울기**가 lane당 비용이고, 이 방식이
