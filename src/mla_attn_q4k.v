@@ -438,6 +438,39 @@ module mla_attn_q4k #(
     //   -- no cross-seq dedup -- so kc_seq=union_seq[ksel] routes each fetch to the
     //   right KV window.  Tied 0 / unused when PER_ROW_SEQ=0 (byte-identical).
     //   REQUIRES S_MAX >= PE_M*TOPK (union depth) and SWIN >= PE_M*TOPK (scratch).
+    // ---- ELABORATION CHECK: SWIN must hold the worst-case union ------------
+    //   The default SWIN = min(S_MAX, TOPK) is justified above (:113-118) by
+    //   "u_cnt <= min(S,TOPK)" -- which holds only when every row selects the SAME
+    //   keys. Two configs break that and need SWIN >= PE_M*TOPK:
+    //     * PER_ROW_SEQ=1 : rows are DIFFERENT sequences, so they can never share a
+    //       key -- the union is PE_M*TOPK by construction (:152 states this).
+    //     * DSA_REAL_IDX=1 with PE_M>1 : selection is query-DEPENDENT, so rows
+    //       diverge (at =0 "the divergent per-row path folds to the shared list",
+    //       :157-159, and the union collapses back to TOPK -- which is why the
+    //       default is safe there and only there).
+    //   Until now this was a COMMENT. Nothing checked it, glm_q4k_system has no SWIN
+    //   parameter to raise, and a violating build would just overflow the union
+    //   scratch silently. The proving TB knows the rule and sets SWIN=PE_M*TOPK
+    //   (test/mla_attn_q4k_sparse_perrow_tb.v:99); this makes the rule enforce itself.
+    //   Deliberately elaboration-time (not $fatal): a wrong SWIN is a build mistake,
+    //   and it should never reach a simulation that might look like it passed.
+    //   The bound is min(PE_M*TOPK, S_MAX), NOT PE_M*TOPK: you cannot select more
+    //   DISTINCT keys than exist, so S_MAX clamps the union -- which is exactly the
+    //   form the proving TB uses (SWIN_TB = (PE_M*TOPK < S_MAX) ? PE_M*TOPK : S_MAX,
+    //   test/mla_attn_q4k_sparse_perrow_tb.v:99). A first cut of this check demanded
+    //   the unclamped PE_M*TOPK and immediately failed `make mla-sparse` at
+    //   PE_M=3/TOPK=4/S_MAX=8 (needed 12, has 8) -- a legal, proven config.
+    localparam integer SWIN_NEEDS_UNION =
+        ((PER_ROW_SEQ != 0) || ((DSA_REAL_IDX != 0) && (PE_M > 1))) ? 1 : 0;
+    localparam integer SWIN_UNION_MIN =
+        ((PE_M*TOPK) < S_MAX) ? (PE_M*TOPK) : S_MAX;
+    generate
+        if (SWIN_NEEDS_UNION && (SWIN < SWIN_UNION_MIN)) begin : gen_swin_too_small
+            ERROR_SWIN_must_be_at_least_PE_M_times_TOPK__see_mla_attn_q4k_v_header
+                bad_swin_parameter ();
+        end
+    endgenerate
+
     reg [SEQW-1:0] union_seq  [0:S_MAX-1];
     // COMPACT SCRATCH SLOT MAP (B7): rowslot2union[r][i] = the UNION SLOT (0..u_cnt-1)
     //   holding row r's OWN selected key sel_list_r[r][i].  Built in S_UNION beside
