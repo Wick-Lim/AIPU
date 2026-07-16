@@ -464,10 +464,25 @@ module mla_attn_q4k #(
         ((PER_ROW_SEQ != 0) || ((DSA_REAL_IDX != 0) && (PE_M > 1))) ? 1 : 0;
     localparam integer SWIN_UNION_MIN =
         ((PE_M*TOPK) < S_MAX) ? (PE_M*TOPK) : S_MAX;
+    //   IDIOM (do not "simplify" back): the elaboration system task $error, NOT an
+    //   instance of a deliberately-undeclared module.  The undeclared-module trick reads
+    //   better in an iverilog log, but Verilator 5.048 LINKS module references inside a
+    //   generate branch whose condition is literally `1==0` -- measured: substituting the
+    //   condition for a constant false still yields "%Error: Can't resolve module
+    //   reference" at the instance line.  So the trick made `make lint` fail on every
+    //   build, for every config, including the ones the check is meant to allow.  $error
+    //   is the SV-2012 elaboration-time form and was measured to fire in BOTH tools when
+    //   the branch is taken, and in NEITHER when it is not.
+    //   ONE STRING LITERAL, NO FORMAT ARGS -- also not a style choice.  iverilog 12
+    //   answers `$error("... %0d", SWIN)` with "sorry: Elaboration tasks currently only
+    //   support a single string argument", which replaces this message with a tool
+    //   complaint at the exact moment a builder needs to read it.  The offending values
+    //   are in the build command anyway; the bound is derived in the header above.
+    //   `!= 0` on SWIN_NEEDS_UNION is likewise deliberate: it is an integer, and bare
+    //   `&&` on it costs a Verilator WIDTHTRUNC warning (measured: lint 116 -> 117).
     generate
-        if (SWIN_NEEDS_UNION && (SWIN < SWIN_UNION_MIN)) begin : gen_swin_too_small
-            ERROR_SWIN_must_be_at_least_PE_M_times_TOPK__see_mla_attn_q4k_v_header
-                bad_swin_parameter ();
+        if ((SWIN_NEEDS_UNION != 0) && (SWIN < SWIN_UNION_MIN)) begin : gen_swin_too_small
+            $error("SWIN must be >= min(PE_M*TOPK, S_MAX) -- see the SWIN bound derivation in the header of src/mla_attn_q4k.v");
         end
     endgenerate
 
