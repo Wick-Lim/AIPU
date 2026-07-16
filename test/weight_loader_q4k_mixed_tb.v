@@ -30,12 +30,17 @@
 //============================================================================
 module weight_loader_q4k_mixed_tb;
     localparam integer PE_M   = 2;                  // must match the vector file
-    localparam integer PE_N   = 4;
+    // PE_N / DATA_W are `parameter` (iverilog -P overridable) so this same TB proves the
+    // loader->GEMM bit-exact at scaled lane counts (see `make weight-loader-lanes`), not
+    // only the default.  DATA_W must be >= 16*PE_N (the loader guards this).  VEC_FILE
+    // lets the scaled gate point at its own generated golden without racing the default.
+    parameter integer PE_N   = 4;
     localparam integer KMAX   = 768;                // one..three super-blocks along K
     localparam integer NSB    = (KMAX + 255) / 256; // 3
     localparam integer NB8    = (KMAX + 31)  / 32;  // 24 (== 8*NSB)
     localparam integer ADDR_W = 16;
-    localparam integer DATA_W = 256;
+    parameter integer DATA_W = 256;
+    parameter VEC_FILE = "build/wlmixed_vec.txt";
     localparam integer KW     = $clog2(KMAX+1);
     localparam integer SBW    = $clog2(NSB+1);
 
@@ -253,9 +258,9 @@ module weight_loader_q4k_mixed_tb;
     reg [ADDR_W-1:0] base;
 
     initial begin
-        fd = $fopen("build/wlmixed_vec.txt", "r");
+        fd = $fopen(VEC_FILE, "r");
         if (fd == 0) begin
-            $display("[weight_loader_q4k_mixed] FAIL: cannot open build/wlmixed_vec.txt (run: python3 tools/q4k_mixed_gen.py)");
+            $display("[weight_loader_q4k_mixed] FAIL: cannot open %0s (run: python3 tools/q4k_mixed_gen.py)", VEC_FILE);
             $fatal(1, "missing vectors");
         end
         code = $fscanf(fd, "%d %d %d", ntest, pm, pn);
