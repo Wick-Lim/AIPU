@@ -1,3 +1,17 @@
+//============================================================================
+// DEAD / NOT IN PRODUCT HIERARCHY -- superseded by glm_q4k_system (single-
+// context product top), kept for reference only.
+//   Multi-context batching is a DECLARED NON-GOAL as of the 2026-07 single-
+//   context spec decision (docs/USAGE_GAPS.md): the shipped top glm_q4k_system
+//   never passes NSEQ (pager defaults to 1). This batched multi-sequence top is
+//   instantiated NOWHERE (repo-wide it survives only in docs/comments), is in
+//   NO Makefile gate, and has NO testbench -- its Q4_K bit-exactness is the
+//   prior-FP8 result with the re-run PENDING (docs/OPERATION_FLOW.md:331,
+//   PRODUCT_ROADMAP.md). The model-level per-row batched path that gates DO
+//   exercise lives inline in glm_model_q4k / glm_decoder_block_q4k. Retained
+//   because this is the ONLY home of the top-owned per-(layer,seq) kv_mem store
+//   + the N_STEPS continuous-batching decode-loop RTL. Do not add to a build.
+//============================================================================
 `timescale 1ns/1ps
 /* verilator lint_off DECLFILENAME */
 //============================================================================
