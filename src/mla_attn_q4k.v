@@ -486,6 +486,19 @@ module mla_attn_q4k #(
         end
     endgenerate
 
+    // DSA_REAL_IDX=0 TRAP (documented; NOT a leaf elaboration guard -- and here is why).
+    // At =0 the indexer gets zero key-index vectors, so top-K keeps keys 0..TOPK-1 by
+    // tie-break -- QUERY-INDEPENDENT.  Correct no-op while S_MAX <= TOPK; the moment
+    // S_MAX > TOPK it attends ONLY to the first TOPK tokens (fluent output, frozen prefix,
+    // nothing asserts WHICH keys).  The tempting `if (DSA_REAL_IDX==0 && S_MAX>TOPK) $error`
+    // is the WRONG LAYER: `make dsa-sparse-correct` deliberately runs the system at DSA=0,
+    // TOPK_ATTN=2 < S_MAX=8 to prove the RTL MATCHES the reference at =0 (both do the same
+    // query-independent thing) -- a valid equivalence test a leaf guard would break.  The
+    // trap is a PRODUCT-CONFIG policy ("do not SHIP =0 with a raised window"), not an RTL
+    // bug, so it belongs at the shipping-config layer.  The committed full config is SAFE
+    // (S_MAX=8 <= TOPK_ATTN=2048); the enforcement point is when B7 windowing raises S_MAX
+    // -- gate it there behind a threaded allow-flag so the equivalence test can still run =0.
+
     reg [SEQW-1:0] union_seq  [0:S_MAX-1];
     // COMPACT SCRATCH SLOT MAP (B7): rowslot2union[r][i] = the UNION SLOT (0..u_cnt-1)
     //   holding row r's OWN selected key sel_list_r[r][i].  Built in S_UNION beside

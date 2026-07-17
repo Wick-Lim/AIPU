@@ -398,10 +398,10 @@ expert-cache:
 	@# regenerate the routing trace (deterministic seed) so the target is self-contained.
 	@python3 tools/route_trace.py --dump >/dev/null
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/expert_cache_pf test/expert_cache_pf_tb.v src/expert_cache_pf.v src/expert_cache_ctrl.v
-	@printf '[%s] ' "expert_cache_pf"; $(VVP) $(BUILD_DIR)/expert_cache_pf | grep -E 'ALL [0-9]+ TESTS PASSED|stall cut' \
+	@printf '[%s] ' "expert_cache_pf"; $(VVP) $(BUILD_DIR)/expert_cache_pf | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: expert_cache_pf"; exit 1; }
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/expert_cache_pf_policy test/expert_cache_pf_policy_tb.v src/expert_cache_pf.v
-	@printf '[%s] ' "cache-policy(LRU vs FREQ)"; $(VVP) $(BUILD_DIR)/expert_cache_pf_policy | grep -E 'ALL [0-9]+ TESTS PASSED|hit-rate|POLICY' \
+	@printf '[%s] ' "cache-policy(LRU vs FREQ)"; $(VVP) $(BUILD_DIR)/expert_cache_pf_policy | grep -E 'ALL POLICY TESTS PASSED' \
 	    || { echo "FAILED: expert_cache_pf_policy"; exit 1; }
 	@echo "expert-cache: expert_cache_pf + expert_cache_pf_policy passed"
 
@@ -500,7 +500,8 @@ lint:
 
 # Host software scaffold (D2): OpenAI-compatible server + device protocol (stdlib).
 host-test:
-	@printf '[host] '; python3 host/test_aipu.py | tail -1
+	@printf '[host] '; python3 host/test_aipu.py | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: host-test (a self-test raised; banner absent)"; exit 1; }
 
 GLM_Q4K_CDC_SRCS := src/glm_q4k_system_cdc.v src/glm_q4k_system.v src/cdc_async_fifo.v \
 	src/reset_sync.v src/glm_model_q4k.v src/ddr5_xbar.v src/weight_loader_q4k.v \
