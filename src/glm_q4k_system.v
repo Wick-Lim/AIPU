@@ -127,6 +127,14 @@ module glm_q4k_system #(
     parameter integer KV_LORA    = 32,
     parameter integer S_MAX      = 8,
     parameter integer TOPK_ATTN  = 8,
+    // attention union-slot scratch depth (mla SWIN), threaded straight to u_model
+    //   (glm_model_q4k -> glm_decoder_block_q4k -> mla_attn_q4k, all of which already
+    //   thread it).  Default = the model/decoder/mla default min(S_MAX,TOPK_ATTN) --
+    //   BYTE-IDENTICAL at PE_M=1 (mirrors glm_model_q4k.v:75).  For PE_M>1 the caller
+    //   MUST raise SWIN to the union bound min(PE_M*TOPK_ATTN, S_MAX) that mla_attn_q4k
+    //   asserts (mla_attn_q4k.v:476-499); threaded here so a scaled-up batch CAN size
+    //   its union scratch instead of being pinned to the PE_M=1 default.
+    parameter integer SWIN       = (S_MAX < TOPK_ATTN) ? S_MAX : TOPK_ATTN,
     parameter integer THETA      = 8000000,
     parameter integer PE_N       = 4,
     parameter integer POSW       = 20,
@@ -139,6 +147,17 @@ module glm_q4k_system #(
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 4,
     parameter integer ACT_HW     = 0,   // activation HW lanes (0 = full) -- result-invariant knob
+    // ---- PE_M : query tokens decoded in lockstep (batch B), threaded straight to
+    //   u_model (glm_model_q4k -> decoder -> mla_attn_q4k, all already PE_M-capable).
+    //   Default 1 == the committed single-token forward = NO speculation, BYTE-IDENTICAL
+    //   (mirrors glm_model_q4k.v:92).  PE_M=K+1 is the batched draft-verify shape the
+    //   spec composition (SPEC_COMPOSITION_DESIGN.md step 5) uses; exposed here so the
+    //   system can no longer silently pin the model at PE_M=1.  NOTE (5a scope): only the
+    //   PARAMETER is threaded -- the system's host-facing datapath (prompt_tok/logits/
+    //   argmax/h_state) is still single-row, so the batched verify ports are wired in 5b.
+    parameter integer PE_M       = 1,
+    parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions via pos_vec (P1.3a; model default 0)
+    parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents via s_len_vec (P1.3d; model default 0)
     // DSA_REAL_IDX (default 0 == the committed netlist, byte-identical -- `make dsa-thread-equiv`):
     //   0: the DSA indexer is fed ZERO key-index vectors, so every key scores 0 and top-K keeps
     //      keys 0..min(S,TOPK)-1 by lower-index tie-break -- QUERY-INDEPENDENT selection.
@@ -525,9 +544,11 @@ module glm_q4k_system #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
-        .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
-        .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW), .DSA_REAL_IDX(DSA_REAL_IDX)
+        .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT),
+        .TOPK(TOPK), .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE),
+        .TN(TN), .BLK(BLK), .LM_TN(LM_TN), .PE_M(PE_M), .ACT_HW(ACT_HW),
+        .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
+        .DSA_REAL_IDX(DSA_REAL_IDX)
     ) u_model (
         .clk(die_clk), .rst(rst),
         .start(mdl_start), .busy(mdl_busy), .done(mdl_done),
