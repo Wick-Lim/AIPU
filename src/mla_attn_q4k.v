@@ -599,11 +599,19 @@ module mla_attn_q4k #(
     //   INTRA_INJECT_NOMASK (injection-ONLY, never a normal build): +1 so row r
     //   also attends intra key r == its OWN current token (a FUTURE-of-nothing,
     //   non-causal key) -> the leaf oracle MUST FAIL.
+    //   WIDTH: intra_cnt_nxt is [IDXW:0] to match the dsa_slen adder (:1457).  Resize
+    //   dsa_row_nxt ([DRW-1:0]) into it by plain assignment, NOT an explicit
+    //   {(IDXW+1-DRW){1'b0}} pad: that pad elaborates a NEGATIVE replication when a
+    //   caller uses a tiny S_MAX with PE_M>1 so DRW>IDXW+1 (e.g. spec_chain_top's
+    //   S_MAX=2 / PE_M<=8 slice), a hard compile error even though this wire is DEAD
+    //   there (consumed only under INTRA_CAUSAL!=0 at :1457, and INTRA_CAUSAL=0 in that
+    //   top).  In the INTRA_CAUSAL=1 valid domain S_MAX>=PE_M so IDXW+1>=DRW and the
+    //   assignment zero-extends exactly as the old pad did; a plain resize is safe both ways.
     wire [IDXW:0] intra_cnt_nxt =
 `ifdef INTRA_INJECT_NOMASK
-                                  {{(IDXW+1-DRW){1'b0}}, dsa_row_nxt} + 1'b1;
+                                  dsa_row_nxt + 1'b1;
 `else
-                                  {{(IDXW+1-DRW){1'b0}}, dsa_row_nxt};
+                                  dsa_row_nxt;
 `endif
     integer        uk, ur, up;                        // union-build loop vars
     reg            un_pres;                            // key present in some row's selection
