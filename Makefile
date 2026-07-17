@@ -24,14 +24,14 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
 # the assembled-forward smoke, the RESIDENT refill gate + its equivalence proof, and
 # the 753B-shape elaboration.  (model-q4k-smoke also runs inside `unittests`; listing
 # it here keeps `all` covering it even if the unittests tail changes.)
-all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab full-elab-lanes mla-sparse
+all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab full-elab-lanes mla-sparse decomp1-elab
 
 # `release-gate` is the full pre-release battery: every simulation, structural,
 # CDC and formal gate in the repo.  HOURS-long (model-q4k / spec-slow / expert-cache
@@ -52,7 +52,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # but -Wall yields 116 warnings and verilator exits 2 on them.  That predates any of this
 # (bisected against 43de204~1); triaging the 116 is its own job, and wiring it in before
 # that would just re-create the unrunnable-gate problem this NOTE exists to record.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test
 	@echo "release-gate: ALL gates passed"
 
 
@@ -231,12 +231,52 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/kv_ecc_ring_sim test/kv_ecc_ring_tb.v src/kv_ecc_ring.v src/ecc_secded.v
 	@printf '[%s] ' "kv_ecc_ring"; $(VVP) $(BUILD_DIR)/kv_ecc_ring_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: kv_ecc_ring"; exit 1; }
+	@# ---- weight_decomp: on-chip streaming canonical-Huffman weight decompressor (the DECOMP=1
+	@#      Flash->DDR5 path).  BIT-EXACT round-trip vs the offline encoder tools/fp8_huff.py.
+	@#      Closes the gap where NO gate set DECOMP=1 and the decoder shipped functionally unverified. ----
+	@$(MAKE) --no-print-directory weight-decomp
 	@# ---- Q4_K local-device track (GGUF UD-Q4_K_XL bring-up; both tracks live -- see docs/Q4K_SYSTEM_PLAN.md) ----
 	@$(MAKE) --no-print-directory q4k
 	@# ---- ASSEMBLED glm_model_q4k full-forward vs numpy golden (fast SPEC_SLICE smoke;
 	@#      the committed-slice `make model-q4k` is the thorough standalone gate) ----
 	@$(MAKE) --no-print-directory model-q4k-smoke
 	@echo "unittests: all per-unit TBs passed"
+
+# weight-decomp: BIT-EXACT round-trip golden for src/weight_decomp.v, the on-chip
+# streaming CANONICAL-Huffman weight decompressor that feeds decoded Q4_K bytes into
+# every matmul when glm_q4k_system is built with DECOMP=1 (default 0).  It shipped with
+# NO testbench and NO gate ever setting DECOMP=1 -- entirely unverified functionally.
+# tools/fp8_huff.py is the matching OFFLINE encoder named in weight_decomp.v's own header
+# (length-limited package-merge Huffman + canonical-code assignment; it self-checks
+# encode==independent-decode + Kraft-completeness + len<=MAXLEN before emitting, so a
+# nonzero exit fails the emit).  test/weight_decomp_tb.v loads the canonical tables,
+# streams the compressed bytes through the REAL weight_decomp, and asserts EVERY decoded
+# byte === the original byte, EOB fires, and the exact byte-count is produced -- over 7
+# blocks spanning code lengths 1..15, single-symbol / near-uniform / skewed data, and
+# output back-pressure.  Folded into `unittests`; runnable standalone.  Expected: 34368.
+weight-decomp:
+	@mkdir -p $(BUILD_DIR)
+	@# offline encoder emits + self-checks the goldens (nonzero exit fails the emit).
+	@python3 tools/fp8_huff.py >/dev/null            # -> build/weight_decomp_vec.txt
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/weight_decomp_sim test/weight_decomp_tb.v src/weight_decomp.v
+	@printf '[%s] ' "weight_decomp"; $(VVP) $(BUILD_DIR)/weight_decomp_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: weight_decomp"; exit 1; }
+
+# decomp1-elab: ELABORATE glm_q4k_system with DECOMP=1 (the shipped default is 0).
+# The leaf gate above proves weight_decomp bit-exact, but NO gate ever elaborated the
+# SYSTEM's DECOMP=1 `g_wpath` else-branch -- the compressed-image fetch FSM + the
+# weight_decomp instance wired to the system WD_*/RECON_DEPTH params + the byte-reassembly
+# -> recon RAM -> loader-refill path (src/glm_q4k_system.v ~790-911).  A width /
+# part-select / $clog2 bug there would only surface the day someone flips DECOMP on.
+# test/decomp1_elab_wrap.v instantiates the top with .DECOMP(1); iverilog -tnull type/width
+# elaborates that branch (NO sim -- like full-elab; a functional DECOMP=1 system run needs a
+# full compressed Q4_K super-block image driven through the whole memory system, a separate
+# larger task).  GLM_Q4K_SYS_SRCS is the system src list (defined by the `resident` gate).
+decomp1-elab:
+	@printf '[%s] ' "decomp1-elab(DECOMP=1 branch)"; \
+	$(IVERILOG) -g2012 -I src -tnull -pfileline=1 test/decomp1_elab_wrap.v $(GLM_Q4K_SYS_SRCS) \
+	    && echo "iverilog -tnull elaboration OK (glm_q4k_system @ DECOMP=1: g_wpath else-branch type/width-checked)" \
+	    || { echo "FAILED: decomp1-elab (iverilog -tnull)"; exit 1; }
 
 # Q4_K local-device sub-gate (docs/Q4K_SYSTEM_PLAN.md 4.1): the four verified Q4_K unit TBs
 # (q4k_prim / glm_matmul_q4k / swiglu_expert_q4k / moe_router_q4k), bit-exact to ggml goldens.
