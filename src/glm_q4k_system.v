@@ -168,6 +168,21 @@ module glm_q4k_system #(
     // tokens of the sequence, for every query, at every position -- fluent-looking and wrong.
     // Threaded so that raising S_MAX is a decision about attention, not an accident of defaults.
     parameter integer DSA_REAL_IDX = 0,
+    // INTRA_CAUSAL (default 0 == the committed netlist, byte-identical): threaded straight
+    //   to u_model (glm_model_q4k -> glm_decoder_block_q4k -> mla_attn_q4k, all of which now
+    //   thread it), like DSA_REAL_IDX/SELF_KV were threaded.
+    //   0: today's shared-context batch -- within a PE_M=B pass the B rows share ONE
+    //      already-populated KV prefix (no intra-batch key is injected); every INTRA
+    //      construct constant-folds away -> BYTE-IDENTICAL to the pre-5b top.
+    //   1 (5b-leaf/5b-sys): INTRA-BATCH CAUSAL attention -- within ONE PE_M=K+1 batched
+    //      pass, row j (draft at pos p+j) also attends the CURRENT-token keys of the
+    //      earlier rows 0..j-1 computed in that same pass (a virtual cache key at causal
+    //      index s_reg+i, latent ckv_cur[i]/krope_cur[i], causal mask intrinsic to the
+    //      per-row DSA extent).  This is what makes a PE_M=K+1 batched verify
+    //      POSITION-ACCURATE (== the serial single-row chain of the same tokens).
+    //      REQUIRES PE_M>1 + PER_ROW_POS=1 (each row ropes at its own pos) + PER_ROW_SEQ=0;
+    //      the leaf asserts these.  A NO-OP at PE_M=1 (no earlier row to attend).
+    parameter integer INTRA_CAUSAL = 0,
     // ---- memory-system config ----
     parameter integer CACHE_SLOTS = 4,      // GDDR6 expert-cache slots (slice)
     parameter integer FLASH_LAT   = 8,      // Flash fetch latency (doc; TB models)
@@ -277,6 +292,8 @@ module glm_q4k_system #(
     // ====================================================================
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
+    // per-row sequence-id width (mirrors glm_model_q4k's SEQW) -- sizes the seq_vec seam.
+    parameter integer SEQW       = (PE_M  <= 1) ? 1 : $clog2(PE_M),
     parameter integer HQK        = H_HEADS * QK_DIM,
     parameter integer HNOPE      = H_HEADS * NOPE,
     parameter integer HV         = H_HEADS * V_DIM,
@@ -342,15 +359,24 @@ module glm_q4k_system #(
     input  wire                          rst,        // sync, active-high
 
     //========================== HOST interface (USB-C bridge) ===============
+    //   5b-sys SEAM WIDENING: the host token-in / logits-out / argmax-out / h_state
+    //   ports carry PE_M ROWS (row-major).  At PE_M=1 every PE_M*W width collapses to
+    //   W, BYTE-IDENTICAL to the single-row top; at PE_M=K+1 the K+1 draft-verify rows
+    //   flow (copying spec_batched_top's proven glm_model_q4k wiring).  The per-row
+    //   query POSITIONS/EXTENTS/SEQ-ids enter on pos_vec/s_len_vec/seq_vec (below),
+    //   consulted only when PER_ROW_POS / PER_ROW_SLEN / (model) PER_ROW_SEQ are set.
     input  wire                          start,
-    input  wire [TOKW-1:0]               prompt_tok,
-    input  wire [POSW-1:0]               start_pos,
-    input  wire [IDXW:0]                 s_len,
+    input  wire [PE_M*TOKW-1:0]          prompt_tok, // PE_M input tokens to embed (row-major)
+    input  wire [POSW-1:0]               start_pos,  // query position (RoPE) -- SHARED / row 0
+    input  wire [IDXW:0]                 s_len,      // S causal keys (<= S_MAX) -- SHARED / row 0
+    input  wire [POSW*PE_M-1:0]          pos_vec,    // per-row positions (PER_ROW_POS=1; row0=start_pos)
+    input  wire [(IDXW+1)*PE_M-1:0]      s_len_vec,  // per-row causal extents (PER_ROW_SLEN=1; row0=s_len)
+    input  wire [SEQW*PE_M-1:0]          seq_vec,    // per-row sequence ids (model PER_ROW_SEQ=1; row0=seq0)
     output reg                           busy,
     output reg                           done,
-    output reg  [TOKW-1:0]               next_tok,
+    output reg  [TOKW-1:0]               next_tok,   // committed row-0 token (narrow, byte-id at PE_M=1)
     output reg                           tok_valid,
-    output wire [VOCAB*16-1:0]           logits,
+    output wire [PE_M*VOCAB*16-1:0]      logits,     // PE_M * VOCAB bf16 next-token logits (row-major)
 
     //========================== GDDR6 HOT-weight STUBS ======================
     output wire                          em_req,
@@ -448,8 +474,8 @@ module glm_q4k_system #(
     input  wire [WD_COUNTW-1:0]          decomp_tbl_wdata,
 
     //========================== observability ===============================
-    output wire [TOKW-1:0]               argmax_o,
-    output wire [MODEL_DIM*16-1:0]       h_state,
+    output wire [PE_M*TOKW-1:0]          argmax_o,   // PE_M per-row argmax (row-major; byte-id at PE_M=1)
+    output wire [PE_M*MODEL_DIM*16-1:0]  h_state,    // PE_M per-row final-norm hidden (row-major)
     output wire                          mdl_busy,
     // expert-cache stats / slot
     output wire                          ec_resp_valid,
@@ -470,6 +496,13 @@ module glm_q4k_system #(
     //   under SELF_KV=1 these ALSO drive the pager append internally. ----
     output wire [ROW_BITS-1:0]           kv_lat_row,
     output wire                          kv_lat_valid,
+    // ---- PE_M-WIDE KV latent egress (5b-sys; forwarded mla->decoder->model->system).
+    //   ALL PE_M rows' committed current-token latents (row r packed [c_kv|k_rope] at
+    //   kv_lat_row_all[r*ROW_BITS +: ROW_BITS]) + a per-row valid.  At PE_M=1 this equals
+    //   the narrow kv_lat_row (row 0).  ADDITIVE observation for the batched verify; the
+    //   pager append (SELF_KV) still uses the narrow row-0 kv_lat_row (5c commits rows). ----
+    output wire [PE_M*ROW_BITS-1:0]      kv_lat_row_all,
+    output wire [PE_M-1:0]               kv_lat_valid_all,
     output wire [KVPOSW-1:0]             kv_append_count,
     output wire [KVPOSW-1:0]             kv_resident_lo,
     output wire                          kv_overflowed,
@@ -489,7 +522,7 @@ module glm_q4k_system #(
     // 1) THE COMPUTE DIE -- glm_model_q4k (verified full Q4_K forward pass).
     //========================================================================
     wire                      mdl_done;
-    wire [TOKW-1:0]           mdl_argmax;
+    wire [PE_M*TOKW-1:0]      mdl_argmax;   // PE_M per-row argmax (row-major)
     reg                       kc_valid_r;
     reg                       mdl_start;
 
@@ -533,6 +566,13 @@ module glm_q4k_system #(
     wire                      mdl_kv_lat_valid;
     assign kv_lat_row   = mdl_kv_lat_row;
     assign kv_lat_valid = mdl_kv_lat_valid;
+    // ---- PE_M-wide latent egress from the die, routed straight to the top (5b-sys).
+    //   At PE_M=1 mdl_kv_lat_row_all == mdl_kv_lat_row (row 0); observation-only here
+    //   (the SELF_KV pager append below still uses the narrow row-0 latent). ----
+    wire [PE_M*ROW_BITS-1:0]  mdl_kv_lat_row_all;
+    wire [PE_M-1:0]           mdl_kv_lat_valid_all;
+    assign kv_lat_row_all   = mdl_kv_lat_row_all;
+    assign kv_lat_valid_all = mdl_kv_lat_valid_all;
 
     wire [KV_LORA*16-1:0]     mdl_kc_ckv   = (SELF_KV != 0) ? kv_row_out[0          +: KV_LORA*16]
                                                             : kc_ckv;
@@ -548,11 +588,12 @@ module glm_q4k_system #(
         .TOPK(TOPK), .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE),
         .TN(TN), .BLK(BLK), .LM_TN(LM_TN), .PE_M(PE_M), .ACT_HW(ACT_HW),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
-        .DSA_REAL_IDX(DSA_REAL_IDX)
+        .DSA_REAL_IDX(DSA_REAL_IDX), .INTRA_CAUSAL(INTRA_CAUSAL)
     ) u_model (
         .clk(die_clk), .rst(rst),
         .start(mdl_start), .busy(mdl_busy), .done(mdl_done),
         .token_id(prompt_tok), .pos(start_pos), .s_len(s_len),
+        .pos_vec(pos_vec), .s_len_vec(s_len_vec), .seq_vec(seq_vec),
         .logits(logits), .argmax(mdl_argmax),
         .em_req(em_req), .em_tok(em_tok), .em_idx(em_idx), .em_val(em_val),
         .db_layer(db_layer), .idx_fresh(idx_fresh), .idx_win(idx_win),
@@ -571,7 +612,8 @@ module glm_q4k_system #(
         .fn_req(fn_req), .fn_idx(fn_idx), .fn_val(fn_val),
         .lw_req(lw_req), .lw_vtile(lw_vtile), .lw_k(lw_k), .lw_col(lw_col),
         .h_state(h_state),
-        .kv_lat_row(mdl_kv_lat_row), .kv_lat_valid(mdl_kv_lat_valid)
+        .kv_lat_row(mdl_kv_lat_row), .kv_lat_valid(mdl_kv_lat_valid),
+        .kv_lat_row_all(mdl_kv_lat_row_all), .kv_lat_valid_all(mdl_kv_lat_valid_all)
     );
     assign argmax_o = mdl_argmax;
 
@@ -648,7 +690,7 @@ module glm_q4k_system #(
                 end
                 H_RUN_W: begin
                     if (mdl_done) begin
-                        next_tok <= mdl_argmax;
+                        next_tok <= mdl_argmax[TOKW-1:0];   // row 0 (byte-id at PE_M=1)
                         hstate   <= H_DECAP;
                     end
                 end
