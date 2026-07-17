@@ -394,6 +394,30 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
   PE_M>1이면 행별 선택의 union이 최대 `PE_M*TOPK`라 기본식이 PE_M× 부족하고, 이를 증명 TB는
   알고 있어 `SWIN=PE_M*TOPK`를 명시한다(`test/mla_attn_q4k_sparse_perrow_tb.v:99`). 그런데
   **`glm_q4k_system`엔 `SWIN` 파라미터가 없어 키울 수도 없고, assertion도 없다.**)*
+
+  > **(완료 2026-07, Step 5 = spec composition)** 위 진행 노트가 "남은 것"으로 지목한 **한 탑에
+  > (a)(b)(c)(d)+KV write-back을 다 합쳐 draft-verify 루프를 품는 것**이 이제 **구축·검증됐다**:
+  > `src/glm_q4k_spec_system.v`가 `glm_q4k_system`을 `PE_M=K+1`·`SELF_KV=1`·`INTRA_CAUSAL=1`·
+  > `PER_ROW_POS=1`·`KV_EXT_APPEND=1`로 인스턴스화하고 `spec_decode_seq`를 얹어 넷을 동시에 만족한다.
+  > 위치 정확 배치 검증의 진짜 블로커였던 **intra-batch 인과 어텐션**(한 배치 안에서 행 j가 같은 패스에서
+  > 계산된 행 0..j-1의 현재키를 인과적으로 attend)을 `mla_attn_q4k`에 리프 기능으로 넣어 **배치 검증 ==
+  > 직렬 디코드 full-logit 비트정확**으로 증명했고(`make intra-batch-verify`), 조합 탑은 **spec==greedy
+  > 불변식** — 커밋 스트림이 `PE_M=1` greedy 디코드의 비트정확 프리픽스 — 을 K=1,2,3 × {ACCEPT,REJECT,
+  > MIXED}에서 만족한다(`make spec-greedy`, `ALL 31 TESTS PASSED`; raw-draft 커밋 주입·거부행 phantom
+  > KV 주입 모두 FAIL로 잡힘).
+  >
+  > **A_eff는 이제 [실측-입력 EST]가 아니라 하드웨어 카운터 실측이다.** `glm_q4k_spec_system`의
+  > `weight_loads` 레지스터가 패스당 정확히 1회(K+1행을 한 로드로 검증) 증가함을 게이트가 tb 패스수와
+  > 교차검증하고(faithfulness), `A_eff = total_tokens/weight_loads`를 출력한다. ALL-ACCEPT가 정확히
+  > **K+1 토큰/1 weight-load** 천장을 친다(K=3 → **4.00 tok/load → 6.37 GB/token**); 바닥은 무투기 그대로
+  > **1.00 → 25.50**. 즉 **"한 가중치 로드로 K+1행 검증"이라는 §2가 A로 나누는 바로 그 상각이 이제
+  > 실현·측정된 RTL이다** — 더는 미실현 설계점이 아니다.
+  >
+  > **RTL이 정하지 못하는 유일한 입력은 프로덕션 수락률 `r`**(모델 MTP draft 품질) — 박스가 어느 열에서
+  > 도는지를 고른다. 실측 `r₁=0.87`(`H_MEASUREMENT.md`) → `A_eff=1.87` → 13.87 GB/token → **1.54 TB/s에서
+  > 111 tok/s**(1.1 TB/s 상주 박스면 ~80). **오버클레임 아님**: 상각 메커니즘은 실측 RTL, 그를 먹이는
+  > 수락률은 실측 모델 속성, tok/s는 둘의 곱이다. `111 = 미실현 설계점`은 이 노트로 폐기하고
+  > `111 = (실측 A_eff 메커니즘) × (실측 수락률)`로 대체한다.
 - **가중치 경로가 lane을 PE_N≤16에서 막았다 → ~~[설계필요]~~ RTL은 해소, 시스템/물리만 남음 (2026-07)**:
   두 겹이었다. **(1) DATA_W cap**: `weight_loader_q4k.v:231,237`이 `rd_data[16*PE_N-1:0]`을
   `DATA_W=256` 버스에서 part-select → `16·PE_N ≤ DATA_W`. iverilog가 범위 초과를 경고 없이 0으로

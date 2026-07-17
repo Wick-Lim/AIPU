@@ -2,6 +2,13 @@
 
 **The one step that raises tok/s: 60 → ~80/111. Multi-day; built in verified sub-steps.**
 
+**STATUS: DONE (2026-07). All sub-steps 5a–5d complete and verified in `glm_q4k_spec_system`
+(`make spec-greedy`, `ALL 31 TESTS PASSED`). The composed top holds all three pieces at once
+— memory system + `PE_M=K+1` batched verify + spec accept/reject loop — commits a bit-exact
+prefix of greedy (spec==greedy invariant), and its hardware `weight_loads` counter MEASURES
+the A_eff amortization (ALL-ACCEPT hits the K+1/load ceiling; see 5d). The only input the RTL
+does not determine is the external accept rate `r`, a measured model property.**
+
 ## Why this, why now
 
 `glm_q4k_system` runs the model at `PE_M=1` = no speculation = 25.5 GB/token = **60 tok/s**
@@ -83,12 +90,33 @@ invariant**: the composed top's committed token stream === a plain `PE_M=1` gree
 the same prompt, for K=1..4 and varying draft accept rates. INJECTION: commit a raw
 (rejected) draft → must FAIL (the stream would diverge from greedy).
 
-**5d — Realise A_eff.** Instrument weight-loads per committed token; confirm it matches
-`(K drafts)/(1 weight-load) × accept` → the measured `A_eff` (≈1.87 at K=1 with the
-measured accept). Report the ACTUAL bytes/token the composed top produces and the tok/s it
-implies — replacing "111 is an unrealised design point" with a measured number (or an
-honest smaller one if accept is lower than the proxy). No overclaim: whatever the RTL
-measures is the number.
+**5d — Realise A_eff. DONE (2026-07, `make spec-greedy`).** `glm_q4k_spec_system` carries a
+hardware `weight_loads` counter that pulses once per `PE_M=K+1` outer pass (`:551`,
+S_LAUNCH), and a `total_tokens` counter of committed tokens. The gate now READS BOTH from
+the DUT and asserts, per config: (a) **faithfulness** `weight_loads === actual passes` — the
+die does exactly ONE weight-load per K+1-row batch (if the batch secretly re-loaded weights
+per row this fails); (b) **ceiling** under ALL-ACCEPT `total_tokens === passes*(K+1)` — every
+pass commits exactly K+1 tokens for its one load. `A_eff = total_tokens/weight_loads` is
+therefore a MEASURED number, and `bytes/token = 25.50 GB / A_eff`. Measured (all 9 configs,
+`ALL 31 TESTS PASSED`):
+
+| pattern | K=1 | K=2 | K=3 |
+|---|---|---|---|
+| **ACCEPT (ceiling = K+1/load)** | 2.00 → 12.75 GB | 3.00 → 8.50 GB | **4.00 → 6.37 GB** |
+| REJECT (floor = no gain) | 1.00 → 25.50 GB | 1.00 → 25.50 GB | 1.00 → 25.50 GB |
+| MIXED (p=1 accepted) | 1.50 → 17.00 GB | 2.00 → 12.75 GB | 2.00 → 12.75 GB |
+
+**What this measures vs what stays external.** The RTL now MEASURES the amortization
+mechanism — tokens committed per ONE weight-load — from a hardware counter, and it hits the
+K+1 ceiling exactly. That is the fact `A_eff` was always gated on ("K drafts verified in one
+weight-load"), and it is now realised in one composed top (memory system + `PE_M=K+1` + the
+spec loop), not an unrealised design point. What the RTL does NOT (and cannot) invent is the
+production ACCEPT RATE `r` — the model's MTP draft quality — which selects WHICH column the
+box operates in. That is an external `[실측-입력 EST]` (`H_MEASUREMENT.md`: r₁=0.87 →
+`A_eff=1.87` at K=1). So `tok/s = BW / (25.50/A_eff)`; at the measured `A_eff=1.87` →
+13.87 GB/token → **111 tok/s under 1.54 TB/s** (or ~80 under the 1.1 TB/s resident box). No
+overclaim: the amortization is measured RTL; the accept rate feeding it is a measured model
+property; the tok/s is their product.
 
 ## Verification discipline (no compromise)
 

@@ -399,6 +399,11 @@ module glm_q4k_spec_greedy_tb;
     wire [4*VOCAB*16-1:0] act_lg = (dsel==2'd1) ? {{(2*VOCAB*16){1'b0}}, k1_lg}
                                  : (dsel==2'd2) ? {{(1*VOCAB*16){1'b0}}, k2_lg}
                                  :                 k3_lg;
+    // 5d : the running DUT's HARDWARE amortization counters (weight_loads counts one
+    //   die weight-load per outer pass at S_LAUNCH; total_tokens counts committed tokens).
+    //   Reading these -- not the tb's own pass count -- makes A_eff a MEASURED number.
+    wire [31:0] act_wl  = (dsel==2'd1)? k1_wl  : (dsel==2'd2)? k2_wl  : k3_wl;
+    wire [31:0] act_tot = (dsel==2'd1)? k1_tot : (dsel==2'd2)? k2_tot : k3_tot;
     reg  [4*VOCAB*16-1:0] dlog;   // latched at done : this pass's per-row logits
 
     reg  [TOKW-1:0] cstr [0:63];
@@ -517,9 +522,32 @@ module glm_q4k_spec_greedy_tb;
                 disable run_config;
             end
         end
-        $display("  PASS[%0s K=%0d]: committed %0d tokens == greedy over %0d pass(es)  [eff %0d.%02d tok/pass]",
-                 pname, kk, ccnt, cfgpass,
-                 (ccnt / cfgpass), ((ccnt*100/cfgpass) % 100));
+        // 5d -- MEASURE A_eff from the DUT's OWN hardware counters (not the tb's).
+        //   (a) faithfulness: the die pulses exactly ONE weight-load per outer pass, so the
+        //       hardware weight_loads counter must equal the tb's actual pass count.  If the
+        //       batch secretly re-loaded weights per row, act_wl would exceed cfgpass and
+        //       this fails -- this is the load-bearing "K+1 verified in ONE load" evidence.
+        if (act_wl !== cfgpass) begin
+            $display("FAIL[%0s K=%0d] hw weight_loads=%0d != actual passes=%0d (amortization counter unfaithful)",
+                     pname, kk, act_wl, cfgpass); errors = errors + 1;
+        end
+        //   (b) the hardware committed-token counter must equal what the scoreboard captured.
+        if (act_tot !== ccnt) begin
+            $display("FAIL[%0s K=%0d] hw total_tokens=%0d != captured commits=%0d",
+                     pname, kk, act_tot, ccnt); errors = errors + 1;
+        end
+        //   (c) CEILING: under ALL-ACCEPT every pass commits exactly K+1 tokens for its ONE
+        //       weight-load -- the maximum amortization the K+1 batch can extract.  A_eff = K+1.
+        if (pat == 0 && act_tot !== cfgpass*(kk+1)) begin
+            $display("FAIL[%0s K=%0d] ALL-ACCEPT ceiling: %0d tokens over %0d loads != K+1 per load",
+                     pname, kk, act_tot, act_wl); errors = errors + 1;
+        end
+        //   A_eff = tokens per weight-load (HW-measured); bytes/token = 25.50 GB / A_eff
+        //   (PE_M=1 no-spec = 25.50 GB/token; speculation amortizes ONE load over A_eff tokens).
+        $display("  PASS[%0s K=%0d]: committed %0d tokens == greedy over %0d weight-load(s)  [A_eff %0d.%02d tok/load  =>  %0d.%02d GB/token]",
+                 pname, kk, act_tot, act_wl,
+                 (act_tot / act_wl), ((act_tot*100/act_wl) % 100),
+                 (2550*act_wl/act_tot)/100, (2550*act_wl/act_tot)%100);
         $fflush;
     end endtask
 
@@ -564,7 +592,7 @@ module glm_q4k_spec_greedy_tb;
             $display("FAILED: %0d error(s) across %0d checks", errors, test_count);
             $fatal(1, "glm_q4k_spec_greedy_tb: committed stream != greedy (spec==greedy broken)");
         end
-        $display("ALL %0d TESTS PASSED  (glm_q4k_spec_system committed stream == PE_M=1 greedy decode, K=1,2,3 x {ACCEPT,REJECT,MIXED}; KV write-back + accept/reject verified)", test_count);
+        $display("ALL %0d TESTS PASSED  (glm_q4k_spec_system committed stream == PE_M=1 greedy decode, K=1,2,3 x {ACCEPT,REJECT,MIXED}; KV write-back + accept/reject verified; A_eff MEASURED from hw weight_loads counter -- ALL-ACCEPT hits the K+1/load ceiling)", test_count);
         $finish;
     end
 
