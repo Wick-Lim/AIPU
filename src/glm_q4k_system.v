@@ -298,6 +298,13 @@ module glm_q4k_system #(
     // ---- memory-system derived ----
     parameter integer ROW_BITS   = (KV_LORA + ROPE) * 16,             // one latent row
     parameter integer KVPOSW     = (KV_CTX <= 1) ? 1 : $clog2(KV_CTX),// pager logical pos
+    // ---- KV_WRITEBACK_DESIGN.md step 3: per-(layer,position) keying -------------
+    //   The pager keys the flat (layer,pos) index via NSEQ INDEPENDENT ring windows,
+    //   one per LAYER (seq == db_layer).  SELF_KV=1 -> KV_NSEQ=L windows (store =
+    //   L*KV_RESIDENT rows); SELF_KV=0 -> KV_NSEQ=1 (single window, byte-identical
+    //   to the pre-step-3 pager, seq selects forced to 0 internally).
+    parameter integer KV_NSEQ    = (SELF_KV != 0) ? L : 1,
+    parameter integer KV_SEQW    = (KV_NSEQ <= 1) ? 1 : $clog2(KV_NSEQ),
     parameter integer CSLOTW     = (CACHE_SLOTS <= 1) ? 1 : $clog2(CACHE_SLOTS),
     parameter integer EFW        = (EFIFO_DEPTH <= 1) ? 1 : $clog2(EFIFO_DEPTH),
     // ---- fabric / loader derived ----
@@ -738,15 +745,52 @@ module glm_q4k_system #(
     wire                 pg_flash_done;
     wire [KVPOSW-1:0]    pg_gather_idx = {{(KVPOSW-IDXW){1'b0}}, kc_idx};
 
+    // ---- KV_WRITEBACK_DESIGN.md step 3: per-(layer,position) KV keying. ---------
+    //   KV is one latent row per (layer, position).  The model iterates layers
+    //   0..L-1 within each token; layer m runs its OWN gather (kc_req/kc_idx) AND
+    //   its OWN append (kv_lat_valid), both during that layer's attention phase --
+    //   throughout which db_layer==m is STABLE (db_layer is registered in
+    //   glm_model_q4k and only advances when the model observes db_done, which is
+    //   the WHOLE decoder block; the attention gather + the S_DONE commit both fire
+    //   inside that block, strictly before db_done).  So db_layer is the correct,
+    //   stable layer annotation at BOTH the gather and the append edge.
+    //
+    //   We realise the flat index  pg_idx = db_layer*KV_CTX + pos  as the pager's
+    //   per-WINDOW address  seq*RESIDENT + (pos mod RESIDENT)  with seq = db_layer:
+    //   KV_NSEQ=L INDEPENDENT ring windows, each with its OWN append counter and
+    //   residency.  Consequences:
+    //     * layer m's position p lands in window m (a DISTINCT row) and layer m ONLY
+    //       ever gathers window-m rows -> no cross-layer alias.
+    //     * per token there are L appends (one per layer); window m's counter
+    //       advances EXACTLY once per token, so at token t layer m holds positions
+    //       0..t and the NEXT token's layer m gathers all of layer m's priors.
+    //   L=1 collapses to KV_NSEQ=1 (single window, layer offset*1 = 0) -> the step-2
+    //   loop, unchanged.  SELF_KV=0 -> KV_NSEQ=1 and the seq selects fold to a
+    //   constant 0 -> the pager instance + its drivers are byte-identical to the
+    //   pre-step-3 top (the layer-index logic lives entirely in the SELF_KV!=0 arm).
+    wire [KV_SEQW-1:0] pg_append_seq = (SELF_KV != 0) ? db_layer[KV_SEQW-1:0]
+                                                      : {KV_SEQW{1'b0}};
+    wire [KV_SEQW-1:0] pg_gather_seq = (SELF_KV != 0) ? db_layer[KV_SEQW-1:0]
+                                                      : {KV_SEQW{1'b0}};
+
     kv_cache_pager #(
         .ROW_BITS(ROW_BITS), .RESIDENT(KV_RESIDENT), .S_MAX(KV_CTX),
-        .FLASH_LAT(FLASH_LAT)
+        .FLASH_LAT(FLASH_LAT), .NSEQ(KV_NSEQ)
     ) u_kvpager (
         .clk(clk), .rst(rst),
         .append_valid(pg_append_valid), .append_row(pg_append_row),
+        .append_seq(pg_append_seq),
         .gather_valid(kc_req), .gather_idx(pg_gather_idx),
+        .gather_seq(pg_gather_seq),
         .row_valid(kv_row_valid), .row_out(kv_row_out), .busy(kv_busy),
         .flash_req(pg_flash_req), .flash_idx(pg_flash_idx),
+        // flash_seq (NSEQ>1: the cold row's LAYER) is left open here: this step's
+        //   verified slice sizes KV_RESIDENT >= S_MAX so no (layer,pos) row ever
+        //   spills to the COLD tier -- the only cold gathers are the empty-KV first
+        //   token, masked to zero.  When KV_RESIDENT < S_MAX (real context), the
+        //   external LPDDR backing store (stubbed here per KV_WRITEBACK_DESIGN.md
+        //   step-3 note) MUST key (flash_seq=layer, flash_idx=pos); wire flash_seq
+        //   through the arbiter to the backing store then.
         .flash_done(pg_flash_done), .flash_row(flash_row),
         .append_count(kv_append_count), .resident_lo(kv_resident_lo),
         .overflowed(kv_overflowed)
