@@ -97,6 +97,10 @@ module glm_q4k_system_cdc #(
     parameter integer KV_LORA    = 32,
     parameter integer S_MAX      = 8,
     parameter integer TOPK_ATTN  = 8,
+    // SWIN: attention union-slot scratch depth, pure pass-through to glm_q4k_system
+    //   (which threads it into u_model).  Default = min(S_MAX,TOPK_ATTN), byte-identical
+    //   at PE_M=1; forwarded so the wrapper cannot pin the batch's scratch (see below).
+    parameter integer SWIN       = (S_MAX < TOPK_ATTN) ? S_MAX : TOPK_ATTN,
     parameter integer THETA      = 8000000,
     parameter integer PE_N       = 4,
     parameter integer POSW       = 20,
@@ -109,6 +113,15 @@ module glm_q4k_system_cdc #(
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 4,
     parameter integer ACT_HW     = 0,   // activation HW lanes (0 = full) -- result-invariant knob
+    // ---- PE_M / PER_ROW_POS / PER_ROW_SLEN : pure pass-through to glm_q4k_system.
+    //   Default PE_M=1 (no speculation) == the committed CDC wrapper, byte-identical.
+    //   Forwarded (like DSA_REAL_IDX) so the CDC wrapper cannot SILENTLY PIN the die at
+    //   PE_M=1 -- the spec composition (SPEC_COMPOSITION_DESIGN.md step 5) drives the die
+    //   at PE_M=K+1, and a hard-wired wrapper would defeat that.  No CDC element sees the
+    //   knob; the die's H_IDLE-aligned handshake is PE_M-independent at the CDC boundary.
+    parameter integer PE_M       = 1,
+    parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions  (pass-through)
+    parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents   (pass-through)
     parameter integer DSA_REAL_IDX = 0, // query-dependent DSA top-K (see glm_q4k_system.v)
     // ---- memory-system config ----
     parameter integer CACHE_SLOTS = 4,
@@ -526,9 +539,11 @@ module glm_q4k_system_cdc #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
-        .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
-        .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW), .DSA_REAL_IDX(DSA_REAL_IDX),
+        .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT),
+        .TOPK(TOPK), .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE),
+        .TN(TN), .BLK(BLK), .LM_TN(LM_TN), .PE_M(PE_M), .ACT_HW(ACT_HW),
+        .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
+        .DSA_REAL_IDX(DSA_REAL_IDX),
         .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT), .KV_CTX(KV_CTX),
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH), .RESIDENT(RESIDENT),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
