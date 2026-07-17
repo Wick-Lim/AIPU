@@ -250,10 +250,19 @@ optimum on its own).)*
 
 ## 5. Already-built power wins (compute + idle)
 
-- **Idle-die clock gating** (`clk_en_ctrl`): **~73 % of idle-dynamic power gated** (a measured
-  gated-*cycle* fraction, `clk_en_ctrl_tb`), sim-verified never to gate an advancing cluster. This is
-  **format-agnostic** control logic — it gates the die whenever it stalls on the weight stream,
-  regardless of FP8/Q4_K. In `make all` today.
+- **Idle-die clock gating**: **~73 % of idle-dynamic power gated** (a measured gated-*cycle*
+  fraction, `clk_en_ctrl_tb`), sim-verified never to gate an advancing cluster. **Mechanism, as
+  actually shipped:** the production top `glm_q4k_system` gates the *entire compute die* with an
+  inline glitch-free ICG — `die_clk = clk & die_en_lat`, the enable latched on the low phase of
+  `clk` (`glm_q4k_system.v:1307-1311`, the `icg_cell.v` pattern hand-coded), driving `u_model`
+  (`:618 .clk(die_clk)`). It freezes the die on each aw-beat weight-stream stall and on expert-cache
+  demand miss; default (`LOOPBACK=EXPERT_STALL=0`) → `die_clk===clk` (byte-identical). `clk_en_ctrl`
+  is the **standalone cluster-level model** that produced the ~73 % fraction (via `clk_en_ctrl_tb`
+  and `clk_gate_cluster`), NOT a block instantiated in the production hierarchy — the shipping gate
+  is the inline `die_clk`. This is **format-agnostic** (gates on the weight stream, FP8/Q4_K alike).
+  Finer-grain gating (matmul accumulator banks, the model's activation/logit buffers, the decoder
+  residual/FFN accumulators, the attention datapath banks) is left to **synthesis-inferred ICG** on
+  their enable-qualified writes — the correct flow, not hand-instantiated cells. In `make all` today.
 - **Die-shrink L0/L1**: compact config + `swiglu_expert_q4k` engine-share (6→4 GEMM/block) →
   area-proportional static+dynamic ↓, output-preserving ([`MINIATURIZATION.md`](MINIATURIZATION.md)).
 - **Q4_K weight transport**: weights are **4-bit codes** (÷2 the bytes of the FP8 E4M3 track for the

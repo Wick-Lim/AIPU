@@ -231,7 +231,36 @@ modules above; the testbench models them as latency memories.
 - `ecc_secded.v` — SECDED codec (`DATA_W`=64 default; combinational encode+decode).
 - `ecc_mem_wrap.v:149` `mem [0:DEPTH-1]` — SECDED RAM wrapper (stores codewords; corrects SBU / flags DBU; back-door port for fault injection & scrub). **This array is already protected** — it is the wrapper C6 instantiates, not a memory to protect.
 - `kv_ecc_ring.v` — **lane-partitioned SECDED wide-row KV ring** (ROADMAP P2 / C6): the concrete realization of the §2.1 lane note for rows not natively 64-aligned. Splits each `ROW_BITS` row into `NLANES=ceil(ROW_BITS/64)` 64-bit `ecc_secded` lanes, zero-pads the ragged final lane, stores only codewords, aggregates lane `serr`/`derr` (DBU-in-any-lane poisons the row), with a back-door fault-injection port. Also available as the `kv_cache_pager` `ECC` mode. **Already protected** — a mechanism, not a target.
-- `mbist_ctrl.v` — MBIST controller (March-style; registered RAM-facing strobes) that C7 wires to every PARITY+MBIST (and every SECDED) array.
+- `mbist_ctrl.v` — MBIST controller (March C-; registered RAM-facing strobes). It is the
+  **verified reference algorithm**, NOT a block to hand-wire once to "every array" — that
+  earlier phrasing glossed over the port-model contract, corrected here after a verified
+  sweep of the production hierarchy (`glm_q4k_system` and children):
+
+  **C7 integration is per-macro, and the controller must match each macro's port structure.**
+  `mbist_ctrl` drives a **single-port** RAM (one shared address, one access/cycle; async read,
+  sync write). The production arrays split into three port classes:
+  - **Single-port-izable (R/W time-separated) — `mbist_ctrl` covers directly.** The directory
+    tags / valid / rank, the FIFO payloads & pointers, the predictor tables, the index/queue
+    arrays, and `weight_decomp.recon` (fill-then-read, `DECOMP≥1` only). These never read and
+    write the same cycle, so one shared BIST address is sound.
+  - **Concurrent-R/W resting stores — need a 2-port March variant or a test-mode port mux.**
+    `kv_cache_pager.ring` (async gather-read concurrent with append-write) and
+    `mla_attn_q4k.vstore_mem`/`scores_mem` (write on one attention beat, read on another, but
+    2-port at `PE_M>1`) are the model's real KV/V SRAMs. A single-port March engine cannot
+    exercise them without a wrapper that either serializes the two ports in test mode or runs a
+    2-port March. **This is the one bounded, named C7 gap** — in the physical flow the memory
+    compiler emits each macro *with* its matching BIST collar (single- or dual-port); at RTL,
+    `mbist_ctrl` proves the algorithm and the single-port collar, and the dual-port collar is
+    the remaining build (or is compiler-generated).
+  - **Not March targets (leave to logic BIST / scan).** Fully-parallel CAMs
+    (`expert_cache_pf` tag/valid arrays compared all-slots-at-once), the `topk_select`
+    comparator tree, `glm_matmul` accumulator banks, and pipeline register banks are not
+    addressable RAMs; scan/LBIST covers them, not March.
+
+  So C7 = "a BIST collar per compiled macro, matching its ports", with `mbist_ctrl` as the
+  single-port reference. Hand-instantiating one `mbist_ctrl` in the top and calling the memory
+  surface covered would be theatre: it would leave the two arrays that actually hold model
+  state (`ring`, `vstore_mem`) untested because they do not fit its port model.
 
 ---
 
