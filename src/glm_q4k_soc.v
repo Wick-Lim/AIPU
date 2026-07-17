@@ -1,3 +1,16 @@
+//============================================================================
+// DEAD / NOT IN PRODUCT HIERARCHY -- superseded by glm_q4k_system, kept for
+// reference only.
+//   glm_q4k_system EVOLVED from this single-package SoC: it instantiates the
+//   compute die (glm_model_q4k) DIRECTLY and routes memory through the real
+//   ddr5_xbar + weight_loader_q4k. The shipped product top is
+//   glm_q4k_system -> glm_q4k_system_cdc (see GLM_Q4K_CDC_SRCS / `make synth-glm`).
+//   This module is instantiated NOWHERE (repo-wide it survives only in comments
+//   and docs), is in NO Makefile gate, and has NO testbench. Retained because
+//   it is the documented lineage root of the SoC chain and the "die-swap +
+//   bus re-port" reference integration (docs/Q4K_SYSTEM_PLAN.md §1.1). Do not
+//   add to a build; delete if the FP8/SoC lineage docs are ever retired.
+//============================================================================
 `timescale 1ns/1ps
 `include "glm_fp.vh"
 `include "glm_fp_pipe_lat.vh"
