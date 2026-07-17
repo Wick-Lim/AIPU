@@ -1173,6 +1173,48 @@ intra-batch-verify:
 	    if $(VVP) $(BUILD_DIR)/glm_q4k_intra_batch_sharedpos 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
 	        echo "FAILED: SHARED_POS injection NOT caught (batched verify passed with wrong per-row positions)"; exit 1; \
 	    else echo "injection correctly FAILED (per-row position wiring is load-bearing)"; fi
+
+# ============================================================================
+# spec-greedy : SPEC==GREEDY for the CLOSED speculating top (5c).
+# ----------------------------------------------------------------------------
+#   glm_q4k_spec_system closes the batched speculative-decode loop around
+#   glm_q4k_system (PE_M=K+1, SELF_KV=1, INTRA_CAUSAL=1, PER_ROW_POS=1) + the
+#   committed spec_decode_seq (accept/reject) + the per-pass KV WRITE-BACK of the
+#   accepted prefix.  Driven pass-by-pass over K=1,2,3 x {ALL-ACCEPT, ALL-REJECT,
+#   MIXED} draft schedules, its committed token STREAM must EQUAL a plain PE_M=1
+#   greedy decode of the same prompt (only the tokens-per-pass count changes), AND
+#   -- the load-bearing binding -- every committed batch row's FULL pre-argmax
+#   LOGIT vector must be BIT-EXACT to the greedy reference's logit at that position.
+#   The full-logit bind is what proves the KV write-back placed the accepted prefix
+#   at the RIGHT (layer,position): a pass at committed length t reads the shared
+#   prefix 0..t-1 the prior write-backs left in the pager, so a mis-placed or
+#   phantom-after-a-reject KV row would change the logits and FAIL.  ALL-REJECT
+#   (K tokens/pass -> 1) and MIXED (partial accept p<K) exercise t>0 and the
+#   partial-accept write-back hazard directly.
+#   INJECTION (-DINJECT_RAW_DRAFT): the loop commits the RAW DRAFTS (fed as
+#   spec_decode_seq's truth_vec) instead of the model's argmaxes; the ALL-REJECT
+#   schedule's deliberately-wrong drafts then diverge from greedy -> this gate MUST
+#   FAIL.  This is exactly what spec_decode_seq must prevent (never commit a raw
+#   draft).  Standalone gate (multi-instance system sim, minutes-long); NOT in
+#   release-gate.
+# ============================================================================
+SPEC_GREEDY_SRCS := test/glm_q4k_spec_greedy_tb.v src/glm_q4k_spec_system.v \
+	src/spec_decode_seq.v $(GLM_Q4K_SYS_SRCS)
+.PHONY: spec-greedy
+spec-greedy:
+	@mkdir -p $(BUILD_DIR)
+	@# (1) spec==greedy : committed stream + full-logit bind == PE_M=1 greedy, K=1,2,3 x {ACCEPT,REJECT,MIXED}.
+	@$(IVERILOG) $(IFLAGS) -DSPEC_FULL -o $(BUILD_DIR)/glm_q4k_spec_greedy_sim $(SPEC_GREEDY_SRCS)
+	@printf '[%s] ' "glm_q4k_spec_system(spec==greedy K=1,2,3)"; $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: spec-greedy (composed speculating top committed stream != greedy)"; exit 1; }
+	@# (2) INJECTION -- commit RAW DRAFTS instead of the model's argmaxes : the gate MUST FAIL.
+	@#     (K=2 subset -- the ALL-REJECT wrong drafts diverge; enough to bind the mechanism.)
+	@$(IVERILOG) $(IFLAGS) -DINJECT_RAW_DRAFT -o $(BUILD_DIR)/glm_q4k_spec_greedy_inject $(SPEC_GREEDY_SRCS)
+	@printf '[%s] ' "glm_q4k_spec_greedy_INJECT_rawdraft"; \
+	    if $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_inject 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: RAW_DRAFT injection NOT caught (loop committed raw drafts and still matched greedy)"; exit 1; \
+	    else echo "injection correctly FAILED (spec_decode_seq committing only the model argmaxes is load-bearing)"; fi
+
 #============================================================================
 # ---- PERF (Q4_K): cycle-accurate throughput harness (audit #15) -----------
 #   The Q4_K port of the fp8 track's perf/cycle-emulation harness
