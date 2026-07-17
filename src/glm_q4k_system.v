@@ -155,6 +155,18 @@ module glm_q4k_system #(
     parameter integer KV_CTX      = 1024,   // logical KV context capacity (positions)
     parameter integer KV_RESIDENT = 16,     // KV ring capacity (POWER OF TWO, >= S_MAX)
     parameter integer EFIFO_DEPTH = 16,     // routed-expert request FIFO depth (POW2)
+    // SELF_KV=0 (DEFAULT): BYTE-IDENTICAL core to the pre-write-back top -- the
+    //   pager APPENDS the TB stub kv_row_in (host H_APPEND/H_DECAP) and the model
+    //   READS its KV from the kc_ckv/kc_krope stub INPUTS; the pager's row_out stays
+    //   observation-only (kv_row_out).  The die's KV loop is a TB stub.
+    // SELF_KV=1 (KV_WRITEBACK_DESIGN.md step 2, L=1): CLOSE THE LOOP.  The model's
+    //   committed latent (kv_lat_row, pulsed by kv_lat_valid) is APPENDED to the
+    //   pager, and the pager's row_out/row_valid feed the model's kc_ckv/kc_krope/
+    //   kc_valid (replacing the stub) -- so each decoded token READS prior tokens'
+    //   KV from the pager and APPENDS its own: the die attends to KV it produced.
+    //   Host prefill (H_APPEND) is skipped: the persistent pager already holds the
+    //   prior tokens' rows (one append per decoded token, on commit).
+    parameter integer SELF_KV     = 0,
     // ---- C8 loopback: physically route ddr5_xbar's returned bytes into the die ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-loopback module.  The die's
     //       attention-weight code lanes (aw_q) come straight from the same-cycle
@@ -427,6 +439,11 @@ module glm_q4k_system #(
     output wire                          kv_row_valid,
     output wire [ROW_BITS-1:0]           kv_row_out,
     output wire                          kv_busy,
+    // ---- KV latent WRITE-BACK exposure (from the die; KV_WRITEBACK_DESIGN step 1).
+    //   Present regardless of SELF_KV (additive observation of the committed latent);
+    //   under SELF_KV=1 these ALSO drive the pager append internally. ----
+    output wire [ROW_BITS-1:0]           kv_lat_row,
+    output wire                          kv_lat_valid,
     output wire [KVPOSW-1:0]             kv_append_count,
     output wire [KVPOSW-1:0]             kv_resident_lo,
     output wire                          kv_overflowed,
@@ -473,6 +490,30 @@ module glm_q4k_system #(
     wire                      ef_accept;
     wire                      ec_ddr_done;
 
+    //========================================================================
+    // KV WRITE-BACK routing (KV_WRITEBACK_DESIGN.md step 2).
+    //   mdl_kv_lat_row / mdl_kv_lat_valid : the die's committed latent (exposed by
+    //     glm_model_q4k). Drives the observation ports AND, under SELF_KV=1, the
+    //     pager append.
+    //   mdl_kc_ckv / mdl_kc_krope / mdl_kc_valid : the model's KV READ source.
+    //     SELF_KV=0 -> the stub INPUTS kc_ckv/kc_krope and the registered ack
+    //       kc_valid_r (BYTE-IDENTICAL to the pre-write-back top).
+    //     SELF_KV=1 -> the pager's gather response: row_out split [c_kv|k_rope]
+    //       (c_kv LOW KV_LORA*16, k_rope HIGH ROPE*16 -- the pack in mla_attn_q4k /
+    //       the unpack in glm_q4k_soc_ms.v:502-503) and row_valid as the ack. The
+    //       pager's registered resident gather (row_valid 1 cycle after the accepted
+    //       gather=kc_req) matches the kc_valid_r<=kc_req timing it replaces.
+    wire [ROW_BITS-1:0]       mdl_kv_lat_row;
+    wire                      mdl_kv_lat_valid;
+    assign kv_lat_row   = mdl_kv_lat_row;
+    assign kv_lat_valid = mdl_kv_lat_valid;
+
+    wire [KV_LORA*16-1:0]     mdl_kc_ckv   = (SELF_KV != 0) ? kv_row_out[0          +: KV_LORA*16]
+                                                            : kc_ckv;
+    wire [ROPE*16-1:0]        mdl_kc_krope = (SELF_KV != 0) ? kv_row_out[KV_LORA*16 +: ROPE*16]
+                                                            : kc_krope;
+    wire                      mdl_kc_valid = (SELF_KV != 0) ? kv_row_valid : kc_valid_r;
+
     glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
@@ -490,8 +531,8 @@ module glm_q4k_system #(
         .gn_req(gn_req), .gn_which(gn_which), .gn_idx(gn_idx), .gn_val(gn_val),
         .aw_req(aw_req), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(aw_k),
         .aw_q(die_aw_q), .aw_d(aw_d), .aw_dmin(aw_dmin), .aw_scales(aw_scales),
-        .kc_req(kc_req), .kc_idx(kc_idx), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
-        .kc_valid(kc_valid_r),
+        .kc_req(kc_req), .kc_idx(kc_idx), .kc_ckv(mdl_kc_ckv), .kc_krope(mdl_kc_krope),
+        .kc_valid(mdl_kc_valid),
         .rw_req(rw_req), .rw_k(rw_k),
         .rw_q(rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
@@ -501,7 +542,8 @@ module glm_q4k_system #(
         .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
         .fn_req(fn_req), .fn_idx(fn_idx), .fn_val(fn_val),
         .lw_req(lw_req), .lw_vtile(lw_vtile), .lw_k(lw_k), .lw_col(lw_col),
-        .h_state(h_state)
+        .h_state(h_state),
+        .kv_lat_row(mdl_kv_lat_row), .kv_lat_valid(mdl_kv_lat_valid)
     );
     assign argmax_o = mdl_argmax;
 
@@ -526,7 +568,16 @@ module glm_q4k_system #(
 
     wire ap_active = (hstate == H_APPEND);
     wire ap_decode = (hstate == H_DECAP);
-    wire pg_append_valid = ap_active || ap_decode;
+    // Append SOURCE + TRIGGER.  SELF_KV=0: the host prefill/decap appends the stub
+    //   kv_row_in (byte-identical).  SELF_KV=1: the pager appends the die's committed
+    //   latent (kv_lat_row) on its commit pulse (kv_lat_valid) -- ONE append per
+    //   decoded token; the host prefill/decap append is SUPPRESSED (H_APPEND is
+    //   skipped entirely and ap_decode no longer drives a write), because the
+    //   persistent pager already holds the prior tokens' rows.  The commit pulse
+    //   fires AFTER all of this token's gathers (attention done), so a token never
+    //   gathers its own not-yet-written row (causal: attend 0..s_len-1, append s_len).
+    wire pg_append_valid = (SELF_KV != 0) ? mdl_kv_lat_valid : (ap_active || ap_decode);
+    wire [ROW_BITS-1:0] pg_append_row = (SELF_KV != 0) ? mdl_kv_lat_row : kv_row_in;
     assign kv_row_sel = ap_decode ? {{(KVPOSW-(IDXW+1)){1'b0}}, s_len}
                                    : {{(KVPOSW-(IDXW+1)){1'b0}}, ap_i};
 
@@ -549,7 +600,11 @@ module glm_q4k_system #(
                     if (start) begin
                         busy <= 1'b1;
                         ap_i <= {(IDXW+1){1'b0}};
-                        if (s_len == {(IDXW+1){1'b0}}) begin
+                        // SELF_KV=1: NO host prefill -- the persistent pager already
+                        //   holds positions 0..s_len-1 (appended by prior decoded
+                        //   tokens), so go straight to the run.  SELF_KV=0: unchanged
+                        //   (prefill s_len stub rows unless s_len==0).
+                        if ((SELF_KV != 0) || (s_len == {(IDXW+1){1'b0}})) begin
                             mdl_start <= 1'b1;
                             hstate    <= H_RUN_W;
                         end else
@@ -688,7 +743,7 @@ module glm_q4k_system #(
         .FLASH_LAT(FLASH_LAT)
     ) u_kvpager (
         .clk(clk), .rst(rst),
-        .append_valid(pg_append_valid), .append_row(kv_row_in),
+        .append_valid(pg_append_valid), .append_row(pg_append_row),
         .gather_valid(kc_req), .gather_idx(pg_gather_idx),
         .row_valid(kv_row_valid), .row_out(kv_row_out), .busy(kv_busy),
         .flash_req(pg_flash_req), .flash_idx(pg_flash_idx),

@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -641,6 +641,43 @@ resident-equiv:
 	@if diff $(BUILD_DIR)/res_base_cells.txt $(BUILD_DIR)/res_r1_cells.txt >/dev/null; then \
 	    echo "FAILED: resident-equiv self-test (RESIDENT=1 == base: the check is blind)"; exit 1; fi
 	@echo "[resident-equiv] PROVEN: glm_q4k_system(RESIDENT=0) coarse netlist == $(RESIDENT_BASE); RESIDENT=1 differs (check is live)"
+
+# ---------------------------------------------------------------------------
+# self-kv-roundtrip : KV latent WRITE-BACK round-trip (KV_WRITEBACK_DESIGN step 2).
+#   glm_q4k_system(SELF_KV=1) closes the KV loop -- the die's committed latent is
+#   appended to kv_cache_pager and gathered back into the model's kc_ckv/kc_krope.
+#   A multi-token self-attending decode must match an INDEPENDENT standalone
+#   glm_model_q4k whose KV is delivered by a TB shadow (same latents, transport
+#   by a TB array instead of the pager).  BIT-EXACT committed-token binding, every
+#   token; $fatal on mismatch; terminal banner "ALL N TESTS PASSED".
+# ---------------------------------------------------------------------------
+self-kv-roundtrip:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_self_kv_roundtrip_sim \
+	    test/glm_q4k_self_kv_roundtrip_tb.v $(GLM_Q4K_SYS_SRCS)
+	@printf '[%s] ' "glm_q4k_system(SELF_KV=1 KV write-back round-trip)"; \
+	    $(VVP) $(BUILD_DIR)/glm_q4k_self_kv_roundtrip_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: self-kv-roundtrip"; exit 1; }
+
+# self-kv-equiv : SELF_KV=0 BYTE-IDENTICAL core proof (resident-equiv method).
+#   Coarse-RTLIL CELL histogram of glm_q4k_system(SELF_KV=0) == the pre-write-back
+#   base at $(SELF_KV_BASE) -- the additive latent-observation ports (kv_lat_row,
+#   kv_lat_valid) add wires/ports only, ZERO logic cells; SELF_KV=1 differs (the
+#   gate is live, not blind).  Submodules read -lib (interface blackboxes) so the
+#   proof is scoped to the edited top exactly like resident-equiv.
+SELF_KV_BASE ?= f1a436a
+self-kv-equiv:
+	@mkdir -p $(BUILD_DIR)
+	@git show $(SELF_KV_BASE):src/glm_q4k_system.v > $(BUILD_DIR)/skv_base.v
+	@$(call RESIDENT_COARSE,$(BUILD_DIR)/skv_base.v,,$(BUILD_DIR)/skv_base.txt) > $(BUILD_DIR)/skv_base_cells.txt
+	@$(call RESIDENT_COARSE,src/glm_q4k_system.v,chparam -set SELF_KV 0 glm_q4k_system;,$(BUILD_DIR)/skv_s0.txt) > $(BUILD_DIR)/skv_s0_cells.txt
+	@$(call RESIDENT_COARSE,src/glm_q4k_system.v,chparam -set SELF_KV 1 glm_q4k_system;,$(BUILD_DIR)/skv_s1.txt) > $(BUILD_DIR)/skv_s1_cells.txt
+	@diff $(BUILD_DIR)/skv_base_cells.txt $(BUILD_DIR)/skv_s0_cells.txt >/dev/null \
+	    || { echo "FAILED: self-kv-equiv (SELF_KV=0 core cell histogram != $(SELF_KV_BASE))"; \
+	         diff $(BUILD_DIR)/skv_base_cells.txt $(BUILD_DIR)/skv_s0_cells.txt; exit 1; }
+	@if diff $(BUILD_DIR)/skv_base_cells.txt $(BUILD_DIR)/skv_s1_cells.txt >/dev/null; then \
+	    echo "FAILED: self-kv-equiv self-test (SELF_KV=1 == base: the check is blind)"; exit 1; fi
+	@echo "[self-kv-equiv] PROVEN: glm_q4k_system(SELF_KV=0) coarse CELL histogram == $(SELF_KV_BASE) (core byte-identical; +2 additive latent-observation ports, 0 cells); SELF_KV=1 differs (check is live)"
 
 # ---------------------------------------------------------------------------
 # dsa-thread-equiv : DSA_REAL_IDX threaded system -> model -> decoder -> mla_attn.
