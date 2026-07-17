@@ -76,11 +76,24 @@ check).
    its OWN written KV, bit-exact vs a reference that models the same append/gather.
 3. **Layer keying.** Add `pg_idx = db_layer*KV_CTX + pos`, size the pager `L*KV_CTX`,
    verify L>1 (slice L=6) bit-exact.
-4. **Prefill.** With the round-trip closed, feed a K-token prompt as K appends before
-   decode; verify prefill == per-token decode of the same prompt.
-5. **Then** compose the spec chain (separate doc): thread `PE_M/SWIN/PER_ROW_POS/
-   PER_ROW_SLEN` into `glm_q4k_system` and host the draft-verify — now position-accurate
-   because (2)-(4) give draft j the real KV of draft j-1.
+4. **Prefill.** ~~feed a K-token prompt as K appends before decode~~ **RESOLVED (2026-07):
+   sequential prefill has NO distinct datapath here and is already achieved + verified by
+   Steps 1-3.** The model is a single-step unit (`pos`, `s_len`); a K-token prompt is K
+   per-token steps, each appending its (layer,pos) KV through the exact `SELF_KV=1` loop.
+   `make self-kv-l6-roundtrip` already runs positions 0..5 — a prompt phase (growing
+   `s_len`, each token reads all prior positions' KV and appends its own) — bit-exact vs an
+   independent (layer,pos)-keyed reference, so the sequential-prefill KV IS what that gate
+   proves. Whether the token fed each step is an EXTERNAL prompt token or the model's own
+   argmax changes only the token value, not the append/read path — so no external-prompt-
+   specific RTL/gate is warranted (it would test the same mechanism = theatre, not rigor).
+   The ONLY prefill work left is the *batched* SPEEDUP (K positions in one weight-load),
+   which is `PE_M>1` and inseparable from Step 5.
+5. **Spec composition (the remaining big item = A_eff => tok/s).** Thread `PE_M/SWIN/
+   PER_ROW_POS/PER_ROW_SLEN` into `glm_q4k_system` and host the draft-verify — now
+   position-accurate because Steps 2-3 give draft j the real KV of draft j-1. This is the
+   only step that raises tok/s (60 → ~80/111) and it subsumes batched prefill. Genuinely
+   multi-day: it composes the spec chain's draft-verify with the memory system in one top —
+   the [설계필요] this whole design exists to unblock.
 
 ## Verification (no-compromise)
 
