@@ -201,6 +201,22 @@ module glm_q4k_system #(
     //   Host prefill (H_APPEND) is skipped: the persistent pager already holds the
     //   prior tokens' rows (one append per decoded token, on commit).
     parameter integer SELF_KV     = 0,
+    // ---- KV_EXT_APPEND (5c): let an OUTER speculative loop drive the pager append ----
+    //   0 = OFF (DEFAULT): BYTE-IDENTICAL.  The pager APPEND source is exactly the
+    //       pre-5c wiring (SELF_KV=1 -> the die's committed latent mdl_kv_lat_valid;
+    //       SELF_KV=0 -> the host prefill/decap kv_row_in).  The three ext_append_*
+    //       ports are unused (0 cells).
+    //   1 = ON: the pager APPEND is sourced from the ext_append_* ports instead, so a
+    //       wrapping speculative-decode top (glm_q4k_spec_system, 5c) can (a) SUPPRESS
+    //       the internal per-pass append during a PE_M=K+1 batched verify pass (holding
+    //       ext_append_valid=0 keeps the pager's per-(layer,pos) windows STABLE at the
+    //       committed length t, so every row/layer reads the same shared prefix 0..t-1),
+    //       and (b) after spec_decode_seq picks the accepted prefix p, WRITE BACK exactly
+    //       the (p+1) COMMITTED rows' current-token latents per layer (rows p+1..K, the
+    //       rejected drafts, are NEVER appended -> no phantom KV at positions after a
+    //       reject).  The die's KV READ path (SELF_KV=1 -> kv_row_out) is unchanged; only
+    //       WHO drives the append moves.  NO glm_model_q4k edit.  A NO-OP unless PE_M>1.
+    parameter integer KV_EXT_APPEND = 0,
     // ---- C8 loopback: physically route ddr5_xbar's returned bytes into the die ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-loopback module.  The die's
     //       attention-weight code lanes (aw_q) come straight from the same-cycle
@@ -437,6 +453,15 @@ module glm_q4k_system #(
     output wire [KVPOSW-1:0]             kv_row_sel,
     input  wire [ROW_BITS-1:0]           kv_row_in,
 
+    //========================== 5c EXTERNAL KV-append hook (KV_EXT_APPEND=1) ==
+    //   When KV_EXT_APPEND=1 these DRIVE the pager append (see the param header):
+    //   the wrapping spec loop suppresses the per-pass append (ext_append_valid=0
+    //   during a verify pass) and writes back the committed prefix afterwards.
+    //   Unused (0 cells) at KV_EXT_APPEND=0 -- may be left unconnected.
+    input  wire                          ext_append_valid,
+    input  wire [ROW_BITS-1:0]           ext_append_row,
+    input  wire [KV_SEQW-1:0]            ext_append_seq,
+
     //========================== SINGLE FLASH CHANNEL (to PHY/TB) ============
     output wire                          flash_req,
     output wire                          flash_is_expert,
@@ -646,8 +671,13 @@ module glm_q4k_system #(
     //   persistent pager already holds the prior tokens' rows.  The commit pulse
     //   fires AFTER all of this token's gathers (attention done), so a token never
     //   gathers its own not-yet-written row (causal: attend 0..s_len-1, append s_len).
-    wire pg_append_valid = (SELF_KV != 0) ? mdl_kv_lat_valid : (ap_active || ap_decode);
-    wire [ROW_BITS-1:0] pg_append_row = (SELF_KV != 0) ? mdl_kv_lat_row : kv_row_in;
+    //   KV_EXT_APPEND=1 (5c): the OUTER spec loop drives the append (suppress-during-
+    //   pass + committed-prefix write-back).  At KV_EXT_APPEND=0 (default) both ternaries
+    //   fold to the pre-5c wiring -> BYTE-IDENTICAL.
+    wire pg_append_valid = (KV_EXT_APPEND != 0) ? ext_append_valid
+                         : (SELF_KV != 0) ? mdl_kv_lat_valid : (ap_active || ap_decode);
+    wire [ROW_BITS-1:0] pg_append_row = (KV_EXT_APPEND != 0) ? ext_append_row
+                         : (SELF_KV != 0) ? mdl_kv_lat_row : kv_row_in;
     assign kv_row_sel = ap_decode ? {{(KVPOSW-(IDXW+1)){1'b0}}, s_len}
                                    : {{(KVPOSW-(IDXW+1)){1'b0}}, ap_i};
 
@@ -831,7 +861,10 @@ module glm_q4k_system #(
     //   loop, unchanged.  SELF_KV=0 -> KV_NSEQ=1 and the seq selects fold to a
     //   constant 0 -> the pager instance + its drivers are byte-identical to the
     //   pre-step-3 top (the layer-index logic lives entirely in the SELF_KV!=0 arm).
-    wire [KV_SEQW-1:0] pg_append_seq = (SELF_KV != 0) ? db_layer[KV_SEQW-1:0]
+    //   KV_EXT_APPEND=1 (5c): the write-back FSM tags each committed row's append with
+    //   its LAYER (ext_append_seq); folds to the pre-5c db_layer wiring at =0.
+    wire [KV_SEQW-1:0] pg_append_seq = (KV_EXT_APPEND != 0) ? ext_append_seq
+                                     : (SELF_KV != 0) ? db_layer[KV_SEQW-1:0]
                                                       : {KV_SEQW{1'b0}};
     wire [KV_SEQW-1:0] pg_gather_seq = (SELF_KV != 0) ? db_layer[KV_SEQW-1:0]
                                                       : {KV_SEQW{1'b0}};
