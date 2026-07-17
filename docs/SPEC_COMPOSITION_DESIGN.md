@@ -41,13 +41,41 @@ At `PE_M=1` byte-identical (resident-equiv / self-kv-equiv method). SWIN needs t
 `min(PE_M*TOPK, S_MAX)` bound (mla_attn already asserts it); at PE_M>1 SWIN must grow — thread
 it so it CAN. Verify: `PE_M=1` byte-identical; the top ELABORATES at `PE_M=K+1` (e.g. K=1..4).
 
-**5b — Position-accurate batched verify over the KV write-back.** With `SELF_KV=1` and
-`PE_M=K+1`, the K+1 verify rows are K+1 logical positions; each row j appends its (layer,pos)
-KV and row j+1 gathers it — `PER_ROW_POS=1` gives each row its own position. This is exactly
-what the KV write-back now supports (Step 3 keyed per-(layer,position); extend to per-ROW
-within one batched pass). Verify: a K+1-row batched pass is BIT-EXACT vs K+1 sequential
-single-row decodes of the same tokens (the batch must equal the serial truth), full-logit.
-INJECTION: break the per-row position (all rows share pos) → must FAIL.
+**5b — Position-accurate batched verify. RE-SCOPED 2026-07 after the 5b investigation
+found the original scope was WRONG (a plausible-but-wrong trap the KV write-back does NOT
+close).**
+
+The original plan said "extend the KV write-back to per-ROW within one batched pass" — as
+if the batched verify only needed system wiring. It does not. A position-accurate batched
+verify needs **INTRA-BATCH CAUSAL ATTENTION**: within ONE `PE_M=K+1` pass, row j (draft at
+pos p+j) must attend keys at positions p..p+j-1, and positions p+1..p+j-1 are the
+*current-token keys of rows 0..j-1 computed in that same pass*. The MLA core does NOT do
+this — it does batched attention over a **SHARED, already-populated** KV cache
+(`mla_attn_q4k.v:72-92` SHARED-CONTEXT invariant: rows share s_len and the key set, differ
+only in query/causal-extent). Confirmed: `kv_lat_row` egress is `ckv_cur[0]` ONLY (`:1787`);
+rows 1..K's latents are never produced above the leaf; `ckv_cur[r]` is never injected into
+the union/DSA/score key set. The KV write-back (Steps 1-3) gives PASS-to-PASS sequential KV,
+NOT intra-batch KV. So naive seam-wiring yields spec_batched_top's shared-KV semantics →
+batch ≠ serial for K≥1. This is exactly the plausible-but-wrong verify to refuse.
+
+So 5b splits:
+
+  **5b-leaf — intra-batch causal MLA (a NEW leaf feature in `mla_attn_q4k`, the correctness-
+  critical core).** Add, behind a param (default off = today's shared-context batch, byte-
+  identical): PE_M-wide latent egress (`ckv_cur[i]`/`krope_cur[i]` for all rows), and
+  injection of rows 0..PE_M-2's current keys as attendable union keys tagged with batch
+  position, with per-row causal masking (row j attends intra-batch key i iff i<j), correct
+  per-position RoPE (`krope_cur[i]` already roped at pos_i), RMSNorm+W_uk/W_uv on `ckv_cur[i]`,
+  and DSA over the combined pager+intra-batch key set. VERIFY (leaf oracle): a batched pass
+  over consecutive causal positions == the serial single-row chain of the same tokens, BIT-
+  EXACT full-logit (mla-sparse style). INJECTION: drop the causal mask (row j sees key j) →
+  must FAIL. This is the hard, must-be-right sub-step; multi-day; it is the real blocker
+  A_eff was always gated on.
+
+  **5b-sys — compose.** Once 5b-leaf is bit-exact: widen the 4 `u_model` seam ports
+  (`token_id/logits/argmax/h_state` — `glm_q4k_system.v:552`) so PE_M rows flow, connect the
+  per-row `pos_vec/s_len_vec/seq_vec`, thread the PE_M-wide latent egress. VERIFY: a K+1-row
+  batched pass in the system is BIT-EXACT vs K+1 serial decodes; byte-identical at PE_M=1.
 
 **5c — Accept/reject + draft source.** Instantiate `spec_decode_seq` and a draft source
 (`mtp_head`, as `spec_decode_top` does) in `glm_q4k_system`. Verify the **spec==greedy
