@@ -55,6 +55,18 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test
 	@echo "release-gate: ALL gates passed"
 
+# release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
+#   gates grep `ALL [0-9]+ TESTS PASSED` -- a wildcard that still passes if a tb silently
+#   ran fewer tests (dropped ifdef, reduced loop, missing build flag).  This runs the full
+#   gate once (teeing its output), then tools/check_test_counts.sh compares every gate's
+#   ACTUAL printed count against test/expected_test_counts.txt and fails on any mismatch or
+#   a manifest gate that never printed.  Adding/removing a test => update one manifest line.
+.PHONY: release-gate-strict
+release-gate-strict:
+	@mkdir -p $(BUILD_DIR)
+	@bash -c 'set -o pipefail; $(MAKE) release-gate 2>&1 | tee $(BUILD_DIR)/release_gate.log'
+	@tools/check_test_counts.sh $(BUILD_DIR)/release_gate.log
+
 
 # Build + run every per-unit TB.  attention_unit additionally needs softmax_unit.
 unittests:
@@ -1205,8 +1217,10 @@ spec-greedy:
 	@mkdir -p $(BUILD_DIR)
 	@# (1) spec==greedy : committed stream + full-logit bind == PE_M=1 greedy, K=1,2,3 x {ACCEPT,REJECT,MIXED}.
 	@$(IVERILOG) $(IFLAGS) -DSPEC_FULL -o $(BUILD_DIR)/glm_q4k_spec_greedy_sim $(SPEC_GREEDY_SRCS)
-	@printf '[%s] ' "glm_q4k_spec_system(spec==greedy K=1,2,3)"; $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: spec-greedy (composed speculating top committed stream != greedy)"; exit 1; }
+	@# EXACT count (31) -- pins BOTH that -DSPEC_FULL ran (default subset prints a different
+	@#   number) AND that no config was silently dropped.  A wildcard [0-9]+ would pass either.
+	@printf '[%s] ' "glm_q4k_spec_system(spec==greedy K=1,2,3)"; $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_sim | grep -E 'ALL 31 TESTS PASSED' \
+	    || { echo "FAILED: spec-greedy (committed stream != greedy, OR test count != 31 -- a config was dropped)"; exit 1; }
 	@# (2) INJECTION -- commit RAW DRAFTS instead of the model's argmaxes : the gate MUST FAIL.
 	@#     (K=2 subset -- the ALL-REJECT wrong drafts diverge; enough to bind the mechanism.)
 	@$(IVERILOG) $(IFLAGS) -DINJECT_RAW_DRAFT -o $(BUILD_DIR)/glm_q4k_spec_greedy_inject $(SPEC_GREEDY_SRCS)
