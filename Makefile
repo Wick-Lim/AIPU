@@ -1102,6 +1102,43 @@ mla-sparse:
 	@printf '[%s] ' "mla_attn_q4k_sparse_perrow"; $(VVP) $(BUILD_DIR)/mla_attn_q4k_sparse_perrow_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: mla_attn_q4k_sparse_perrow"; exit 1; }
 #============================================================================
+# mla-intra : mla_attn_q4k INTRA-BATCH CAUSAL leaf oracle (5b-leaf; standalone).
+# ----------------------------------------------------------------------------
+#   The correctness gate for the new INTRA_CAUSAL feature.  One batched PE_M=B
+#   pass (INTRA_CAUSAL=1, PER_ROW_POS, real DSA) over B tokens at consecutive
+#   causal positions p..p+B-1 -- row r attends 0..p-1 (shared cache) PLUS the
+#   current-token keys of rows 0..r-1 (this pass) -- must be BIT-EXACT (full
+#   MODEL_DIM out AND the widened kv_lat_row_all egress) to a SERIAL single-row
+#   (PE_M=1, INTRA off) chain of the same tokens, where each serial decode's OWN
+#   kv_lat_row is appended to the cache for the next (the die-internal KV write-
+#   back).  DENSE / MIXED / SPARSE regimes, B=2,3,4.  Two INJECTIONS prove the
+#   oracle bites: dropping the per-row causal mask (row r attends its own current
+#   token) and skipping the intra key's RMSNorm before W_uk must BOTH make the
+#   oracle FAIL.  NOT wired into release-gate (a standalone leaf gate).
+# ============================================================================
+INTRA_SRCS := test/mla_attn_q4k_intra_causal_tb.v src/mla_attn_q4k.v src/glm_matmul_q4k.v \
+	src/rmsnorm_unit.v src/rope_interleave_unit.v src/glm_matmul_pipe.v src/dsa_indexer.v \
+	src/glm_softmax.v src/topk_select.v src/glm_act.v src/glm_fp_pipe.v
+.PHONY: mla-intra
+mla-intra:
+	@mkdir -p $(BUILD_DIR)
+	@# (1) the LEAF ORACLE : batched intra-causal pass === serial chain, bit-exact.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mla_attn_q4k_intra_sim $(INTRA_SRCS)
+	@printf '[%s] ' "mla_attn_q4k_intra_causal"; $(VVP) $(BUILD_DIR)/mla_attn_q4k_intra_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mla_attn_q4k_intra_causal (batched != serial)"; exit 1; }
+	@# (2) INJECTION -- drop the per-row causal mask : the oracle MUST FAIL.
+	@$(IVERILOG) $(IFLAGS) -DINTRA_INJECT_NOMASK -o $(BUILD_DIR)/mla_attn_q4k_intra_nomask $(INTRA_SRCS)
+	@printf '[%s] ' "mla_attn_q4k_intra_INJECT_nomask"; \
+	    if $(VVP) $(BUILD_DIR)/mla_attn_q4k_intra_nomask 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: NOMASK injection NOT caught (oracle passed a non-causal batch)"; exit 1; \
+	    else echo "injection correctly FAILED (causal mask is load-bearing)"; fi
+	@# (3) INJECTION -- skip RMSNorm on the intra key before W_uk : MUST FAIL.
+	@$(IVERILOG) $(IFLAGS) -DINTRA_INJECT_SKIPNORM -o $(BUILD_DIR)/mla_attn_q4k_intra_skipnorm $(INTRA_SRCS)
+	@printf '[%s] ' "mla_attn_q4k_intra_INJECT_skipnorm"; \
+	    if $(VVP) $(BUILD_DIR)/mla_attn_q4k_intra_skipnorm 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: SKIPNORM injection NOT caught (oracle passed an un-normed intra key)"; exit 1; \
+	    else echo "injection correctly FAILED (RMSNorm+W_uk on the intra key is load-bearing)"; fi
+#============================================================================
 # ---- PERF (Q4_K): cycle-accurate throughput harness (audit #15) -----------
 #   The Q4_K port of the fp8 track's perf/cycle-emulation harness
 #   (docs/CYCLE_EMULATION.md [PENDING] item): test/glm_q4k_system_perf_tb.v

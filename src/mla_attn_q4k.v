@@ -168,6 +168,26 @@ module mla_attn_q4k #(
     //   the SPARSE regime (max causal extent > TOPK) pre-fetches / scores; the DENSE
     //   fallback (S<=TOPK) never pulls keys, so this is a no-op there for any value.
     parameter integer DSA_REAL_IDX = 0,
+    // INTRA_CAUSAL=0 (default): the B rows share ONE already-populated KV prefix
+    //   (the SHARED-CONTEXT invariant above) -- byte-IDENTICAL to the pre-intra
+    //   datapath; no intra-batch key is ever injected and every construct below
+    //   constant-folds away.  =1 (5b-leaf): within ONE PE_M=B pass row j attends,
+    //   IN ADDITION to the s_reg shared cached keys, the CURRENT-TOKEN keys of the
+    //   earlier rows 0..j-1 computed in THIS pass.  The mechanism is exact and
+    //   reuses the whole cache-key datapath: an intra-batch key i is a VIRTUAL
+    //   cache key placed at causal index (s_reg + i) whose compressed latent is
+    //   ckv_cur[i] and whose ROPED k_rope is krope_cur[i] (already roped at pos_i
+    //   in S_KRROPE) -- i.e. EXACTLY the row [c_kv|k_rope] the KV write-back
+    //   (kv_lat_row) commits and a later serial decode would gather back.  So it
+    //   flows through the IDENTICAL RMSNorm(c_kv)+W_uk (score K) / W_uv (value V) /
+    //   DSA-index (first NOPE lanes of the latent) as a gathered cached key; the
+    //   ONLY change is the SOURCE of {c_kv,k_rope} (intra register vs kc_* cache).
+    //   The per-row CAUSAL MASK is INTRINSIC to the per-row DSA extent: row r runs
+    //   its indexer over exactly (s_reg + r) keys, so it can only ever select intra
+    //   indices s_reg..s_reg+r-1 = intra keys 0..r-1 (row 0 -> none).  REQUIRES
+    //   PER_ROW_POS=1 (each row ropes its query/current-key at its own pos_r) and
+    //   PER_ROW_SEQ=0 (the batch is ONE sequence being extended); guarded below.
+    parameter integer INTRA_CAUSAL = 0,
     // VSTORE_RAM=1 (default): the attention V-scratch (vstore) and per-row score
     //   scratch (scores) synthesize as INFERRED MEMORIES (BRAM) instead of a giant
     //   flip-flop array -- the B7 follow-up toward realizing large SWIN.
@@ -297,7 +317,22 @@ module mla_attn_q4k #(
     //   is the sole committed latent per run.  kv_lat_valid pulses with `done` (the
     //   S_DONE commit), when ckv_cur/krope_cur hold this token's final latent.
     output wire [(KV_LORA+ROPE)*16-1:0] kv_lat_row,
-    output wire                         kv_lat_valid
+    output wire                         kv_lat_valid,
+
+    // ---- PE_M-WIDE KV latent WRITE-BACK exposure (5b-leaf) ----
+    //   ALL B rows' committed current-token latents, each packed [c_kv | k_rope]
+    //   exactly like kv_lat_row (row r at kv_lat_row_all[r*(KV_LORA+ROPE)*16 +:
+    //   (KV_LORA+ROPE)*16]) plus a PER-ROW valid.  This is the WIDENED egress
+    //   5b-sys appends so a batched pass's rows can be committed to the pager; a
+    //   NEW additive port so the existing narrow kv_lat_row (wired through
+    //   glm_decoder_block_q4k -> glm_model_q4k at their (KV_LORA+ROPE)*16 ports)
+    //   is UNCHANGED -- widening kv_lat_row itself would width-mismatch the
+    //   decoder's narrow port at PE_M>1 (spec_batched_top / glm_model_q4k_pem_tb
+    //   elaborate it there).  At PE_M=1, kv_lat_row_all == kv_lat_row (row 0).
+    //   At INTRA_CAUSAL=0 rows 1..PE_M-1 are driven CONSTANT-0 (dead) so the
+    //   param-OFF leaf logic is unperturbed; row 0 is always the true latent.
+    output wire [PE_M*(KV_LORA+ROPE)*16-1:0] kv_lat_row_all,
+    output wire [PE_M-1:0]                   kv_lat_valid_all
 );
     `include "glm_fp.vh"
 
@@ -473,8 +508,12 @@ module mla_attn_q4k #(
     //   test/mla_attn_q4k_sparse_perrow_tb.v:99). A first cut of this check demanded
     //   the unclamped PE_M*TOPK and immediately failed `make mla-sparse` at
     //   PE_M=3/TOPK=4/S_MAX=8 (needed 12, has 8) -- a legal, proven config.
+    //   INTRA_CAUSAL adds a third divergent case: rows attend DIFFERENT combined
+    //   key sets (row r's extent is s_reg+r), so the union across rows can grow to
+    //   min(PE_M*TOPK, S_MAX) exactly as the DSA_REAL_IDX case -- fold it in.
     localparam integer SWIN_NEEDS_UNION =
-        ((PER_ROW_SEQ != 0) || ((DSA_REAL_IDX != 0) && (PE_M > 1))) ? 1 : 0;
+        ((PER_ROW_SEQ != 0) || ((DSA_REAL_IDX != 0) && (PE_M > 1))
+                            || ((INTRA_CAUSAL != 0) && (PE_M > 1))) ? 1 : 0;
     localparam integer SWIN_UNION_MIN =
         ((PE_M*TOPK) < S_MAX) ? (PE_M*TOPK) : S_MAX;
     //   IDIOM (do not "simplify" back): the elaboration system task $error, NOT an
@@ -498,6 +537,26 @@ module mla_attn_q4k #(
             $error("SWIN must be >= min(PE_M*TOPK, S_MAX) -- see the SWIN bound derivation in the header of src/mla_attn_q4k.v");
         end
     endgenerate
+
+    // INTRA_CAUSAL assumption guard (elaboration-only; same $error idiom as above).
+    //   Intra-batch keys are ROPED at their own positions (need PER_ROW_POS=1) and
+    //   belong to the ONE sequence being extended (PER_ROW_SEQ must be 0 -- the
+    //   per-seq kidx_buf prefetch is orthogonal and unsupported with intra keys).
+    generate
+        if ((INTRA_CAUSAL != 0) && (PER_ROW_POS == 0)) begin : gen_intra_needs_perrowpos
+            $error("INTRA_CAUSAL=1 requires PER_ROW_POS=1 -- see the INTRA_CAUSAL header in src/mla_attn_q4k.v");
+        end
+        if ((INTRA_CAUSAL != 0) && (PER_ROW_SEQ != 0)) begin : gen_intra_excludes_perrowseq
+            $error("INTRA_CAUSAL=1 requires PER_ROW_SEQ=0 -- see the INTRA_CAUSAL header in src/mla_attn_q4k.v");
+        end
+    endgenerate
+
+    // INTRA_CAUSAL geometry.  INTRA_MAX = extra keys the LAST row attends (row
+    //   PE_M-1 sees intra keys 0..PE_M-2).  s_tot (below, sequential) = the shared
+    //   MAX combined key count s_reg + INTRA_MAX that the prefetch / union / key
+    //   passes cover; each row r uses only its own prefix s_reg + r of it.  At
+    //   INTRA_CAUSAL=0 INTRA_MAX=0 so s_tot == s_reg (byte-identical).
+    localparam integer INTRA_MAX = (INTRA_CAUSAL != 0) ? (PE_M - 1) : 0;
 
     // DSA_REAL_IDX=0 TRAP (documented; NOT a leaf elaboration guard -- and here is why).
     // At =0 the indexer gets zero key-index vectors, so top-K keeps keys 0..TOPK-1 by
@@ -534,6 +593,18 @@ module mla_attn_q4k #(
     wire [DRW:0]   dsa_row_p1  = {1'b0, dsa_row} + 1'b1;
     wire [DRW-1:0] dsa_row_nxt = (dsa_row_p1 >= PE_M) ? DRW'(PE_M-1)
                                                       : dsa_row_p1[DRW-1:0];
+    // INTRA_CAUSAL: the intra-key COUNT row dsa_row_nxt attends (== its row index r,
+    //   giving intra keys 0..r-1 -> the causal mask).  Widened to IDXW+1 so the
+    //   NOMASK injection's +1 cannot wrap.
+    //   INTRA_INJECT_NOMASK (injection-ONLY, never a normal build): +1 so row r
+    //   also attends intra key r == its OWN current token (a FUTURE-of-nothing,
+    //   non-causal key) -> the leaf oracle MUST FAIL.
+    wire [IDXW:0] intra_cnt_nxt =
+`ifdef INTRA_INJECT_NOMASK
+                                  {{(IDXW+1-DRW){1'b0}}, dsa_row_nxt} + 1'b1;
+`else
+                                  {{(IDXW+1-DRW){1'b0}}, dsa_row_nxt};
+`endif
     integer        uk, ur, up;                        // union-build loop vars
     reg            un_pres;                            // key present in some row's selection
     reg [IDXW:0]   un_cnt;                             // running union count (blocking)
@@ -565,6 +636,28 @@ module mla_attn_q4k #(
     //   reads that seq's index buffer).  PER_ROW_SEQ=0 -> seq 0 (byte-identical).
     wire [SEQW-1:0] dsa_row_seq = (PER_ROW_SEQ == 0) ? {SEQW{1'b0}}
                                                      : seq_qr[SEQW*dsa_row +: SEQW];
+
+    // INTRA_CAUSAL: the shared MAX combined key count (cached prefix s_reg plus the
+    //   INTRA_MAX intra-batch tail keys).  The prefetch (S_DSAPF), the union build
+    //   and the S_KEY visit sweep 0..s_tot-1; keys < s_reg are the shared cache,
+    //   keys s_reg..s_tot-1 are intra keys 0..INTRA_MAX-1 sourced from ckv_cur/
+    //   krope_cur.  At INTRA_CAUSAL=0 INTRA_MAX=0 -> s_tot==s_reg (byte-identical).
+    wire [IDXW:0] s_tot = s_reg + INTRA_MAX[IDXW:0];
+
+    // INTRA_CAUSAL key-index helpers.  For a combined key index k >= s_reg the
+    //   intra-batch row is (k - s_reg) in 0..INTRA_MAX-1.  pf_intra serves the
+    //   prefetch (k = pf_j); the >=PE_M clamp mirrors dsa_row_nxt so the ckv_cur
+    //   variable-index has a STATIC max of PE_M-1 (never fires -- the offset is
+    //   dynamically <= INTRA_MAX-1 = PE_M-2 -- so byte-identical).
+    wire [IDXW:0]  pf_off   = pf_j - s_reg;
+    wire [DRW-1:0] pf_intra = (pf_off >= PE_M[IDXW:0]) ? DRW'(PE_M-1)
+                                                       : pf_off[DRW-1:0];
+    // pf_is_intra: the prefetch key pf_j is an intra-batch key (>= s_reg).  Stable
+    //   across the PF_REQ->PF_WAIT beat (pf_j only advances after the write), so it
+    //   gates the SINGLE kidx_buf write's data mux + skips the cache pull -- NO
+    //   second write port.  Const-0 at INTRA_CAUSAL=0 -> folds to the cache-only
+    //   write (byte-identical).
+    wire pf_is_intra = (INTRA_CAUSAL != 0) && (pf_j >= s_reg);
 
     //========================================================================
     // PER-ROW CAUSAL EXTENT resolve (combinational; latched at start).  Row 0 =
@@ -816,6 +909,18 @@ module mla_attn_q4k #(
         K_NEXT=4'd9;   // advance selected key s
     reg [3:0]        kst;
     reg [IDXW:0]     ksel;         // index into union_list (0..u_cnt-1)
+
+    // INTRA_CAUSAL (S_KEY): the current UNION key's value and, when it is an intra
+    //   key (value >= s_reg), the batch row it came from.  ukey_intra selects the
+    //   register-source (ckv_cur/krope_cur) fetch over the kc_* cache pull in
+    //   K_RDREQ.  ukey_i's >=PE_M clamp mirrors dsa_row_nxt (never fires: the
+    //   offset is dynamically <= INTRA_MAX-1).  All fold to the cache path (const-
+    //   false ukey_intra) when INTRA_CAUSAL=0 -> byte-identical.
+    wire [IDXW:0]  ukey_v     = {1'b0, union_list[ksel[IDXW-1:0]]};
+    wire           ukey_intra = (INTRA_CAUSAL != 0) && (ukey_v >= s_reg);
+    wire [IDXW:0]  ukey_off   = ukey_v - s_reg;
+    wire [DRW-1:0] ukey_i     = (ukey_off >= PE_M[IDXW:0]) ? DRW'(PE_M-1)
+                                                           : ukey_off[DRW-1:0];
 
     // ---- softmax loop bookkeeping (S_SOFT) ----
     localparam [2:0] SF_FEED=3'd0, SF_CAP=3'd2, SF_NEXT=3'd3;
@@ -1228,7 +1333,11 @@ module mla_attn_q4k #(
                 if (rp_done[0]) begin
                     // PER-ROW DSA (B6): score row 0's selection first, then advance
                     //   through rows 1..PE_M-1 in S_DSA -- each with ITS OWN q + extent.
-                    if ((DSA_REAL_IDX != 0) && (s_reg > TOPK[IDXW:0])) begin
+                    //   INTRA_CAUSAL: gate on s_tot (= s_reg+INTRA_MAX, the LAST row's
+                    //   combined extent) so the prefetch runs whenever ANY row is
+                    //   sparse -- a dense-prefix/sparse-tail batch still prefetches the
+                    //   intra keys the tail rows need.  s_tot==s_reg when off.
+                    if ((DSA_REAL_IDX != 0) && (s_tot > TOPK[IDXW:0])) begin
                         // SPARSE + real index vectors: pre-fetch every candidate
                         //   key's index vector (c_kv[j][0:NOPE]) into kidx_buf ONCE,
                         //   then run the per-row indexer against it.  (DENSE never
@@ -1257,19 +1366,35 @@ module mla_attn_q4k #(
             S_DSAPF: begin
                 case (pf_st)
                     PF_REQ: begin
-                        kc_idx <= pf_j[IDXW-1:0];
-                        // PER_ROW_SEQ=1: fetch pf_seq's candidate keys from its window
-                        //   (folds to 0 -> byte-identical when PER_ROW_SEQ=0).
-                        kc_seq <= (PER_ROW_SEQ == 0) ? {SEQW{1'b0}} : pf_seq;
-                        kc_req <= 1'b1;
-                        pf_st  <= PF_WAIT;
+                        // INTRA-BATCH key (pf_j in [s_reg, s_tot-1]): NO cache pull --
+                        //   PF_WAIT latches its DSA index vector from ckv_cur.  Cache
+                        //   key: pull it.  Both advance to PF_WAIT (one shared write).
+                        if (pf_is_intra) begin
+                            pf_st  <= PF_WAIT;
+                        end else begin
+                            kc_idx <= pf_j[IDXW-1:0];
+                            // PER_ROW_SEQ=1: fetch pf_seq's candidate keys from its window
+                            //   (folds to 0 -> byte-identical when PER_ROW_SEQ=0).
+                            kc_seq <= (PER_ROW_SEQ == 0) ? {SEQW{1'b0}} : pf_seq;
+                            kc_req <= 1'b1;
+                            pf_st  <= PF_WAIT;
+                        end
                     end
                     PF_WAIT: begin
-                        if (kc_valid) begin
+                        // fire on the cache beat (kc_valid) OR immediately for an intra
+                        //   key (pf_is_intra, no pull).  ONE kidx_buf write, data muxed:
+                        //   intra -> first NOPE lanes of ckv_cur[pf_intra] (== the vector
+                        //   a serial decode reads back for the key it wrote here); cache
+                        //   -> kc_ckv.  Const-0 pf_is_intra folds this to the cache-only
+                        //   path (byte-identical at INTRA_CAUSAL=0).
+                        if (pf_is_intra || kc_valid) begin
                             kc_req <= 1'b0;
                             for (pfd=0; pfd<NOPE; pfd=pfd+1)
-                                kidx_buf[pf_seq][pf_j[IDXW-1:0]][pfd] <= kc_ckv[16*pfd +: 16];
-                            if (pf_j == s_reg - 1'b1) begin
+                                kidx_buf[pf_seq][pf_j[IDXW-1:0]][pfd] <=
+                                    pf_is_intra ? ckv_cur[pf_intra][pfd]
+                                                : kc_ckv[16*pfd +: 16];
+                            // sweep to s_tot-1 (== s_reg-1 when INTRA_CAUSAL=0, byte-id).
+                            if (pf_j == s_tot - 1'b1) begin
                                 // this sequence's keys done -> next sequence, or launch DSA
                                 if (pf_seq == (PF_NSEQ-1)) begin
                                     for (d_i=0; d_i<NOPE; d_i=d_i+1)
@@ -1320,9 +1445,17 @@ module mla_attn_q4k #(
                         // advance to the next row: re-run the indexer on ITS OWN
                         //   query + causal extent (a fresh per-query list, exactly
                         //   like that row's PE_M=1 standalone decode).
+                        //   INTRA_CAUSAL: row r's COMBINED extent = slen_r[r] + r --
+                        //   its s_reg cached keys PLUS the r intra keys 0..r-1 (at
+                        //   indices s_reg..s_reg+r-1).  This ONE term realizes the
+                        //   per-row causal MASK: the indexer pulls exactly s_reg+r
+                        //   keys, so row r can only select intra keys 0..r-1 (row 0
+                        //   adds 0 -> no intra key).  Adds 0 when INTRA_CAUSAL=0.
                         for (d_i=0; d_i<NOPE; d_i=d_i+1)
                             dsa_qidx[16*d_i +: 16] <= qrot[dsa_row_nxt][d_i];
-                        dsa_slen  <= slen_r[(IDXW+1)*dsa_row_nxt +: (IDXW+1)];
+                        dsa_slen  <= slen_r[(IDXW+1)*dsa_row_nxt +: (IDXW+1)]
+                                   + ((INTRA_CAUSAL != 0) ? intra_cnt_nxt
+                                                          : {(IDXW+1){1'b0}});
                         dsa_start <= 1'b1;
                         dsa_row   <= dsa_row_nxt;
                     end
@@ -1387,28 +1520,64 @@ module mla_attn_q4k #(
             S_KEY: begin
                 case (kst)
                     K_RDREQ: begin
-                        kc_idx  <= union_list[ksel[IDXW-1:0]];   // ksel indexes the UNION
-                        // PER_ROW_SEQ=1: route this fetch to its key's sequence window
-                        //   (folds to 0 -> byte-identical when PER_ROW_SEQ=0).
-                        kc_seq  <= (PER_ROW_SEQ == 0) ? {SEQW{1'b0}}
-                                                      : union_seq[ksel[IDXW-1:0]];
-                        kc_req  <= 1'b1;
-                        kst     <= K_RDWAIT;
+                        // INTRA-BATCH union key (value >= s_reg): NO cache pull --
+                        //   K_RDWAIT latches the CURRENT-token latent + ROPED k_rope of
+                        //   batch row ukey_i straight from the intra registers.  Cache
+                        //   key: pull it.  Both go to K_RDWAIT (one shared write).
+                        if (ukey_intra) begin
+                            kst     <= K_RDWAIT;
+                        end else begin
+                            kc_idx  <= union_list[ksel[IDXW-1:0]];   // ksel indexes the UNION
+                            // PER_ROW_SEQ=1: route this fetch to its key's sequence window
+                            //   (folds to 0 -> byte-identical when PER_ROW_SEQ=0).
+                            kc_seq  <= (PER_ROW_SEQ == 0) ? {SEQW{1'b0}}
+                                                          : union_seq[ksel[IDXW-1:0]];
+                            kc_req  <= 1'b1;
+                            kst     <= K_RDWAIT;
+                        end
                     end
                     K_RDWAIT: begin
-                        if (kc_valid) begin
+                        // fire on the cache beat (kc_valid) OR immediately for an intra
+                        //   key (ukey_intra).  ONE ckv_key/krope_j write, data muxed:
+                        //   intra -> ckv_cur[ukey_i] / krope_cur[ukey_i] (== the [c_kv|
+                        //   k_rope] the pager would return for the key this row wrote);
+                        //   cache -> kc_ckv / kc_krope.  Then start the SAME RMSNorm.
+                        //   Const-0 ukey_intra folds this to the cache-only path
+                        //   (byte-identical at INTRA_CAUSAL=0).
+                        if (ukey_intra || kc_valid) begin
                             kc_req <= 1'b0;
-                            // cache key latent + rope are SHARED across rows.
+                            // cache/intra key latent + rope are SHARED across rows.
                             for (d_i=0; d_i<KV_LORA; d_i=d_i+1)
-                                ckv_key[d_i] <= kc_ckv[16*d_i +: 16];
+                                ckv_key[d_i] <= ukey_intra ? ckv_cur[ukey_i][d_i]
+                                                           : kc_ckv[16*d_i +: 16];
                             for (d_i=0; d_i<ROPE; d_i=d_i+1)
-                                krope_j[d_i] <= kc_krope[16*d_i +: 16];
+                                krope_j[d_i] <= ukey_intra ? krope_cur[ukey_i][d_i]
+                                                           : kc_krope[16*d_i +: 16];
                             rnk_start <= 1'b1;
                             kst       <= K_NWAIT;
                         end
                     end
                     K_NWAIT: begin
                         rnk_x_valid <= 1'b0; rnk_g_valid <= 1'b0;
+`ifdef INTRA_INJECT_SKIPNORM
+                        if (ukey_intra) begin
+                            // INJECTION (never a normal build): SKIP the RMSNorm on
+                            //   the intra key's latent -> feed the RAW ckv_key straight
+                            //   to ckv_n so W_uk projects an UN-normalized key.  A
+                            //   cached key is always RMSNorm'd first, so the batched
+                            //   intra key's score diverges -> the leaf oracle MUST FAIL.
+                            for (d_i=0; d_i<KV_LORA; d_i=d_i+1)
+                                ckv_n[d_i] <= ckv_key[d_i];
+                            gv_asrc  <= AS_CKVN;
+                            gv_sel   <= SEL_UK;
+                            gv_klen  <= KW'(KV_LORA);
+                            gv_ng    <= GRPW'((HNOPE + PE_N - 1)/PE_N);
+                            gv_dst   <= GVD_QFULL;
+                            gv_score <= 1'b0;
+                            gv_go    <= 1'b1;
+                            kst      <= K_UK;
+                        end else begin
+`endif
                         if (rnk_in_req) begin
                             rnk_x_in    <= ckv_key[rn_idx_k[$clog2(KV_LORA)-1:0]];
                             rnk_x_valid <= 1'b1;
@@ -1429,6 +1598,9 @@ module mla_attn_q4k #(
                             gv_go    <= 1'b1;
                             kst      <= K_UK;
                         end
+`ifdef INTRA_INJECT_SKIPNORM
+                        end
+`endif
                     end
                     K_UK: begin
                         if (gv_go) gv_go <= 1'b0;
@@ -1790,5 +1962,37 @@ module mla_attn_q4k #(
     end
     assign kv_lat_row   = kv_lat_row_c;
     assign kv_lat_valid = done;
+
+    //========================================================================
+    // PE_M-WIDE KV latent WRITE-BACK pack (5b-leaf).  Same [c_kv | k_rope] layout
+    //   as kv_lat_row, one lane group per row.  Row 0 is ALWAYS the true latent
+    //   (== kv_lat_row).  Rows 1..PE_M-1 carry their own current-token latent when
+    //   INTRA_CAUSAL=1 (so 5b-sys can append every batched row); when INTRA_CAUSAL=0
+    //   they are CONSTANT-0 (the shared-context batch has no per-row write-back), so
+    //   the param-OFF leaf's logic reduces to routing ckv_cur[0]/krope_cur[0] --
+    //   byte-identical.  Combinational from the committed regs; valid = done/row.
+    //========================================================================
+    localparam integer KVR = (KV_LORA+ROPE)*16;
+    reg [PE_M*KVR-1:0] kv_lat_row_all_c;
+    integer kvlr, kvld;
+    always @* begin
+        kv_lat_row_all_c = {(PE_M*KVR){1'b0}};
+        for (kvlr = 0; kvlr < PE_M; kvlr = kvlr + 1)
+            if ((kvlr == 0) || (INTRA_CAUSAL != 0)) begin
+                for (kvld = 0; kvld < KV_LORA; kvld = kvld + 1)
+                    kv_lat_row_all_c[kvlr*KVR + 16*kvld +: 16]              = ckv_cur[kvlr][kvld];
+                for (kvld = 0; kvld < ROPE; kvld = kvld + 1)
+                    kv_lat_row_all_c[kvlr*KVR + KV_LORA*16 + 16*kvld +: 16] = krope_cur[kvlr][kvld];
+            end
+    end
+    assign kv_lat_row_all = kv_lat_row_all_c;
+    // per-row valid: row 0 always pulses with done; rows 1.. only when INTRA_CAUSAL
+    //   drives real per-row latents (else held 0 alongside their 0 data).
+    genvar gkv;
+    generate
+        for (gkv = 0; gkv < PE_M; gkv = gkv + 1) begin : KVV
+            assign kv_lat_valid_all[gkv] = ((gkv == 0) || (INTRA_CAUSAL != 0)) ? done : 1'b0;
+        end
+    endgenerate
 
 endmodule
