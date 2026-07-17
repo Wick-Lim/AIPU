@@ -355,6 +355,155 @@ module cdc_protocol_ctx_tb;
         for (cd=0;cd<ROPE;cd=cd+1)    kc_krope[16*cd+:16] = gen_bf16(db_layer*771 + kc_idx*91 + cd*5 + 8101);
     end
 
+    // ================= INDEPENDENT REFERENCE: standalone glm_model_q4k ==========
+    //   TOKEN-VALUE GOLDEN for the 2-clock CDC top: the committed token that
+    //   crosses core_clk -> host_clk through the TOKEN cdc_async_fifo (captured as
+    //   cap_tok) must EQUAL the argmax of an independent standalone glm_model_q4k
+    //   fed by the SAME deterministic weight/KV generators (bit-exact ===).  This
+    //   is the exact binding glm_q4k_system_perf_tb.v proves for the SINGLE-clock
+    //   glm_q4k_system, transplanted here to guard the CDC data path (a wrong
+    //   bit-slice / TOKW / pointer-misalign in the token crossing emits a
+    //   wrong-but-X-clean token that the ctx/telemetry/X-Z checks alone miss).
+    //
+    //   The CDC adds LATENCY, not value change, so this compares the token
+    //   SEQUENCE, not cycle-aligned samples: the reference is advanced (r_start)
+    //   ONCE per OP_TOKEN decode step, fed the SAME {prompt_tok,start_pos,s_len}
+    //   the host issued to the DUT, and the DUT's committed cap_tok is fed back to
+    //   BOTH the DUT and this reference (run_token below), so their KV histories
+    //   evolve identically.  Runs on core_clk (the compute domain).
+    reg                       r_start;
+    wire                      r_busy, r_done;
+    wire [TOKW-1:0]           r_argmax;
+    wire [VOCAB*16-1:0]       r_logits;
+    wire                      r_em_req;  wire [TOKW-1:0] r_em_tok;  wire [DIMW-1:0] r_em_idx;  reg [15:0] r_em_val;
+    wire [LAYW-1:0]           r_db_layer;  wire r_idx_fresh;  wire [LAYW-1:0] r_idx_win;
+    wire                      r_gn_req, r_gn_which;  wire [DIMW-1:0] r_gn_idx;  reg [15:0] r_gn_val;
+    wire                      r_aw_req;  wire [3:0] r_aw_sel;  wire [A_GRPW-1:0] r_aw_grp;  wire [A_KCW-1:0] r_aw_k;
+    reg  [PE_N*4-1:0]         r_aw_q;
+    reg  [16*PE_N*A_NSB-1:0]  r_aw_d, r_aw_dmin;
+    reg  [96*PE_N*A_NSB-1:0]  r_aw_scales;
+    wire                      r_rw_req;  wire [R_KW-1:0] r_rw_k;
+    reg  [4*N_EXPERT-1:0]         r_rw_q;
+    reg  [16*N_EXPERT*R_NSB-1:0]  r_rw_d, r_rw_dmin;
+    reg  [96*N_EXPERT*R_NSB-1:0]  r_rw_scales;
+    wire                      r_fw_req;  wire [1:0] r_fw_sel;  wire [FF_GWD-1:0] r_fw_grp;  wire [FF_KWD-1:0] r_fw_k;
+    wire                      r_fw_shared;  wire [EIDXW-1:0] r_fw_eidx;
+    reg  [4*TN-1:0]           r_fw_q, r_fw_q_up;
+    reg  [16*TN*FF_NSB_D-1:0] r_fw_d_g, r_fw_dmin_g, r_fw_d_u, r_fw_dmin_u;
+    reg  [96*TN*FF_NSB_D-1:0] r_fw_scales_g, r_fw_scales_u;
+    wire                      r_fn_req;  wire [DIMW-1:0] r_fn_idx;  reg [15:0] r_fn_val;
+    wire                      r_lw_req;  wire [VTW-1:0] r_lw_vtile;  wire [DIMW-1:0] r_lw_k;  reg [LM_TN*16-1:0] r_lw_col;
+    wire                      r_kc_req;  wire [IDXW-1:0] r_kc_idx;  wire r_kc_seq;
+    reg  [KV_LORA*16-1:0]     r_kc_ckv;  reg [ROPE*16-1:0] r_kc_krope;
+    reg                       r_kc_valid;
+    wire [MODEL_DIM*16-1:0]   r_h_state;
+
+    glm_model_q4k #(
+        .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
+        .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
+        .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
+        .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
+        .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
+        .BLK(BLK), .LM_TN(LM_TN), .DSA_REAL_IDX(0)
+    ) u_ref (
+        .clk(core_clk), .rst(core_rst),
+        .start(r_start), .busy(r_busy), .done(r_done),
+        .token_id(prompt_tok), .pos(start_pos), .pos_vec({POSW{1'b0}}),
+        .s_len_vec({(IDXW+1){1'b0}}), .seq_vec(1'b0), .s_len(s_len),
+        .logits(r_logits), .argmax(r_argmax),
+        .em_req(r_em_req), .em_tok(r_em_tok), .em_idx(r_em_idx), .em_val(r_em_val),
+        .db_layer(r_db_layer), .idx_fresh(r_idx_fresh), .idx_win(r_idx_win),
+        .gn_req(r_gn_req), .gn_which(r_gn_which), .gn_idx(r_gn_idx), .gn_val(r_gn_val),
+        .aw_req(r_aw_req), .aw_sel(r_aw_sel), .aw_grp(r_aw_grp), .aw_k(r_aw_k),
+        .aw_q(r_aw_q), .aw_d(r_aw_d), .aw_dmin(r_aw_dmin), .aw_scales(r_aw_scales),
+        .kc_req(r_kc_req), .kc_idx(r_kc_idx), .kc_seq(r_kc_seq),
+        .kc_ckv(r_kc_ckv), .kc_krope(r_kc_krope), .kc_valid(r_kc_valid),
+        .rw_req(r_rw_req), .rw_k(r_rw_k),
+        .rw_q(r_rw_q), .rw_d(r_rw_d), .rw_dmin(r_rw_dmin), .rw_scales(r_rw_scales),
+        .fw_req(r_fw_req), .fw_sel(r_fw_sel), .fw_grp(r_fw_grp), .fw_k(r_fw_k),
+        .fw_shared(r_fw_shared), .fw_eidx(r_fw_eidx),
+        .fw_q(r_fw_q), .fw_q_up(r_fw_q_up),
+        .fw_d_g(r_fw_d_g), .fw_dmin_g(r_fw_dmin_g), .fw_scales_g(r_fw_scales_g),
+        .fw_d_u(r_fw_d_u), .fw_dmin_u(r_fw_dmin_u), .fw_scales_u(r_fw_scales_u),
+        .fn_req(r_fn_req), .fn_idx(r_fn_idx), .fn_val(r_fn_val),
+        .lw_req(r_lw_req), .lw_vtile(r_lw_vtile), .lw_k(r_lw_k), .lw_col(r_lw_col),
+        .h_state(r_h_state)
+    );
+
+    // ---- reference weight/KV responders: SAME deterministic bytes as the DUT ----
+    integer rt, rft, rre, rsb, rcd;
+    always @* r_em_val = gen_bf16(r_em_tok*MODEL_DIM + r_em_idx + 7001);
+    always @* r_fn_val = gen_bf16(r_fn_idx + 7207);
+    always @* r_gn_val = gen_bf16(r_db_layer*1024 + r_gn_which*512 + r_gn_idx + 7411);
+    always @* begin
+        for (rt=0;rt<LM_TN;rt=rt+1)
+            r_lw_col[16*rt+:16] = gen_bf16((r_lw_vtile*LM_TN+rt)*MODEL_DIM + r_lw_k + 7603);
+    end
+    always @* begin
+        for (rt=0;rt<PE_N;rt=rt+1) begin
+            r_aw_q[4*rt+:4] = f_awq(r_db_layer, r_aw_sel, r_aw_grp*PE_N+rt, r_aw_k);
+            for (rsb=0;rsb<A_NSB;rsb=rsb+1) begin
+                r_aw_d   [16*(rsb*PE_N+rt)+:16] = f_awd (r_db_layer, r_aw_sel, r_aw_grp*PE_N+rt);
+                r_aw_dmin[16*(rsb*PE_N+rt)+:16] = f_awdm(r_db_layer, r_aw_sel, r_aw_grp*PE_N+rt);
+                r_aw_scales[96*(rsb*PE_N+rt)   +:32] = gen_s32(r_db_layer*7919+r_aw_sel*104729+(r_aw_grp*PE_N+rt)*611953+601);
+                r_aw_scales[96*(rsb*PE_N+rt)+32+:32] = gen_s32(r_db_layer*7919+r_aw_sel*104729+(r_aw_grp*PE_N+rt)*611953+602);
+                r_aw_scales[96*(rsb*PE_N+rt)+64+:32] = gen_s32(r_db_layer*7919+r_aw_sel*104729+(r_aw_grp*PE_N+rt)*611953+603);
+            end
+        end
+    end
+    always @* begin
+        for (rre=0;rre<N_EXPERT;rre=rre+1) begin
+            r_rw_q[4*rre+:4] = f_rwq(r_db_layer, rre, r_rw_k);
+            for (rsb=0;rsb<R_NSB;rsb=rsb+1) begin
+                r_rw_d   [16*(rsb*N_EXPERT+rre)+:16] = gen_fp16(r_db_layer*7919+rre*350377+421);
+                r_rw_dmin[16*(rsb*N_EXPERT+rre)+:16] = gen_fp16(r_db_layer*7919+rre*350377+431);
+                r_rw_scales[96*(rsb*N_EXPERT+rre)   +:32] = gen_s32(r_db_layer*7919+rre*350377+441);
+                r_rw_scales[96*(rsb*N_EXPERT+rre)+32+:32] = gen_s32(r_db_layer*7919+rre*350377+442);
+                r_rw_scales[96*(rsb*N_EXPERT+rre)+64+:32] = gen_s32(r_db_layer*7919+rre*350377+443);
+            end
+        end
+    end
+    always @* begin
+        for (rft=0;rft<TN;rft=rft+1) begin
+            r_fw_q   [4*rft+:4] = f_fwq(r_db_layer, r_fw_sel, r_fw_shared, r_fw_eidx, r_fw_grp*TN+rft, r_fw_k);
+            r_fw_q_up[4*rft+:4] = f_fwq(r_db_layer, 3,        r_fw_shared, r_fw_eidx, r_fw_grp*TN+rft, r_fw_k);
+            for (rsb=0;rsb<FF_NSB_D;rsb=rsb+1) begin
+                r_fw_d_g   [16*(rsb*TN+rft)+:16] = gen_fp16(r_db_layer*7919+r_fw_sel*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+521);
+                r_fw_dmin_g[16*(rsb*TN+rft)+:16] = gen_fp16(r_db_layer*7919+r_fw_sel*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+531);
+                r_fw_d_u   [16*(rsb*TN+rft)+:16] = gen_fp16(r_db_layer*7919+3*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+521);
+                r_fw_dmin_u[16*(rsb*TN+rft)+:16] = gen_fp16(r_db_layer*7919+3*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+531);
+                r_fw_scales_g[96*(rsb*TN+rft)   +:32] = gen_s32(r_db_layer*7919+r_fw_sel*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+541);
+                r_fw_scales_g[96*(rsb*TN+rft)+32+:32] = gen_s32(r_db_layer*7919+r_fw_sel*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+542);
+                r_fw_scales_g[96*(rsb*TN+rft)+64+:32] = gen_s32(r_db_layer*7919+r_fw_sel*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+543);
+                r_fw_scales_u[96*(rsb*TN+rft)   +:32] = gen_s32(r_db_layer*7919+3*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+541);
+                r_fw_scales_u[96*(rsb*TN+rft)+32+:32] = gen_s32(r_db_layer*7919+3*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+542);
+                r_fw_scales_u[96*(rsb*TN+rft)+64+:32] = gen_s32(r_db_layer*7919+3*104729+r_fw_shared*15485863+r_fw_eidx*350377+(r_fw_grp*TN+rft)*611953+543);
+            end
+        end
+    end
+    always @* begin
+        for (rcd=0;rcd<KV_LORA;rcd=rcd+1) r_kc_ckv  [16*rcd+:16] = gen_bf16(r_db_layer*513 + r_kc_idx*67 + rcd*7 + 8011);
+        for (rcd=0;rcd<ROPE;rcd=rcd+1)    r_kc_krope[16*rcd+:16] = gen_bf16(r_db_layer*771 + r_kc_idx*91 + rcd*5 + 8101);
+    end
+    // registered kc_valid (1-cycle after req) -- mirrors the perf TB's KV model
+    always @(posedge core_clk) begin
+        if (core_rst) r_kc_valid <= 1'b0;
+        else          r_kc_valid <= r_kc_req;
+    end
+    // latch the reference argmax on its done pulse; r_done_seen re-arms on r_start
+    reg [TOKW-1:0] r_tok_lat;  reg r_done_seen;
+    always @(posedge core_clk) begin
+        if (core_rst)     begin r_done_seen<=1'b0; r_tok_lat<={TOKW{1'b0}}; end
+        else if (r_start) r_done_seen<=1'b0;
+        else if (r_done)  begin r_tok_lat<=r_argmax; r_done_seen<=1'b1; end
+    end
+
+    /* verilator lint_off UNUSEDSIGNAL */
+    wire _unused_ref = &{1'b0, r_busy, r_em_req, r_aw_req, r_fw_req, r_rw_req,
+                         r_gn_req, r_fn_req, r_lw_req, r_idx_fresh, r_idx_win,
+                         r_logits, r_h_state, r_gn_which, r_kc_seq};
+    /* verilator lint_on UNUSEDSIGNAL */
+
     // ================= KV latent-ROW stub =================
     integer rr;
     always @* begin
@@ -529,6 +678,21 @@ module cdc_protocol_ctx_tb;
         end
     end endtask
 
+    // ---- advance the standalone reference ONE decode step (core_clk) ----------
+    //   Pulses r_start (a clean 1-cycle core-domain pulse) with the SAME
+    //   {prompt_tok,start_pos,s_len} the host issued, then blocks until the
+    //   reference latches its argmax into r_tok_lat.  Called AFTER get_response so
+    //   the reference's fast, memory-latency-free run can never make get_response
+    //   miss the DUT's tok_valid pulse; prompt_tok/start_pos/s_len still hold the
+    //   issued values (issue() sets them once and they persist until the next
+    //   issue()).  The reference is independent -- its timing need not align with
+    //   the CDC top; only the INPUT SEQUENCE must match, which run_token enforces.
+    task run_ref; begin
+        @(negedge core_clk); r_start = 1'b1;
+        @(negedge core_clk); r_start = 1'b0;   // r_done_seen cleared by the sampled pulse
+        wait (r_done_seen === 1'b1);
+    end endtask
+
     // ---- one full token-generation run: request(ctx) -> token response -> done ----
     task run_token; input [TOKW-1:0] tk; input [POSW-1:0] ps; input integer SL;
         input [CTX_W-1:0] ctx; integer dbefore; begin
@@ -539,9 +703,17 @@ module cdc_protocol_ctx_tb;
             $display("FAIL[ctx %0h]: token run returned is_telem=1", ctx); errors=errors+1; end
         if (cap_ctx !== ctx) begin
             $display("FAIL[ctx %0h]: response ctx=%0h != request ctx=%0h (round-trip)", ctx, cap_ctx, ctx); errors=errors+1; end
+        // TOKEN-VALUE GOLDEN: the token committed across the CDC (cap_tok) must
+        // EQUAL the independent standalone glm_model_q4k argmax for this same
+        // decode step (bit-exact ===).  Catches a value-corrupting token CDC bug
+        // that the ctx/telemetry/X-Z checks alone pass over.
+        run_ref;
+        if (cap_tok !== r_tok_lat) begin
+            $display("FAIL[ctx %0h]: BINDING committed tok=%0d != standalone glm_model_q4k ref=%0d",
+                     ctx, cap_tok, r_tok_lat); errors=errors+1; end
         wait_done_ge(dbefore + 1);          // run completed
         repeat (40) @(negedge host_clk);    // drain CDC FIFOs / in-flight reads
-        $display("PASS[token ctx=%0h] tok=%0d is_telem=%0b ctx_echo=%0h", ctx, cap_tok, cap_is_telem, cap_ctx);
+        $display("PASS[token ctx=%0h] tok=%0d(==ref %0d) is_telem=%0b ctx_echo=%0h", ctx, cap_tok, r_tok_lat, cap_is_telem, cap_ctx);
     end endtask
 
     // ---- telemetry readback: request(OP_TELEM,ctx) -> snapshot response ----
@@ -586,6 +758,7 @@ module cdc_protocol_ctx_tb;
         errors=0; test_count=0;
         host_tok_cnt=0; host_done_cnt=0; host_req_cnt=0;
         start=1'b0; prompt_tok=0; start_pos=0; s_len=0; req_ctx_id=0; req_opcode=OP_TOKEN;
+        r_start=1'b0;
         flash_done=1'b0; wl_mem_data={WL_DATA_W{1'b0}};
         core_rst=1'b1; host_rst=1'b1;
         repeat (8) @(negedge core_clk);
