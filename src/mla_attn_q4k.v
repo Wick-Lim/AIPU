@@ -284,7 +284,20 @@ module mla_attn_q4k #(
 
     // ---- output -- PE_M rows, row-major packed ----
     //   row r element o = out[16*(MODEL_DIM*r + o) +: 16]
-    output reg  [MODEL_DIM*16*PE_M-1:0] out        // PE_M * MODEL_DIM bf16
+    output reg  [MODEL_DIM*16*PE_M-1:0] out,       // PE_M * MODEL_DIM bf16
+
+    // ---- KV latent WRITE-BACK exposure (KV_WRITEBACK_DESIGN.md step 1) ----
+    //   The committed row-0 latent packed to the pager row layout [c_kv | k_rope]:
+    //   c_kv  (ckv_cur[0], KV_LORA lanes) occupies the LOW  KV_LORA*16 bits,
+    //   k_rope(krope_cur[0], ROPE lanes, ROPED) the HIGH ROPE*16 bits -- EXACTLY
+    //   the split kv_cache_pager rows carry and glm_model_q4k consumes on kc_ckv/
+    //   kc_krope (kc_ckv[16*d+:16]=ckv[d], kc_krope[16*d+:16]=krope[d]; matches the
+    //   established convention in glm_q4k_soc_ms.v:502-503 and mla_attn_q4k_sparse_
+    //   perrow_tb {krope,ckv}).  ADDITIVE, driven from existing regs: at PE_M=1 this
+    //   is the sole committed latent per run.  kv_lat_valid pulses with `done` (the
+    //   S_DONE commit), when ckv_cur/krope_cur hold this token's final latent.
+    output wire [(KV_LORA+ROPE)*16-1:0] kv_lat_row,
+    output wire                         kv_lat_valid
 );
     `include "glm_fp.vh"
 
@@ -1753,5 +1766,29 @@ module mla_attn_q4k #(
                      sm_in_valid_able <= 1'b0;
         end
     end
+
+    //========================================================================
+    // KV latent WRITE-BACK pack (KV_WRITEBACK_DESIGN.md step 1).  ADDITIVE,
+    //   combinational from the committed row-0 latent regs.  Pack to the pager
+    //   row layout [c_kv | k_rope]: c_kv (ckv_cur[0]) in the LOW KV_LORA*16 bits
+    //   at [16*d +: 16] for lane d, k_rope (krope_cur[0], ALREADY roped by
+    //   S_KRROPE) in the HIGH ROPE*16 bits at [KV_LORA*16 + 16*d +: 16].  This is
+    //   EXACTLY {krope_cur, ckv_cur} and mirrors how kc_ckv/kc_krope are unpacked
+    //   downstream (:1389-1392) and by glm_q4k_soc_ms.v:502-503 -- a self-consistent
+    //   round-trip.  kv_lat_valid = done (S_DONE): at that pulse ckv_cur/krope_cur
+    //   hold this token's final latent (written S_KVDKV/S_KVKR, roped S_KRROPE,
+    //   untouched until the next run's projection), so the row is stable to sample.
+    //========================================================================
+    reg [(KV_LORA+ROPE)*16-1:0] kv_lat_row_c;
+    integer kvlp;
+    always @* begin
+        kv_lat_row_c = {((KV_LORA+ROPE)*16){1'b0}};
+        for (kvlp = 0; kvlp < KV_LORA; kvlp = kvlp + 1)
+            kv_lat_row_c[16*kvlp +: 16]            = ckv_cur[0][kvlp];
+        for (kvlp = 0; kvlp < ROPE; kvlp = kvlp + 1)
+            kv_lat_row_c[KV_LORA*16 + 16*kvlp +: 16] = krope_cur[0][kvlp];
+    end
+    assign kv_lat_row   = kv_lat_row_c;
+    assign kv_lat_valid = done;
 
 endmodule

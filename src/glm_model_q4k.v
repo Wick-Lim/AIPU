@@ -243,7 +243,14 @@ module glm_model_q4k #(
     //   xN[r] = the final-RMSNorm result of row r (= row r's LM-head input vector),
     //   packed bf16, MODEL_DIM elements/row.  Continuously reflects the xn[] buffer;
     //   STABLE from `done` until the next `start`.  Existing TBs leave it dangling.
-    output wire [PE_M*MODEL_DIM*16-1:0]  h_state
+    output wire [PE_M*MODEL_DIM*16-1:0]  h_state,
+
+    // ---- KV latent WRITE-BACK exposure (forwarded from the decoder block's
+    //      mla_attn_q4k; KV_WRITEBACK_DESIGN.md step 1) ----
+    //   Committed row packed [c_kv | k_rope] + a valid pulse (one per layer as the
+    //   single reused block runs; at L=1 exactly one per token).  ADDITIVE.
+    output wire [(KV_LORA+ROPE)*16-1:0]  kv_lat_row,
+    output wire                          kv_lat_valid
 );
     `include "glm_fp.vh"
 
@@ -299,7 +306,8 @@ module glm_model_q4k #(
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
         .fw_q(fw_q), .fw_q_up(fw_q_up),
         .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
-        .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u)
+        .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
+        .kv_lat_row(kv_lat_row), .kv_lat_valid(kv_lat_valid)
     );
     /* verilator lint_off UNUSEDSIGNAL */
     wire _db_busy_unused = &{1'b0, db_busy};

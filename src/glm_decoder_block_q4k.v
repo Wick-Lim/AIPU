@@ -211,6 +211,11 @@ module glm_decoder_block_q4k #(
     input  wire [MODEL_DIM*16*PE_M-1:0] x_vec,      // PE_M * MODEL_DIM bf16
     output reg  [MODEL_DIM*16*PE_M-1:0] y_out,      // PE_M * MODEL_DIM bf16
 
+    // ---- KV latent WRITE-BACK exposure (forwarded from mla_attn_q4k) ----
+    //   The committed row's packed [c_kv | k_rope] latent + a valid pulse; ADDITIVE.
+    output wire [(KV_LORA+ROPE)*16-1:0] kv_lat_row,
+    output wire                         kv_lat_valid,
+
     // ---- RMSNorm gamma pull (combinational, which norm: 0=pre-attn,1=pre-FFN) ----
     output wire                         gn_req,     // need a gamma element this cyc
     output wire                         gn_which,   // 0=pre-attn, 1=pre-FFN
@@ -349,7 +354,8 @@ module glm_decoder_block_q4k #(
         .w_req(aw_req), .w_sel(aw_sel), .w_grp(aw_grp), .w_k(aw_k),
         .w_q(aw_q), .w_d(aw_d), .w_dmin(aw_dmin), .w_scales(aw_scales),
         .kc_req(kc_req), .kc_idx(kc_idx), .kc_seq(kc_seq), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
-        .kc_valid(kc_valid), .out(at_out)
+        .kc_valid(kc_valid), .out(at_out),
+        .kv_lat_row(kv_lat_row), .kv_lat_valid(kv_lat_valid)
     );
     /* verilator lint_off UNUSEDSIGNAL */
     wire _at_busy_unused = &{1'b0, at_busy};
