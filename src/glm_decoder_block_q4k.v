@@ -110,6 +110,14 @@ module glm_decoder_block_q4k #(
     // mla_attn_q4k.v:165-169), which is why the committed S_MAX=8/TOPK_ATTN=8 slice shows
     // no difference for either value. It becomes load-bearing the moment S_MAX > TOPK_ATTN.
     parameter integer DSA_REAL_IDX = 0,
+    // INTRA_CAUSAL (default 0): threaded straight to mla_attn_q4k (see its header at
+    //   :171-190).  0 = today's shared-context batch (byte-identical -- no intra-batch
+    //   key is injected, every INTRA construct constant-folds away).  1 (5b-leaf) =
+    //   within ONE PE_M=B pass row j attends, in addition to the s_reg shared cached
+    //   keys, the CURRENT-token keys of the earlier rows 0..j-1 computed in that pass
+    //   (intra-batch causal attention).  Forwarded here so the composed system can drive
+    //   a position-accurate batched verify; requires PER_ROW_POS=1, PER_ROW_SEQ=0.
+    parameter integer INTRA_CAUSAL = 0,
     parameter integer H_HEADS    = 4,
     parameter integer NOPE       = 16,
     parameter integer ROPE       = 16,
@@ -215,6 +223,14 @@ module glm_decoder_block_q4k #(
     //   The committed row's packed [c_kv | k_rope] latent + a valid pulse; ADDITIVE.
     output wire [(KV_LORA+ROPE)*16-1:0] kv_lat_row,
     output wire                         kv_lat_valid,
+    // ---- PE_M-WIDE KV latent WRITE-BACK exposure (forwarded from mla_attn_q4k;
+    //      5b-sys).  ALL B rows' committed current-token latents (row r packed
+    //      [c_kv | k_rope] at kv_lat_row_all[r*(KV_LORA+ROPE)*16 +: (KV_LORA+ROPE)*16])
+    //      plus a per-row valid.  At PE_M=1, kv_lat_row_all == kv_lat_row (row 0).
+    //      ADDITIVE -- the narrow kv_lat_row above is UNCHANGED (kept for the model's
+    //      narrow pager port). ----
+    output wire [PE_M*(KV_LORA+ROPE)*16-1:0] kv_lat_row_all,
+    output wire [PE_M-1:0]                   kv_lat_valid_all,
 
     // ---- RMSNorm gamma pull (combinational, which norm: 0=pre-attn,1=pre-FFN) ----
     output wire                         gn_req,     // need a gamma element this cyc
@@ -346,7 +362,8 @@ module glm_decoder_block_q4k #(
         .V_DIM(V_DIM), .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX),
         .TOPK(TOPK_ATTN), .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
         .PE_M(PE_M), .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
-        .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX)
+        .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX),
+        .INTRA_CAUSAL(INTRA_CAUSAL)
     ) u_attn (
         .clk(clk), .rst(rst), .start(at_start), .busy(at_busy), .done(at_done),
         .pos(pos_q), .s_len(slen_q), .x_vec(nrm_vec),
@@ -355,7 +372,8 @@ module glm_decoder_block_q4k #(
         .w_q(aw_q), .w_d(aw_d), .w_dmin(aw_dmin), .w_scales(aw_scales),
         .kc_req(kc_req), .kc_idx(kc_idx), .kc_seq(kc_seq), .kc_ckv(kc_ckv), .kc_krope(kc_krope),
         .kc_valid(kc_valid), .out(at_out),
-        .kv_lat_row(kv_lat_row), .kv_lat_valid(kv_lat_valid)
+        .kv_lat_row(kv_lat_row), .kv_lat_valid(kv_lat_valid),
+        .kv_lat_row_all(kv_lat_row_all), .kv_lat_valid_all(kv_lat_valid_all)
     );
     /* verilator lint_off UNUSEDSIGNAL */
     wire _at_busy_unused = &{1'b0, at_busy};

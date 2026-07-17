@@ -100,6 +100,12 @@ module glm_model_q4k #(
     //     by tie-break = QUERY-INDEPENDENT.  1: real query-dependent selection.
     //   No-op while DENSE (S <= TOPK); load-bearing once S_MAX > TOPK_ATTN.
     parameter integer DSA_REAL_IDX = 0,
+    // INTRA_CAUSAL (default 0): threaded model -> decoder -> mla_attn_q4k (that file's
+    //   header, :171-190).  0 = today's shared-context batch, byte-identical.  1 =
+    //   intra-batch causal attention (row j attends earlier rows' current-token keys
+    //   in the same PE_M=B pass), for the position-accurate batched verify.  Requires
+    //   PER_ROW_POS=1, PER_ROW_SEQ=0 (guarded in the leaf).
+    parameter integer INTRA_CAUSAL = 0,
     // ====================================================================
     // derived (do NOT override) -- mirror decoder_block_q4k's port-width derivations
     // ====================================================================
@@ -250,7 +256,15 @@ module glm_model_q4k #(
     //   Committed row packed [c_kv | k_rope] + a valid pulse (one per layer as the
     //   single reused block runs; at L=1 exactly one per token).  ADDITIVE.
     output wire [(KV_LORA+ROPE)*16-1:0]  kv_lat_row,
-    output wire                          kv_lat_valid
+    output wire                          kv_lat_valid,
+    // ---- PE_M-WIDE KV latent WRITE-BACK exposure (forwarded from the decoder block's
+    //      mla_attn_q4k; 5b-sys) ----
+    //   ALL PE_M rows' committed current-token latents, row r packed [c_kv | k_rope] at
+    //   kv_lat_row_all[r*(KV_LORA+ROPE)*16 +: (KV_LORA+ROPE)*16], plus a per-row valid.
+    //   At PE_M=1, kv_lat_row_all == kv_lat_row (row 0).  ADDITIVE (the narrow kv_lat_row
+    //   above is UNCHANGED -- the system's pager-append port stays narrow).
+    output wire [PE_M*(KV_LORA+ROPE)*16-1:0]  kv_lat_row_all,
+    output wire [PE_M-1:0]                     kv_lat_valid_all
 );
     `include "glm_fp.vh"
 
@@ -289,7 +303,8 @@ module glm_model_q4k #(
         .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M),
         .ACT_HW(ACT_HW),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
-        .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX)
+        .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX),
+        .INTRA_CAUSAL(INTRA_CAUSAL)
     ) u_block (
         .clk(clk), .rst(rst), .start(db_start), .busy(db_busy), .done(db_done),
         .mode(db_mode), .pos(pos), .s_len(s_len),
@@ -307,7 +322,8 @@ module glm_model_q4k #(
         .fw_q(fw_q), .fw_q_up(fw_q_up),
         .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
         .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
-        .kv_lat_row(kv_lat_row), .kv_lat_valid(kv_lat_valid)
+        .kv_lat_row(kv_lat_row), .kv_lat_valid(kv_lat_valid),
+        .kv_lat_row_all(kv_lat_row_all), .kv_lat_valid_all(kv_lat_valid_all)
     );
     /* verilator lint_off UNUSEDSIGNAL */
     wire _db_busy_unused = &{1'b0, db_busy};

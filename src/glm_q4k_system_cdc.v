@@ -123,6 +123,12 @@ module glm_q4k_system_cdc #(
     parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions  (pass-through)
     parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents   (pass-through)
     parameter integer DSA_REAL_IDX = 0, // query-dependent DSA top-K (see glm_q4k_system.v)
+    // INTRA_CAUSAL: pure pass-through to glm_q4k_system (like PE_M/DSA_REAL_IDX).  Default
+    //   0 == the committed CDC wrapper, byte-identical -- no CDC element sees the knob;
+    //   the die's H_IDLE-aligned handshake is INTRA_CAUSAL-independent at the boundary.
+    //   Forwarded so the wrapper cannot SILENTLY PIN the die at INTRA_CAUSAL=0, the same
+    //   dead-port hazard the DSA thread-through closed (SPEC_COMPOSITION_DESIGN.md 5b-sys).
+    parameter integer INTRA_CAUSAL = 0,
     // ---- memory-system config ----
     parameter integer CACHE_SLOTS = 4,
     parameter integer FLASH_LAT   = 8,
@@ -543,7 +549,7 @@ module glm_q4k_system_cdc #(
         .TOPK(TOPK), .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE),
         .TN(TN), .BLK(BLK), .LM_TN(LM_TN), .PE_M(PE_M), .ACT_HW(ACT_HW),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
-        .DSA_REAL_IDX(DSA_REAL_IDX),
+        .DSA_REAL_IDX(DSA_REAL_IDX), .INTRA_CAUSAL(INTRA_CAUSAL),
         .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT), .KV_CTX(KV_CTX),
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH), .RESIDENT(RESIDENT),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),

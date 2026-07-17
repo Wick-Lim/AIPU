@@ -1139,6 +1139,41 @@ mla-intra:
 	        echo "FAILED: SKIPNORM injection NOT caught (oracle passed an un-normed intra key)"; exit 1; \
 	    else echo "injection correctly FAILED (RMSNorm+W_uk on the intra key is load-bearing)"; fi
 #============================================================================
+# intra-batch-verify : SYSTEM-LEVEL position-accurate BATCHED-VERIFY oracle (5b-sys).
+# ----------------------------------------------------------------------------
+#   ONE PE_M=K+1 batched pass through glm_q4k_system (SELF_KV=1, INTRA_CAUSAL=1,
+#   PER_ROW_POS=1) over K+1 tokens at consecutive positions 0..K -- row r attends
+#   the CURRENT-token keys of rows 0..r-1 computed IN THAT SAME PASS, through the
+#   whole multi-layer model (L=3: 2 dense + 1 MoE) -- must be BIT-EXACT (full per-row
+#   logit vector + per-row argmax) to a SERIAL single-row (PE_M=1, SELF_KV=1)
+#   glm_q4k_system decode chain of the same tokens, where SELF_KV=1 makes the pager
+#   APPEND each decode's committed latent and GATHER it back for the next (the
+#   die-internal KV write-back).  K=1,2,3 -> separate PE_M=2/3/4 batched instances
+#   (literal "one PE_M=K+1 pass" per K).  This is the composition of the leaf oracle
+#   (mla-intra) across the layers + the pager per-(layer,pos) round-trip (self-kv-l6):
+#   batched intra-causal MLA brought up into the SYSTEM.  (The identical harness at
+#   L=6/N_DENSE=3 also prints ALL 9 TESTS PASSED -- layer-count independent.)
+#   INJECTION: driving the batched pos_vec with ONE shared position (every row ropes
+#   at 0) breaks intra-batch causal indexing -> rows attending >=2 keys (K>=2)
+#   diverge and the batch==serial oracle MUST FAIL.  (K=1 row 1 attends ONE key, so
+#   softmax=1 -> position-insensitive; the injection first bites at K=2.)
+#   Standalone gate; NOT in release-gate (multi-instance system sim -- minutes-long).
+# ============================================================================
+INTRA_BATCH_SRCS := test/glm_q4k_intra_batch_verify_tb.v $(GLM_Q4K_SYS_SRCS)
+.PHONY: intra-batch-verify
+intra-batch-verify:
+	@mkdir -p $(BUILD_DIR)
+	@# (1) the SYSTEM ORACLE : batched intra-causal pass === serial decode chain, bit-exact.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_intra_batch_sim $(INTRA_BATCH_SRCS)
+	@printf '[%s] ' "glm_q4k_intra_batch_verify"; $(VVP) $(BUILD_DIR)/glm_q4k_intra_batch_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_q4k_intra_batch_verify (batched system != serial decode chain)"; exit 1; }
+	@# (2) INJECTION -- one shared position for every batched row : the oracle MUST FAIL.
+	@$(IVERILOG) $(IFLAGS) -DINJECT_SHARED_POS -o $(BUILD_DIR)/glm_q4k_intra_batch_sharedpos $(INTRA_BATCH_SRCS)
+	@printf '[%s] ' "glm_q4k_intra_batch_INJECT_sharedpos"; \
+	    if $(VVP) $(BUILD_DIR)/glm_q4k_intra_batch_sharedpos 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: SHARED_POS injection NOT caught (batched verify passed with wrong per-row positions)"; exit 1; \
+	    else echo "injection correctly FAILED (per-row position wiring is load-bearing)"; fi
+#============================================================================
 # ---- PERF (Q4_K): cycle-accurate throughput harness (audit #15) -----------
 #   The Q4_K port of the fp8 track's perf/cycle-emulation harness
 #   (docs/CYCLE_EMULATION.md [PENDING] item): test/glm_q4k_system_perf_tb.v
