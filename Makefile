@@ -24,7 +24,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -658,6 +658,27 @@ self-kv-roundtrip:
 	@printf '[%s] ' "glm_q4k_system(SELF_KV=1 KV write-back round-trip)"; \
 	    $(VVP) $(BUILD_DIR)/glm_q4k_self_kv_roundtrip_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: self-kv-roundtrip"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# self-kv-l6-roundtrip : PER-(LAYER,POSITION) KV keying at L>1 (step 3).
+#   glm_q4k_system(SELF_KV=1) at L=6 (3 dense + 3 MoE layers): each token runs 6
+#   layers; every layer m gathers + appends its OWN KV, keyed (layer,position) by
+#   the pager's per-layer windows (NSEQ=L, seq=db_layer).  A 6-token self-attending
+#   decode must match an INDEPENDENT standalone glm_model_q4k whose KV is delivered
+#   by a TB shadow keyed by (LAYER,pos) -- so a layer that read another layer's
+#   window would DIVERGE.  BIT-EXACT full-logit + committed-token binding, every
+#   token; $fatal on mismatch; terminal banner "ALL N TESTS PASSED".
+#   INJECTION (proves the check catches layer-aliasing): drop the layer term on the
+#   gather side in glm_q4k_system (pg_gather_seq = {KV_SEQW{1'b0}}); the L>1 binding
+#   FAILS at the first real-KV gather of a layer m>0.  Revert after confirming.
+# ---------------------------------------------------------------------------
+self-kv-l6-roundtrip:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_self_kv_l6_roundtrip_sim \
+	    test/glm_q4k_self_kv_l6_roundtrip_tb.v $(GLM_Q4K_SYS_SRCS)
+	@printf '[%s] ' "glm_q4k_system(SELF_KV=1 L=6 per-(layer,pos) KV round-trip)"; \
+	    $(VVP) $(BUILD_DIR)/glm_q4k_self_kv_l6_roundtrip_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: self-kv-l6-roundtrip"; exit 1; }
 
 # self-kv-equiv : SELF_KV=0 BYTE-IDENTICAL core proof (resident-equiv method).
 #   Coarse-RTLIL CELL histogram of glm_q4k_system(SELF_KV=0) == the pre-write-back
