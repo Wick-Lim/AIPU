@@ -217,7 +217,7 @@
 <div class="wrap">
 
   <section style="border-top:none">
-    <div class="sec-head"><span class="idx">01</span><h2>The three-rung ladder</h2></div>
+    <div class="sec-head"><h2>The three-rung ladder</h2></div>
     <p class="sec-sub">Bandwidth is bound by the chip's IO/PHY budget, which is set by the rung. The datapath is identical throughout; the difference between rungs is the memory system feeding it.</p>
 
     <div class="tblwrap">
@@ -267,7 +267,7 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="idx">02</span><h2>Rung detail</h2></div>
+    <div class="sec-head"><h2>Rung detail</h2></div>
     <p class="sec-sub">The near-term demo is rung ①; rungs ② and ③ are projections gated on funding and, for ②, on a correctness contingency.</p>
 
     <div class="rung3">
@@ -313,7 +313,7 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="idx">03</span><h2>Measured vs modeled</h2></div>
+    <div class="sec-head"><h2>Measured vs modeled</h2></div>
     <p class="sec-sub">The FPGA fit and routed Fmax are MEASURED. There is no running board yet, so every tok/s figure is an estimate <span class="k">[EST]</span> until bring-up measures a real Fmax ÷ cyc_per_tok on hardware.</p>
     <div class="legend">
       <span><i class="led s-measured"></i>MEASURED — real silicon fit / routed Fmax</span>
@@ -326,7 +326,7 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="idx">04</span><h2>Open items</h2></div>
+    <div class="sec-head"><h2>Open items</h2></div>
     <p class="sec-sub">The gaps between here and rung ③, taken from the repo. Most sit at the physical / process boundary an RTL repo cannot close.</p>
     <div class="open-grid">
       <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The ~467 GB GLM file run end-to-end and compared against llama.cpp's runtime argmax. Needs a GPU / large-memory host.</p></div>

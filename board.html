@@ -113,6 +113,12 @@
   .stat .l { font-size:.76rem; color:var(--ink-dim); margin-top:3px; line-height:1.35; }
   .stat .tag { color:var(--accent); }
 
+  /* ---- figure (concept illustrations) ---- */
+  .figure { margin:28px 0 0; border:1px solid var(--hairline); border-radius:12px; background:var(--panel); padding:22px 20px 16px; box-shadow:var(--shadow); }
+  .figure svg { display:block; width:100%; height:auto; max-width:620px; margin:0 auto; }
+  .figure figcaption { margin-top:14px; font-family:var(--mono); font-size:.75rem; color:var(--ink-dim); text-align:center; line-height:1.5; }
+  .figure figcaption .tag { color:var(--accent); }
+
   /* ---- sections ---- */
   section { padding:40px 0; border-top:1px solid var(--hairline); }
   .sec-head { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; }
@@ -210,7 +216,7 @@
 <div class="wrap">
 
   <section style="border-top:none">
-    <div class="sec-head"><span class="idx">01</span><h2>What exists today (measured)</h2></div>
+    <div class="sec-head"><h2>What exists today (measured)</h2></div>
     <p class="sec-sub">The prove-it silicon is real: the whole product top, in its compact config with <span class="k">ACT_HW=1</span>, synthesized and placed-and-routed on a Xilinx Kintex UltraScale+ <span class="k">XCKU3P</span>. These are Vivado P&amp;R numbers, not the board below.</p>
 
     <div class="stats" aria-label="measured FPGA fit">
@@ -235,8 +241,82 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="idx">02</span><h2>Rung-③ primary design point</h2></div>
+    <div class="sec-head"><h2>Rung-③ primary design point</h2></div>
     <p class="sec-sub">A 512&nbsp;GB LPDDR5X full-residency box. The whole ~467&nbsp;GB Q4_K checkpoint is DRAM-resident, so expert-reuse <span class="k">h&nbsp;=&nbsp;1</span> by construction — there is no streaming tier. Cold storage is one M.2 NVMe; boot-load is ~70&nbsp;s.</p>
+
+    <figure class="figure">
+      <svg viewBox="0 0 480 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concept top-down PCB floorplan of the residency appliance board">
+        <rect x="10" y="14" width="460" height="310" rx="8" fill="var(--sunk)" stroke="var(--accent)" stroke-width="1.25"/>
+        <rect x="16" y="20" width="448" height="298" rx="6" fill="none" stroke="var(--hairline)" stroke-width="0.75"/>
+        <circle cx="24" cy="28" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <circle cx="456" cy="28" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <circle cx="24" cy="310" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <circle cx="456" cy="310" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <rect x="52" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="100" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="148" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="196" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="244" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="292" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="340" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="388" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="52" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="100" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="148" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="196" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="244" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="292" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="340" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="388" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <text x="48" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="start">16 &#215; 32 GB LPDDR5X</text>
+        <line x1="72" y1="66" x2="72" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="120" y1="66" x2="120" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="168" y1="66" x2="168" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="216" y1="66" x2="216" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="264" y1="66" x2="264" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="312" y1="66" x2="312" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="360" y1="66" x2="360" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="408" y1="66" x2="408" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="72" y1="272" x2="72" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="120" y1="272" x2="120" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="168" y1="272" x2="168" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="216" y1="272" x2="216" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="264" y1="272" x2="264" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="312" y1="272" x2="312" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="360" y1="272" x2="360" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="408" y1="272" x2="408" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <rect x="188" y="117" width="104" height="104" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1.25"/>
+        <rect x="206" y="172" width="68" height="40" fill="none" stroke="var(--ink-2)" stroke-width="0.75" stroke-dasharray="3 2"/>
+        <text x="240" y="138" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">SoC &#183; 12&#8211;16 nm</text>
+        <text x="240" y="152" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">~9.4K MAC lanes</text>
+        <text x="240" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-2)" text-anchor="middle">@490 MHz</text>
+        <text x="240" y="196" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-dim)" text-anchor="middle">die</text>
+        <text x="362" y="160" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">1024-bit bus</text>
+        <text x="362" y="172" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle">16 &#215; 64-bit &#183; ~1.1 TB/s</text>
+        <rect x="448" y="120" width="16" height="100" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <line x1="451" y1="138" x2="461" y2="138" stroke="var(--ink-2)" stroke-width="0.5"/>
+        <line x1="451" y1="143" x2="461" y2="143" stroke="var(--ink-2)" stroke-width="0.5"/>
+        <line x1="451" y1="148" x2="461" y2="148" stroke="var(--ink-2)" stroke-width="0.5"/>
+        <text x="442" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="middle" transform="rotate(-90 442 170)">M.2 NVMe</text>
+        <text x="432" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle" transform="rotate(-90 432 170)">cold store &#183; ~70 s boot</text>
+        <rect x="4" y="150" width="18" height="22" rx="1.5" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <text x="28" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">USB-C &#8212; tokens only</text>
+        <rect x="16" y="200" width="28" height="44" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="50" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">power &#8805; 50&#8211;78 W [EST]</text>
+        <polygon points="12,8 19,4.5 19,11.5" fill="var(--accent)"/>
+        <polygon points="468,8 461,4.5 461,11.5" fill="var(--accent)"/>
+        <line x1="19" y1="8" x2="216" y2="8" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="264" y1="8" x2="461" y2="8" stroke="var(--accent)" stroke-width="0.75"/>
+        <text x="240" y="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--accent)" text-anchor="middle">120 mm</text>
+        <polygon points="4,24 0.5,31 7.5,31" fill="var(--accent)"/>
+        <polygon points="4,310 0.5,303 7.5,303" fill="var(--accent)"/>
+        <line x1="4" y1="31" x2="4" y2="88" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="4" y1="112" x2="4" y2="148" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="4" y1="174" x2="4" y2="303" stroke="var(--accent)" stroke-width="0.75"/>
+        <text x="5" y="100" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--accent)" text-anchor="middle" transform="rotate(-90 5 100)">80 mm</text>
+      </svg>
+      <figcaption>Concept board floorplan — SoC + 16&nbsp;×&nbsp;32&nbsp;GB LPDDR5X (1024-bit) on a 120&nbsp;×&nbsp;80&nbsp;mm board. <span class="tag">Schematic, not a built board; every figure [EST].</span></figcaption>
+    </figure>
 
     <div class="spec">
       <div class="cell">
@@ -273,12 +353,12 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="idx">03</span><h2>Positioning</h2></div>
+    <div class="sec-head"><h2>Positioning</h2></div>
     <p class="sec-sub">Targets Opus / Gemini-Pro-class per-user interactive speed. Throughput-farm silicon (Groq, Cerebras) is a different bracket.</p>
   </section>
 
   <section>
-    <div class="sec-head"><span class="idx">04</span><h2>Not built</h2></div>
+    <div class="sec-head"><h2>Not built</h2></div>
     <p class="sec-sub">This board is a design point. The DDR5 / NVMe / USB-C PHYs are vendor IP, TB-stubbed in RTL. Every power, BOM, and tok/s figure on this page is an estimate <span class="k">[EST]</span>.</p>
     <div class="open-grid">
       <div class="open-item"><div class="h"><i class="led s-open"></i>No board fabricated</div><p>The appliance is the rung-③ endpoint of the hardware ladder — modeled, not built. No hardware measurement of tok/s, power, or cost exists.</p></div>
