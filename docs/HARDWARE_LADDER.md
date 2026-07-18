@@ -229,6 +229,42 @@ The rung-③ SoC's memory system is **decided**: **LPDDR5X 256 GB (8×32 GB pack
   Only the tok/s the silicon can feed goes up. The [`ICP.md`](ICP.md) buyer (offline is *mandatory*) values
   *"it runs at all, provably local"* on rung ①, and pays more for rung ②'s speed.
 
+## Rung ④ (future, memory-tech-dependent): HBF weights + HBM KV — a two-store box
+
+**Status: forward-looking architecture note `[EST]`, NOT designed or verified. Contingent on an
+emerging memory technology.** Captured because it maps unusually well onto what the RTL already is.
+
+This machine is a **weight-streaming, bandwidth-bound** design: the tok/s limiter is streaming the
+~14 GB/token of routed expert weights (`tok/s ≈ BW ÷ 13.87 GB/token`). Two memory technologies split
+the two access patterns cleanly:
+
+- **Weights → HBF (High Bandwidth Flash).** HBF (3D-NAND stacked HBM-style, announced 2025; not
+  shipping) offers **HBM-class bandwidth at flash capacity + non-volatility**. Because it is
+  non-volatile *and* high-bandwidth, one HBF store does **both** jobs the current design splits across
+  tiers: the persistent bulk store (today's **NVMe**) and the high-bandwidth stream source (today's
+  **DDR/LPDDR working cache**). Consequences:
+  - **No NVMe tier** — HBF is the persistent store.
+  - **No 467 GB DRAM copy / no ~70 s boot-load** — weights are already resident in non-volatile HBF;
+    instant-on. (The residency box's ~70 s DRAM fill disappears.)
+  - Flash's higher *read latency* is **hideable for the weight stream** (it is sequential/predictable;
+    `flash_xbar`'s deep-queue latency-hiding already does this), and **write endurance is a non-issue**
+    (weights are written once at provisioning, then read-only).
+- **KV cache → HBM.** KV is small (~0.5 GB/token, ~3.5 % of the stream) but **random-access and
+  latency-sensitive** — the one pattern flash latency cannot serve, so it lives in low-latency HBM.
+  Moving KV to HBM is about latency/capacity, not raw tok/s; the tok/s win comes from the **weight-stream
+  BW (HBF)**.
+
+**Speed `[EST]`:** at HBF ~2 TB/s → **~120–145 tok/s** (BW ÷ 13.87), above the rung-③ 1.1 TB/s LPDDR5X
+point (≈80). Capped by the same **sublinear lane scaling** (4× lanes → ~2.40×) — the die must be
+provisioned to consume the higher BW or compute becomes the bottleneck — and it is **higher power**
+(HBF + HBM both run hotter than LPDDR5X, so this pulls *against* the fanless / low-power direction).
+
+**RTL fit.** `flash_xbar` is a **medium-agnostic** address→weight-bytes crossbar ("the NAND-specific
+backend is the swapped part, not the abstraction"), so fronting HBF is a backend swap, and
+`kv_cache_pager`/`weight_loader_q4k` already separate KV from the weight stream — the two-store split
+maps onto the existing byte-agnostic memory system by **re-parameterization**. What is NOT there:
+the DDR-tier removal + re-tiering and the **vendor HBF/HBM PHY + controllers** (external IP). All `[EST]`.
+
 ## Honest caveats
 
 - Every tok/s is **[EST]** — roofline projections. The **fit + routed Fmax are now MEASURED** (Vivado
