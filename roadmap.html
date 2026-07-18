@@ -313,6 +313,26 @@
   </section>
 
   <section>
+    <div class="sec-head"><h2>Beyond rung ③ — HBF + HBM (future)</h2></div>
+    <p class="sec-sub">A forward-looking architecture note <span class="k">[EST]</span>, not designed or verified — contingent on emerging memory technology. It maps cleanly onto what the RTL already is: a weight-streaming, bandwidth-bound machine (<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). Source: <a href="https://github.com/Wick-Lim/AIPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
+    <div class="flow">
+      today &nbsp; <span class="arrow">NVMe (persist)</span> + <span class="arrow">DDR/LPDDR (stream BW)</span> → die &nbsp;·&nbsp; KV in DRAM<br>
+      rung ④ &nbsp; <b>weights → HBF</b> <span class="arrow">(non-volatile + HBM-class BW, one store)</span> → die &nbsp;·&nbsp; <b>KV → HBM</b>
+    </div>
+    <div class="roof">
+      <div class="card">
+        <h3>Weights → HBF</h3>
+        <p>HBF (High Bandwidth Flash — 3D-NAND stacked HBM-style, announced 2025, not shipping) is <b>non-volatile AND high-bandwidth AND high-capacity</b>. One HBF store does both jobs the design splits today: the persistent bulk store (NVMe) and the high-BW stream source (DDR/LPDDR working cache). So: <b>no NVMe tier, no 467&nbsp;GB DRAM copy, no ~70&nbsp;s boot-load</b> (weights already resident → instant-on). Flash read latency is hideable for the sequential weight stream (the deep-queue <span class="k">flash_xbar</span> already does this); write endurance is a non-issue (weights are written once, then read-only).</p>
+      </div>
+      <div class="card">
+        <h3>KV → HBM</h3>
+        <p>The KV cache is small (~0.5&nbsp;GB/token, ~3.5% of the stream) but <b>random-access and latency-sensitive</b> — the one pattern flash latency can't serve, so it lives in low-latency HBM. This is about latency/capacity, not raw tok/s; the speed win comes from the <b>weight-stream BW (HBF)</b>: at HBF ~2&nbsp;TB/s → <b>~120–145 tok/s</b> <span class="k">[EST]</span>, above the rung-③ 1.1&nbsp;TB/s point (≈80).</p>
+      </div>
+    </div>
+    <p class="note"><b>Honest caveats.</b> HBF is emerging tech (unshipped). Capped by the same sublinear lane scaling (4× lanes → ~2.40×) — the die must be provisioned to consume the higher BW or compute bottlenecks. Higher power (HBF + HBM run hotter than LPDDR5X — this pulls <em>against</em> the low-power / fanless direction). The RTL fits (<span class="k">flash_xbar</span> is a medium-agnostic address→bytes crossbar; <span class="k">kv_cache_pager</span>/<span class="k">weight_loader</span> already separate KV from the weight stream), so the two-store split is a re-parameterization — but the DDR-tier removal + re-tiering and the vendor HBF/HBM PHY + controllers are not built. All <span class="k">[EST]</span>.</p>
+  </section>
+
+  <section>
     <div class="sec-head"><h2>Measured vs modeled</h2></div>
     <p class="sec-sub">The FPGA fit and routed Fmax are MEASURED. There is no running board yet, so every tok/s figure is an estimate <span class="k">[EST]</span> until bring-up measures a real Fmax ÷ cyc_per_tok on hardware.</p>
     <div class="legend">
