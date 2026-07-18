@@ -211,8 +211,10 @@ thing the slice and the spec==greedy self-consistency cannot.
   re-parameterization for the widened word.)*
 - P2.2 Full CDC sign-off across USB / memory / compute clock domains; reset/init/boot-load hardening.
   *(Built: `reset_sync` wired at both host/core boundaries of `glm_q4k_system_cdc`; `make cdc` structural
-  crossing check; a default-off PHY-closure loopback stage. Remains: physically feeding the returned bytes
-  back into the die.)*
+  crossing check; the PHY-closure loopback — `LOOPBACK=1` feeds ddr5_xbar's returned attention-weight bytes
+  back into the die — **proven bit-exact** by `make loopback` (`ALL 5 TESTS PASSED`, 7168 round-trips vs the
+  standalone reference; `-DLBINJECT` corruption FAILS). Remains: extend the loopback to every weight family
+  through the real vendor PHY IP.)*
 - P2.3 Reliability (FPGA path): the built ECC (SECDED scrub) + KV-ring ECC + CDC/reset hardening carry
   over; MBIST maps to a BRAM self-test. ASIC-specific DFT (scan-chain insertion, boundary scan) is **not
   needed on the FPGA rungs (①②)** — the vendor JTAG/config handles device test — and is **deferred to the

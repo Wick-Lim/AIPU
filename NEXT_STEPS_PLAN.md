@@ -77,8 +77,10 @@
 2. **P2 클로저 잔여.** (정정 2026-07) ICG는 이미 탑에 인라인(`die_clk`, `glm_q4k_system.v:1307-1311`);
    `mbist_ctrl`은 검증된 단일포트 March 레퍼런스이고 실제 저장소가 2-port async라 탑 손배선은 theatre.
    **2-port BIST collar은 이제 RTL 레퍼런스 `src/mbist_ctrl_2p.v`로 빌드됨**(`[mbist_ctrl_2p] ALL 11 PASSED`;
-   프로덕션 per-macro collar은 컴파일러 생성). 잔여: top scan stitch; DDR5/NVMe payload ECC + BMC 재파라미터;
-   PHY-클로저 loopback(바이트를 실제 die로 되먹임). → **C6·C7·C10**.
+   프로덕션 per-macro collar은 컴파일러 생성). **PHY-클로저 loopback(바이트를 실제 die로 되먹임)도 aw family에
+   대해 증명됨** — `make loopback`(`test/glm_q4k_loopback_tb.v`), LOOPBACK=1 커밋 스트림이 독립 reference와
+   bit-exact(7168 왕복), 오염 주입은 FAIL. 잔여: top scan stitch; DDR5/NVMe payload ECC + BMC 재파라미터;
+   loopback을 전 weight family + 실 벤더 PHY IP로 확장. → **C6·C7·C10**.
 3. **경제성/BOM/TCO·LOI는 미검증 계획 문서**다(`docs/BOM.md`, `docs/USBC_PRODUCT_PLAN.md`,
    `docs/ICP*.md`). **LOI는 존재하지 않는다** — ICP 킷의 "서명된 비구속 LOI 1건"은 목표이지 증거가
    아니다.
@@ -139,7 +141,7 @@
 | **C5** (완료) | `ddr5_xbar` 응답-FIFO no-overflow/underflow를 **unbounded k-induction**으로 승격 — `cnt[]` connect-bind, `test/formal/ddr5_xbar_ind_fv.v` | `make formal-ind` ddr5 통과(base+step, 비-vacuity 재보증); `docs/FORMAL.md` BOUNDED→UNBOUNDED | M |
 | **C6** (부분: `kv_ecc_ring`+`kv_cache_pager_ecc_fv` 완료·DDR5/NVMe payload ECC 잔여) | DDR5/NVMe payload(가중치 바이트) + `kv_cache_pager` ring에 ECC; 위젠 워드에 대해 committed BMC 증명 재파라미터/재검증 | fault-injection TB: single-bit 정정 / double-bit `derr`; 기존 유닛+formal green. ROW_BITS=768(/64 아님) lane 분할 주의 | L |
 | **C7** (정정 2026-07: ICG 탑 인라인 완료·MBIST collar 잔여) | ICG는 이미 탑에 realized (`die_clk`, `glm_q4k_system.v:1307-1311`, 다이 전체 게이트); `mbist_ctrl`은 검증된 단일포트 March **레퍼런스**; 2-port 저장소 `ring`/`vstore_mem`용 **2-port collar은 `src/mbist_ctrl_2p.v`로 빌드됨**(`[mbist_ctrl_2p] ALL 11 PASSED`; 프로덕션 per-macro collar은 컴파일러 생성) → 잔여는 top `scan_enable` stitch. 계약 `docs/P2_MEMORY_MAP.md` §4 | `mbist_ctrl_2p`: good→pass, stuck-at→fail kind=0, 동시 coupling→fail kind=1; gated-clock는 `die_clk` off서 bit-identical·runt 없음(`make cdc`) | L/XL |
-| **C8** (완료: LOOPBACK default-off + `make cdc`) | CDC 사인오프 — async crossing에 SDC + `make cdc` 구조 체커; "returned bytes not fed into die" loopback 폐쇄(default-off, 검증된 combinational 경로 불변) | `make cdc` unguarded crossing 0; loopback 모드가 combinational-stub와 동일 next token; `synth-glm check -assert` clean | M/XL |
+| **C8** (완료: LOOPBACK + `make cdc` + `make loopback`) | CDC 사인오프 — async crossing에 SDC + `make cdc` 구조 체커; "returned bytes fed into die" loopback을 `make loopback`으로 증명(LOOPBACK=1 커밋 == 독립 reference bit-exact) | `make cdc` unguarded crossing 0; **`make loopback` ALL 5 PASSED** — LOOPBACK=1 커밋 스트림이 standalone `glm_model_q4k`와 bit-exact(7168 왕복), `-DLBINJECT` 오염은 FAIL; `synth-glm check -assert` clean | M/XL |
 | **C9** (완료) | `weight_decomp`(order-0)를 `glm_q4k_system` NVMe→DDR5 refill 경로 배선(`DECOMP=1` 빌드옵션, quant 바이트를 불투명 심볼로) + raw-vs-decompressed byte-identical 증명 | **tok/s를 움직이는 유일한 die-side 레버**(실 NVMe 1.34×→~1.42× [EST]); 토큰 출력 불변, `make unittests` green | L |
 | **C10** (부분: `synth-glm`은 `make all` 편입·MBIST system TB 잔여) | P2 클로저 — `make all`에 ECC/MBIST/gated-clock system TB; PRODUCT_ROADMAP P2 항목을 증명 TB에 링크; unit-proven vs system-proven 문서화 | `make all`이 P2 system TB green; 각 `ALL N TESTS PASSED` | S |
 

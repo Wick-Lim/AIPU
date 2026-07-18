@@ -233,7 +233,11 @@ module glm_q4k_system #(
     //       No glm_model_q4k edit is needed -- the die is stalled EXTERNALLY by
     //       gating its clock, which a synchronous die tolerates bit-exactly (its
     //       per-edge input trajectory is unchanged, so the committed token is
-    //       identical to the LOOPBACK=0 run).  See the new local proof TB.
+    //       identical to the LOOPBACK=0 run).  Proven: test/glm_q4k_loopback_tb.v
+    //       (`make loopback`) -- LOOPBACK=1 committed stream == standalone
+    //       glm_model_q4k reference, bit-exact over a 4-token decode, with the aw
+    //       code lanes round-tripped through ddr5_xbar (7168 marked reads); a
+    //       -DLBINJECT build that corrupts the fed-back lanes correctly FAILS.
     parameter integer LOOPBACK    = 0,
     // ---- FAITHFUL EXPERT-MISS STALL (make the die pay the Flash memory wait) ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-stall module.  die_clk===clk;

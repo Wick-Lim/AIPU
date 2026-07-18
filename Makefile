@@ -1235,6 +1235,42 @@ spec-greedy:
 	        echo "FAILED: RAW_DRAFT injection NOT caught (loop committed raw drafts and still matched greedy)"; exit 1; \
 	    else echo "injection correctly FAILED (spec_decode_seq committing only the model argmaxes is load-bearing)"; fi
 
+# ============================================================================
+# loopback : C8 LOOPBACK==1 committed stream == LOOPBACK==0 (== reference).
+# ----------------------------------------------------------------------------
+#   glm_q4k_system has a LOOPBACK param (default 0) that PHYSICALLY routes the
+#   die's attention-weight Q4_K CODE lanes OUT of the die as a banked ddr5_xbar
+#   read (TAG_LBAW, addr encodes {layer,sel,grp,k} + an 8'hA5 marker) and back IN
+#   through the fabric, clock-gating the die until each beat returns -- instead of
+#   the same-cycle stub.  test/glm_q4k_loopback_tb.v reuses the perf TB's full
+#   weight/KV/expert responder harness + the standalone glm_model_q4k reference,
+#   and EXTENDS the ddr5_xbar memory model so a marked (8'hA5) read returns the
+#   packed f_awq(layer,sel,grp*PE_N+t,k) lanes in the response's low PE_N*4 bits
+#   -- the exact bytes the stub aw_q serves at LOOPBACK=0.  A 4-token decode must
+#   commit next_tok BIT-EXACT to the reference at every step (clock-gating a
+#   synchronous die is transparent), proving the fed-back bytes round-trip
+#   faithfully.  N=5 (4 token bindings + a loopback-exercised soundness gate that
+#   $fatal's if lb_req/lb_resp never fired -- no vacuous pass).
+#   INJECTION (-DLBINJECT): corrupt the fed-back lane 0 (flip bit 0) on EVERY
+#   loopback beat.  Because the die actually CONSUMES those lanes the committed
+#   stream then DIVERGES from the reference -> this gate MUST FAIL (no pass
+#   banner).  Standalone gate (system sim, ~2 min/build); NOT in release-gate.
+# ============================================================================
+LOOPBACK_SRCS := test/glm_q4k_loopback_tb.v $(GLM_Q4K_SYS_SRCS)
+.PHONY: loopback
+loopback:
+	@mkdir -p $(BUILD_DIR)
+	@# (1) CLEAN : LOOPBACK=1 committed stream == standalone glm_model_q4k reference.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_loopback_sim $(LOOPBACK_SRCS)
+	@printf '[%s] ' "glm_q4k_system(LOOPBACK=1 == reference)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_sim | grep -E 'ALL 5 TESTS PASSED' \
+	    || { echo "FAILED: loopback (LOOPBACK=1 committed stream != reference, OR test count != 5)"; exit 1; }
+	@# (2) INJECTION -- corrupt the fed-back attention-weight lanes : the gate MUST FAIL.
+	@$(IVERILOG) $(IFLAGS) -DLBINJECT -o $(BUILD_DIR)/glm_q4k_loopback_inject $(LOOPBACK_SRCS)
+	@printf '[%s] ' "glm_q4k_loopback_INJECT_awlanes"; \
+	    if $(VVP) $(BUILD_DIR)/glm_q4k_loopback_inject 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: LBINJECT NOT caught (corrupted loopback bytes still matched reference -- die ignores the fed-back lanes)"; exit 1; \
+	    else echo "injection correctly FAILED (the die CONSUMES the fed-back ddr5_xbar bytes -- loopback is load-bearing)"; fi
+
 #============================================================================
 # ---- PERF (Q4_K): cycle-accurate throughput harness (audit #15) -----------
 #   The Q4_K port of the fp8 track's perf/cycle-emulation harness
