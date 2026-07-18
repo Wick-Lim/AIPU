@@ -248,10 +248,15 @@ modules above; the testbench models them as latency memories.
     `mla_attn_q4k.vstore_mem`/`scores_mem` (write on one attention beat, read on another, but
     2-port at `PE_M>1`) are the model's real KV/V SRAMs. A single-port March engine cannot
     exercise them without a wrapper that either serializes the two ports in test mode or runs a
-    2-port March. **This is the one bounded, named C7 gap** — in the physical flow the memory
-    compiler emits each macro *with* its matching BIST collar (single- or dual-port); at RTL,
-    `mbist_ctrl` proves the algorithm and the single-port collar, and the dual-port collar is
-    the remaining build (or is compiler-generated).
+    2-port March. This was the one bounded, named C7 gap. **Closed at the RTL-reference level
+    (2026-07): `src/mbist_ctrl_2p.v`** drives a true 1R1W dual-port RAM (async read, sync write,
+    separate addresses) with March C- over the cells PLUS a concurrent write+read phase that
+    catches write→read port coupling — the fault class a single-port engine structurally misses
+    (`make` → `[mbist_ctrl_2p] ALL 11 TESTS PASSED`: good→pass, stuck-at→fail kind=0,
+    concurrent-coupling→fail kind=1, the kind=1 proving the fault survives the whole march and is
+    caught only by the concurrent phase). In the physical flow the memory compiler still emits
+    each macro *with* its matching BIST collar (single- or dual-port); `mbist_ctrl` and
+    `mbist_ctrl_2p` are the verified RTL references for the single- and dual-port collars.
   - **Not March targets (leave to logic BIST / scan).** Fully-parallel CAMs
     (`expert_cache_pf` tag/valid arrays compared all-slots-at-once), the `topk_select`
     comparator tree, `glm_matmul` accumulator banks, and pipeline register banks are not

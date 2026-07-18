@@ -222,8 +222,10 @@ thing the slice and the spec==greedy self-consistency cannot.
   arrays that actually hold model state (`kv_cache_pager.ring`, `mla_attn_q4k.vstore_mem`) are concurrent-R/W
   2-port, which a single-port March engine cannot test as-is, so wiring one in would be theatre. The DFT
   insertion **contract** — per-macro BIST collar matching each macro's ports — is documented in
-  [`P2_MEMORY_MAP.md`](P2_MEMORY_MAP.md) §4; the one real open item is the **dual-port BIST collar**, which
-  the memory compiler generates per macro in the physical flow. Top `scan_enable` stitch is still an ASIC-endgame step.)*
+  [`P2_MEMORY_MAP.md`](P2_MEMORY_MAP.md) §4. The **dual-port BIST collar** now has a verified RTL reference —
+  `src/mbist_ctrl_2p.v` (`[mbist_ctrl_2p] ALL 11 TESTS PASSED`: March C- + concurrent write/read coupling,
+  fault kinds 0/1); the memory compiler still emits the real per-macro collar in the physical flow. Top
+  `scan_enable` stitch is still an ASIC-endgame step.)*
 - P2.4 Power: real ICG clock-gating cells, power domains, DVFS hooks, thermal budget. *(Status 2026-07,
   corrected: the production top **already** gates the entire compute die with an inline glitch-free ICG —
   `die_clk = clk & die_en_lat`, the `icg_cell` low-phase-latch pattern hand-coded at `glm_q4k_system.v:1307-1311`,
