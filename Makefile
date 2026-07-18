@@ -1310,6 +1310,54 @@ loopback-fw:
 	        echo "FAILED: LBFWINJECT NOT caught (corrupted loopback bytes still matched reference -- die ignores the fed-back fw lanes)"; exit 1; \
 	    else echo "injection correctly FAILED (the die CONSUMES the fed-back ddr5_xbar fw bytes -- fw loopback is load-bearing)"; fi
 
+# ============================================================================
+# loopback-rest : C8 LOOPBACK_REST==1 committed stream == LOOPBACK_REST==0 (== ref).
+# ----------------------------------------------------------------------------
+#   The mirror of `loopback` / `loopback-fw` for the THREE remaining die weight-input
+#   families that were stub-only: rw (MoE-router Q4_K CODES), lw (LM-head bf16 columns)
+#   and gn (a single bf16 gain/norm).  glm_q4k_system has a LOOPBACK_REST param
+#   (default 0) that PHYSICALLY routes die_rw_q / die_lw_col / die_gn_val OUT of the die
+#   as banked ddr5_xbar reads (TAG_LBRW/LBLW/LBGN; addr markers 8'hC7/8'hD8/8'hE9, all
+#   distinct from aw's 8'hA5 and fw's 8'hB6; each addr encodes that family's exact pull
+#   key -- rw {db_layer,rw_k}, lw {lw_vtile,lw_k}, gn {db_layer,gn_which,gn_idx}) and
+#   back IN through the fabric, clock-gating the die until each beat returns -- instead
+#   of the same-cycle stub.  test/glm_q4k_loopback_rest_tb.v reuses the perf/loopback TB
+#   harness + the standalone glm_model_q4k reference, and EXTENDS the ddr5_xbar memory
+#   model so a marked read returns the packed bytes the stub serves at REST=0 (low
+#   4*N_EXPERT = f_rwq codes; low LM_TN*16 = lw bf16 columns; low 16 = the gn bf16).  A
+#   4-token decode must commit next_tok BIT-EXACT to the reference at every step.  N=10:
+#   4 committed-token bindings + a PER-FAMILY loopback-exercised soundness gate for EACH
+#   of rw/lw/gn (each $fatal's if that family never round-tripped) + a PER-FAMILY DIRECT
+#   PER-BEAT BYTE binding for EACH of rw/lw/gn.  The direct binding is the key check: rw
+#   and gn were MEASURED output-insensitive, so a bit-exact token does NOT prove their
+#   byte consumption -- so the TB reaches into the DUT by hierarchical reference and
+#   asserts the die's PRESENTED input (dut.die_rw_q / die_lw_col / die_gn_val) equals the
+#   expected value for the live key on EVERY beat the die pulls that family (no vacuous
+#   pass: each direct binding must also sample at least once).
+#   INJECTION (-DLBRESTINJECT): flip the mantissa LSB of the fed-back gn value on EVERY
+#   gn beat.  gn is output-INSENSITIVE, so the committed-token binding stays green -- but
+#   the DIRECT gn byte binding sees die_gn_val != the expected stub value on every gn beat
+#   and FAILS the gate (no pass banner).  Corrupting the output-insensitive family isolates
+#   the direct binding as the check that catches it.  Standalone gate (system sim,
+#   ~2 min/build); opt-in, NOT in release-gate.
+# ============================================================================
+LOOPBACK_REST_SRCS := test/glm_q4k_loopback_rest_tb.v $(GLM_Q4K_SYS_SRCS)
+.PHONY: loopback-rest
+loopback-rest:
+	@mkdir -p $(BUILD_DIR)
+	@# (1) CLEAN : LOOPBACK_REST=1 committed stream == standalone glm_model_q4k reference.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_loopback_rest_sim $(LOOPBACK_REST_SRCS)
+	@printf '[%s] ' "glm_q4k_system(LOOPBACK_REST=1 == reference)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_rest_sim | grep -E 'ALL 10 TESTS PASSED' \
+	    || { echo "FAILED: loopback-rest (LOOPBACK_REST=1 committed stream != reference OR direct byte binding mismatched, OR test count != 10)"; exit 1; }
+	@# (2) INJECTION -- flip the fed-back gn value's mantissa LSB : the DIRECT gn byte
+	@#     binding MUST catch it and the gate MUST FAIL (gn is output-insensitive, so this
+	@#     is precisely what the committed-token binding alone would miss).
+	@$(IVERILOG) $(IFLAGS) -DLBRESTINJECT -o $(BUILD_DIR)/glm_q4k_loopback_rest_inject $(LOOPBACK_REST_SRCS)
+	@printf '[%s] ' "glm_q4k_loopback_rest_INJECT_gn"; \
+	    if $(VVP) $(BUILD_DIR)/glm_q4k_loopback_rest_inject 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: LBRESTINJECT NOT caught (corrupted fed-back gn bytes still passed -- the direct byte binding is not load-bearing)"; exit 1; \
+	    else echo "injection correctly FAILED (the DIRECT byte binding caught the corrupted fed-back gn value -- the fabric round-trip is proven to deliver the die's bytes)"; fi
+
 #============================================================================
 # ---- PERF (Q4_K): cycle-accurate throughput harness (audit #15) -----------
 #   The Q4_K port of the fp8 track's perf/cycle-emulation harness

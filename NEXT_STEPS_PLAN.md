@@ -78,9 +78,10 @@
    `mbist_ctrl`은 검증된 단일포트 March 레퍼런스이고 실제 저장소가 2-port async라 탑 손배선은 theatre.
    **2-port BIST collar은 이제 RTL 레퍼런스 `src/mbist_ctrl_2p.v`로 빌드됨**(`[mbist_ctrl_2p] ALL 11 PASSED`;
    프로덕션 per-macro collar은 컴파일러 생성). **PHY-클로저 loopback(바이트를 실제 die로 되먹임)이 aw + fw
-   두 큰 family에 대해 증명됨** — `make loopback`(aw) + `make loopback-fw`(fw, 대역폭 지배 라우티드 expert;
-   LOOPBACK_FW=1 커밋 bit-exact, 7680 왕복, 주입 FAIL). 잔여: top scan stitch(툴-삽입); 소형 `rw`/`lw`/`gn`
-   loopback(동일 메커니즘); 실 벤더 PHY IP. (payload ECC는 `weight_loader_q4k`+`kv_ecc_ring`으로 이미 됨.) → **C6·C7·C10**.
+   **전 5개 die weight-input family에 대해 증명됨** — `make loopback`(aw) + `make loopback-fw`(fw) +
+   `make loopback-rest`(rw/lw/gn; ALL 10, 커밋 bit-exact + **직접 per-beat 바이트 바인딩** — 출력-둔감한
+   rw/gn은 die_rw_q/die_gn_val을 기대값과 매 beat 직접 비교해 바이트 소비를 강하게 증명). 잔여: top scan
+   stitch(툴-삽입); 실 벤더 PHY IP. (payload ECC는 `weight_loader_q4k`+`kv_ecc_ring`으로 이미 됨.) → **C6·C7·C10**.
 3. **경제성/BOM/TCO·LOI는 미검증 계획 문서**다(`docs/BOM.md`, `docs/USBC_PRODUCT_PLAN.md`,
    `docs/ICP*.md`). **LOI는 존재하지 않는다** — ICP 킷의 "서명된 비구속 LOI 1건"은 목표이지 증거가
    아니다.

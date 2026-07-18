@@ -258,6 +258,31 @@ module glm_q4k_system #(
     //       and the die advances one edge.  Composable with LOOPBACK (either/both/
     //       neither on).  Proven: test/glm_q4k_loopback_fw_tb.v (`make loopback-fw`).
     parameter integer LOOPBACK_FW = 0,
+    // ---- C8 loopback for the REMAINING three die weight-input families ----------
+    //   The same mirror applied, behind ONE knob, to the three families that were
+    //   die SYSTEM-INPUT STUBS (never fed from the fabric):
+    //     rw  (MoE router weights, Q4_K CODES) : loop only the codes rw_q; the
+    //         d/dmin/scales stay served same-cycle by the stub (exactly as LOOPBACK
+    //         keeps aw_d/aw_dmin/aw_scales).  Key {db_layer,rw_k}; marker 8'hC7.
+    //     lw  (LM-head weights, bf16 16-bit -- NOT codes) : loop the full lw_col
+    //         (LM_TN bf16 lanes = LM_TN*16 bits, one 256b beat).  Key {lw_vtile,
+    //         lw_k}; marker 8'hD8.
+    //     gn  (gains/norms, a single bf16 value) : loop the 16-bit gn_val.  Key
+    //         {db_layer,gn_which,gn_idx}; marker 8'hE9.
+    //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-rest module.  die_rw_q=rw_q,
+    //       die_lw_col=lw_col, die_gn_val=gn_val straight from the same-cycle stub,
+    //       and no extra die_clk gate term (die_clk == die_clk_awfw == die_clk_aw&fw).
+    //   1 = ON: each family's die input is SOURCED from a banked ddr5_xbar read
+    //       (TAG_LBRW/LBLW/LBGN; markers 8'hC7/8'hD8/8'hE9, all distinct from aw's
+    //       8'hA5 and fw's 8'hB6) whose address encodes that family's exact pull key.
+    //       Because the die's pulls are COMBINATIONAL but the xbar answers only after
+    //       ROW_LAT, the die is STALLED by clock-gating (die_clk = die_clk_awfw &
+    //       rw-enable & lw-enable & gn-enable, each enable negedge-latched => glitch
+    //       -free -- COMPOSES with the §9 aw and §9b fw stalls).  A synchronous die
+    //       tolerates the freeze bit-for-bit, so the committed token is identical to
+    //       the LOOPBACK_REST==0 run.  Proven: test/glm_q4k_loopback_rest_tb.v
+    //       (`make loopback-rest`).
+    parameter integer LOOPBACK_REST = 0,
     // ---- FAITHFUL EXPERT-MISS STALL (make the die pay the Flash memory wait) ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-stall module.  die_clk===clk;
     //       the compute die runs at full speed and a demand miss is only OBSERVED
@@ -600,6 +625,25 @@ module glm_q4k_system #(
     wire [DDR_ADDR_W-1:0]     lbfw_req_addr;
     wire                      lbfw_accept;
 
+    // ---- C8 loopback-REST nets (driven in the §9c generate; tied off at
+    //      LOOPBACK_REST=0 -- the same idiom as the aw/fw loopback nets above) ----
+    //   die_clk_awfw : the aw&fw-gated die clock (== the pre-rest die_clk).  The §9c
+    //                  block forms the FINAL die_clk = die_clk_awfw & rw&lw&gn-enable
+    //                  so all five stalls COMPOSE; at LOOPBACK_REST=0 die_clk ===
+    //                  die_clk_awfw.  (§9b now drives die_clk_awfw instead of die_clk.)
+    //   die_rw_q / die_lw_col / die_gn_val : the die's router-code / LM-head-column /
+    //                  gain-norm-value inputs -- == the stub rw_q / lw_col / gn_val
+    //                  when LOOPBACK_REST=0, or the xbar-returned lanes when =1.
+    //   lb{rw,lw,gn}_pending / _req_addr / _accept : the three loopback-REST sources
+    //                  into the §8 issuer.
+    wire                      die_clk_awfw;
+    wire [4*N_EXPERT-1:0]     die_rw_q;
+    wire [LM_TN*16-1:0]       die_lw_col;
+    wire [15:0]               die_gn_val;
+    wire                      lbrw_pending, lblw_pending, lbgn_pending;
+    wire [DDR_ADDR_W-1:0]     lbrw_req_addr, lblw_req_addr, lbgn_req_addr;
+    wire                      lbrw_accept, lblw_accept, lbgn_accept;
+
     // ---- RESIDENT=1 expert-refill nets (driven in the §10 generate; tied off
     //      when RESIDENT==0 -- the same idiom as the C8 loopback nets above) ----
     //   ef_pending / ef_id  : one banked DDR read request into the §8 issuer.
@@ -659,20 +703,20 @@ module glm_q4k_system #(
         .logits(logits), .argmax(mdl_argmax),
         .em_req(em_req), .em_tok(em_tok), .em_idx(em_idx), .em_val(em_val),
         .db_layer(db_layer), .idx_fresh(idx_fresh), .idx_win(idx_win),
-        .gn_req(gn_req), .gn_which(gn_which), .gn_idx(gn_idx), .gn_val(gn_val),
+        .gn_req(gn_req), .gn_which(gn_which), .gn_idx(gn_idx), .gn_val(die_gn_val),
         .aw_req(aw_req), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(aw_k),
         .aw_q(die_aw_q), .aw_d(aw_d), .aw_dmin(aw_dmin), .aw_scales(aw_scales),
         .kc_req(kc_req), .kc_idx(kc_idx), .kc_ckv(mdl_kc_ckv), .kc_krope(mdl_kc_krope),
         .kc_valid(mdl_kc_valid),
         .rw_req(rw_req), .rw_k(rw_k),
-        .rw_q(rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
+        .rw_q(die_rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
         .fw_q(die_fw_q), .fw_q_up(die_fw_q_up),
         .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
         .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
         .fn_req(fn_req), .fn_idx(fn_idx), .fn_val(fn_val),
-        .lw_req(lw_req), .lw_vtile(lw_vtile), .lw_k(lw_k), .lw_col(lw_col),
+        .lw_req(lw_req), .lw_vtile(lw_vtile), .lw_k(lw_k), .lw_col(die_lw_col),
         .h_state(h_state),
         .kv_lat_row(mdl_kv_lat_row), .kv_lat_valid(mdl_kv_lat_valid),
         .kv_lat_row_all(mdl_kv_lat_row_all), .kv_lat_valid_all(mdl_kv_lat_valid_all)
@@ -1169,6 +1213,9 @@ module glm_q4k_system #(
     localparam [DDR_TAG_W-1:0] TAG_LBAW = 8'h04;   // C8 loopback attention-weight read
     localparam [DDR_TAG_W-1:0] TAG_EFILL= 8'h05;   // RESIDENT=1 expert refill read
     localparam [DDR_TAG_W-1:0] TAG_LBFW = 8'h06;   // C8 loopback FFN-expert (fw) read
+    localparam [DDR_TAG_W-1:0] TAG_LBRW = 8'h08;   // C8 loopback MoE-router (rw) read
+    localparam [DDR_TAG_W-1:0] TAG_LBLW = 8'h09;   // C8 loopback LM-head (lw) read
+    localparam [DDR_TAG_W-1:0] TAG_LBGN = 8'h0A;   // C8 loopback gains/norms (gn) read
 
     wire hot_pull = em_req | gn_req | aw_req | rw_req | fw_req | fn_req | lw_req;
 
@@ -1186,13 +1233,21 @@ module glm_q4k_system #(
     // are temporally disjoint -- the die pulls aw in attention, fw in FFN); when
     // LOOPBACK_FW==0, lbfw_pending===0 so every `& ~lbfw_pending` folds to the
     // original and sel_lbfw folds to 0 (byte-identical to the pre-fw-loopback issuer).
+    // §9c rest-loopback reads (rw,lw,gn) sit just below the aw/fw loopbacks and above
+    // the refill/load/slot/hot sources -- all three freeze the die exactly like aw/fw.
+    // When LOOPBACK_REST==0, lb{rw,lw,gn}_pending===0 so every appended `& ~lbXX_pending`
+    // folds to the original term and sel_lb{rw,lw,gn} fold to 0 (byte-identical to the
+    // pre-rest issuer).
     wire sel_lb     = lb_pending;
     wire sel_lbfw   = lbfw_pending & ~lb_pending;
-    wire sel_ef     = ef_pending & ~lb_pending & ~lbfw_pending;
-    wire sel_load   = p_load & ~ef_pending & ~lb_pending & ~lbfw_pending;
-    wire sel_slot   = p_slot & ~p_load & ~ef_pending & ~lb_pending & ~lbfw_pending;
-    wire sel_hot    = p_hot  & ~p_load & ~p_slot & ~ef_pending & ~lb_pending & ~lbfw_pending;
-    wire any_pending = lb_pending | lbfw_pending | ef_pending | p_load | p_slot | p_hot;
+    wire sel_lbrw   = lbrw_pending & ~lb_pending & ~lbfw_pending;
+    wire sel_lblw   = lblw_pending & ~lb_pending & ~lbfw_pending & ~lbrw_pending;
+    wire sel_lbgn   = lbgn_pending & ~lb_pending & ~lbfw_pending & ~lbrw_pending & ~lblw_pending;
+    wire sel_ef     = ef_pending & ~lb_pending & ~lbfw_pending & ~lbrw_pending & ~lblw_pending & ~lbgn_pending;
+    wire sel_load   = p_load & ~ef_pending & ~lb_pending & ~lbfw_pending & ~lbrw_pending & ~lblw_pending & ~lbgn_pending;
+    wire sel_slot   = p_slot & ~p_load & ~ef_pending & ~lb_pending & ~lbfw_pending & ~lbrw_pending & ~lblw_pending & ~lbgn_pending;
+    wire sel_hot    = p_hot  & ~p_load & ~p_slot & ~ef_pending & ~lb_pending & ~lbfw_pending & ~lbrw_pending & ~lblw_pending & ~lbgn_pending;
+    wire any_pending = lb_pending | lbfw_pending | lbrw_pending | lblw_pending | lbgn_pending | ef_pending | p_load | p_slot | p_hot;
     /* verilator lint_off UNUSEDSIGNAL */
     wire _sel_hot_unused = sel_hot;
     /* verilator lint_on UNUSEDSIGNAL */
@@ -1207,6 +1262,15 @@ module glm_q4k_system #(
         end else if (sel_lbfw) begin
             xreq_tag  = TAG_LBFW;
             xreq_addr = lbfw_req_addr;
+        end else if (sel_lbrw) begin
+            xreq_tag  = TAG_LBRW;
+            xreq_addr = lbrw_req_addr;
+        end else if (sel_lblw) begin
+            xreq_tag  = TAG_LBLW;
+            xreq_addr = lblw_req_addr;
+        end else if (sel_lbgn) begin
+            xreq_tag  = TAG_LBGN;
+            xreq_addr = lbgn_req_addr;
         end else if (sel_ef) begin
             xreq_tag  = TAG_EFILL;
             xreq_addr = { {(DDR_ADDR_W-EIDXW-CH_IDX_W){1'b0}}, ef_id, bank_rot };
@@ -1227,6 +1291,9 @@ module glm_q4k_system #(
     wire xreq_fire  = xreq_valid & xreq_ready;
     assign lb_accept   = xreq_fire & sel_lb;   // §9 loopback read accepted by the xbar
     assign lbfw_accept = xreq_fire & sel_lbfw; // §9b fw-loopback read accepted by the xbar
+    assign lbrw_accept = xreq_fire & sel_lbrw; // §9c rw-loopback read accepted by the xbar
+    assign lblw_accept = xreq_fire & sel_lblw; // §9c lw-loopback read accepted by the xbar
+    assign lbgn_accept = xreq_fire & sel_lbgn; // §9c gn-loopback read accepted by the xbar
     assign ef_accept   = xreq_fire & sel_ef;   // §10 refill read accepted by the xbar
 
     // issuer state: clears come FIRST, sets AFTER -> a same-cycle new event keeps
@@ -1420,7 +1487,7 @@ module glm_q4k_system #(
     if (LOOPBACK_FW == 0) begin : g_lbfw
         assign die_fw_q      = fw_q;                 // stub GATE/DOWN codes, straight through
         assign die_fw_q_up   = fw_q_up;              // stub UP codes, straight through
-        assign die_clk       = die_clk_aw;           // no extra gate -> byte-identical alias
+        assign die_clk_awfw  = die_clk_aw;           // no extra gate -> byte-identical alias
         assign lbfw_pending  = 1'b0;
         assign lbfw_req_addr = {DDR_ADDR_W{1'b0}};
         /* verilator lint_off UNUSEDSIGNAL */
@@ -1463,7 +1530,7 @@ module glm_q4k_system #(
         reg die_en_fw_lat;
         initial die_en_fw_lat = 1'b1;
         always @(negedge clk) die_en_fw_lat <= die_ce_fw;
-        assign die_clk = die_clk_aw & die_en_fw_lat;
+        assign die_clk_awfw = die_clk_aw & die_en_fw_lat;
 
         assign die_fw_q      = lbfw_q_q;     // die reads the xbar-returned GATE/DOWN codes
         assign die_fw_q_up   = lbfw_qup_q;   // die reads the xbar-returned UP codes
@@ -1502,6 +1569,171 @@ module glm_q4k_system #(
         end
         /* verilator lint_off UNUSEDSIGNAL */
         wire _lbfw_on_unused = &{1'b0, xbar_resp_data[DDR_DATA_W-1:8*TN]};
+        /* verilator lint_on UNUSEDSIGNAL */
+    end
+    endgenerate
+
+    //========================================================================
+    // 9c) C8 LOOPBACK-REST -- feed ddr5_xbar's returned bytes into the die's THREE
+    //     remaining weight-input families: rw (MoE-router codes), lw (LM-head bf16
+    //     columns) and gn (a single bf16 gain/norm).  The same mirror as §9/§9b.
+    //     (LOOPBACK_REST==0 : this generate aliases die_clk = die_clk_awfw and ties
+    //      the three die inputs to the same-cycle stub, so the module is BYTE-
+    //      IDENTICAL to the pre-rest design -- die_clk_awfw is whatever §9b produced.)
+    //
+    //     Each die pull is COMBINATIONAL: rw drives {db_layer,rw_k} and expects the
+    //     N_EXPERT rw_q code lanes; lw drives {lw_vtile,lw_k} and expects the LM_TN
+    //     bf16 lw_col lanes; gn drives {db_layer,gn_which,gn_idx} and expects the one
+    //     16-bit gn_val -- all the SAME cycle.  The xbar answers only ROW_LAT cycles
+    //     later, so we STALL the die by gating its clock (die_clk = die_clk_awfw &
+    //     rw&lw&gn-enable, the AND negedge-latched => glitch-free -- COMPOSES with the
+    //     §9 aw and §9b fw stalls).  Per beat: freeze the die, issue ONE banked DDR5
+    //     read per family (TAG_LBRW/LBLW/LBGN; markers 8'hC7/8'hD8/8'hE9, distinct
+    //     from aw's 8'hA5 and fw's 8'hB6) whose address encodes that family's exact
+    //     pull key, capture the tagged response, present the returned bytes (low
+    //     4*N_EXPERT bits = rw_q; low LM_TN*16 bits = lw_col; low 16 bits = gn_val --
+    //     each fits one 256b beat), then release the die for exactly one edge.  A
+    //     synchronous die tolerates the freeze bit-for-bit, so the committed token is
+    //     identical to the LOOPBACK_REST==0 run.  Proven: test/glm_q4k_loopback_rest_tb.v.
+    //========================================================================
+    generate
+    if (LOOPBACK_REST == 0) begin : g_lbrest
+        assign die_rw_q      = rw_q;                 // stub router codes, straight through
+        assign die_lw_col    = lw_col;               // stub LM-head columns, straight through
+        assign die_gn_val    = gn_val;               // stub gain/norm value, straight through
+        assign die_clk       = die_clk_awfw;         // no extra gate -> byte-identical alias
+        assign lbrw_pending  = 1'b0;  assign lbrw_req_addr = {DDR_ADDR_W{1'b0}};
+        assign lblw_pending  = 1'b0;  assign lblw_req_addr = {DDR_ADDR_W{1'b0}};
+        assign lbgn_pending  = 1'b0;  assign lbgn_req_addr = {DDR_ADDR_W{1'b0}};
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire _lbrest_off_unused = &{1'b0, lbrw_accept, lblw_accept, lbgn_accept,
+                                    xbar_resp_tag, xbar_resp_data};
+        /* verilator lint_on UNUSEDSIGNAL */
+    end else begin : g_lbrest
+        // widest low slice any of the three families consumes (unused high-bit guard)
+        localparam integer LBREST_LOWMAX =
+            (LM_TN*16 > 4*N_EXPERT) ? ((LM_TN*16 > 16) ? LM_TN*16 : 16)
+                                    : ((4*N_EXPERT > 16) ? 4*N_EXPERT : 16);
+
+        // ---- encode each family's current pull key -> a banked-read address ----
+        reg [DDR_ADDR_W-1:0] cur_rw_addr, cur_lw_addr, cur_gn_addr;
+        always @* begin
+            cur_rw_addr             = {DDR_ADDR_W{1'b0}};
+            cur_rw_addr[0  +: R_KW] = rw_k;
+            cur_rw_addr[20 +: LAYW] = db_layer;
+            cur_rw_addr[24 +: 8]    = 8'hC7;         // TAG_LBRW address marker
+        end
+        always @* begin
+            cur_lw_addr             = {DDR_ADDR_W{1'b0}};
+            cur_lw_addr[0  +: DIMW] = lw_k;
+            cur_lw_addr[12 +: VTW]  = lw_vtile;
+            cur_lw_addr[24 +: 8]    = 8'hD8;         // TAG_LBLW address marker
+        end
+        always @* begin
+            cur_gn_addr             = {DDR_ADDR_W{1'b0}};
+            cur_gn_addr[0  +: DIMW] = gn_idx;
+            cur_gn_addr[16 +: 1]    = gn_which;
+            cur_gn_addr[20 +: LAYW] = db_layer;
+            cur_gn_addr[24 +: 8]    = 8'hE9;         // TAG_LBGN address marker
+        end
+
+        // ---- staging + fetch state (one per family) ----
+        reg  [4*N_EXPERT-1:0] lbrw_q_q;      reg lbrw_col_valid, lbrw_busy, lbrw_pend_r;
+        reg  [DDR_ADDR_W-1:0] lbrw_key_q, lbrw_addr_r;
+        reg  [LM_TN*16-1:0]   lblw_col_q;    reg lblw_col_valid, lblw_busy, lblw_pend_r;
+        reg  [DDR_ADDR_W-1:0] lblw_key_q, lblw_addr_r;
+        reg  [15:0]           lbgn_val_q;    reg lbgn_col_valid, lbgn_busy, lbgn_pend_r;
+        reg  [DDR_ADDR_W-1:0] lbgn_key_q, lbgn_addr_r;
+
+        // staged lanes are for the exact key each family wants right now?
+        wire lbrw_have = lbrw_col_valid && (lbrw_key_q == cur_rw_addr);
+        wire lblw_have = lblw_col_valid && (lblw_key_q == cur_lw_addr);
+        wire lbgn_have = lbgn_col_valid && (lbgn_key_q == cur_gn_addr);
+        // per-family enable: advance iff not mid-pull, or the beat is ready
+        wire die_ce_rw = ~rw_req | lbrw_have;
+        wire die_ce_lw = ~lw_req | lblw_have;
+        wire die_ce_gn = ~gn_req | lbgn_have;
+        // the die may advance only when ALL THREE are ready (they compose, and are
+        // temporally disjoint from each other and from aw/fw so this is exact)
+        wire die_ce_rest = die_ce_rw & die_ce_lw & die_ce_gn;
+        // need a fresh fetch: mid-pull, nothing staged for this key, none in flight
+        wire lbrw_want = rw_req & ~lbrw_have & ~lbrw_busy;
+        wire lblw_want = lw_req & ~lblw_have & ~lblw_busy;
+        wire lbgn_want = gn_req & ~lbgn_have & ~lbgn_busy;
+
+        // glitch-free clock gate: latch the combined enable on the LOW phase of clk,
+        // then AND into the aw&fw-gated clock so all five stalls compose.
+        reg die_en_rest_lat;
+        initial die_en_rest_lat = 1'b1;
+        always @(negedge clk) die_en_rest_lat <= die_ce_rest;
+        assign die_clk = die_clk_awfw & die_en_rest_lat;
+
+        assign die_rw_q     = lbrw_q_q;    // die reads the xbar-returned router codes
+        assign die_lw_col   = lblw_col_q;  // die reads the xbar-returned LM-head columns
+        assign die_gn_val   = lbgn_val_q;  // die reads the xbar-returned gain/norm value
+        assign lbrw_pending = lbrw_pend_r; assign lbrw_req_addr = lbrw_addr_r;
+        assign lblw_pending = lblw_pend_r; assign lblw_req_addr = lblw_addr_r;
+        assign lbgn_pending = lbgn_pend_r; assign lbgn_req_addr = lbgn_addr_r;
+
+        // ---- rw family FSM (mirror of §9b) ----
+        always @(posedge clk) begin
+            if (rst) begin
+                lbrw_q_q <= {4*N_EXPERT{1'b0}}; lbrw_col_valid <= 1'b0;
+                lbrw_key_q <= {DDR_ADDR_W{1'b0}}; lbrw_busy <= 1'b0;
+                lbrw_pend_r <= 1'b0; lbrw_addr_r <= {DDR_ADDR_W{1'b0}};
+            end else begin
+                if (die_ce_rest & rw_req) lbrw_col_valid <= 1'b0;
+                if (lbrw_want & ~lbrw_pend_r) begin
+                    lbrw_pend_r <= 1'b1; lbrw_addr_r <= cur_rw_addr;
+                    lbrw_key_q  <= cur_rw_addr; lbrw_busy <= 1'b1;
+                end
+                if (lbrw_accept) lbrw_pend_r <= 1'b0;
+                if (xbar_resp_valid & (xbar_resp_tag == TAG_LBRW)) begin
+                    lbrw_q_q       <= xbar_resp_data[0 +: 4*N_EXPERT]; // low 4*N_EXPERT = codes
+                    lbrw_col_valid <= 1'b1; lbrw_busy <= 1'b0;
+                end
+            end
+        end
+        // ---- lw family FSM ----
+        always @(posedge clk) begin
+            if (rst) begin
+                lblw_col_q <= {LM_TN*16{1'b0}}; lblw_col_valid <= 1'b0;
+                lblw_key_q <= {DDR_ADDR_W{1'b0}}; lblw_busy <= 1'b0;
+                lblw_pend_r <= 1'b0; lblw_addr_r <= {DDR_ADDR_W{1'b0}};
+            end else begin
+                if (die_ce_rest & lw_req) lblw_col_valid <= 1'b0;
+                if (lblw_want & ~lblw_pend_r) begin
+                    lblw_pend_r <= 1'b1; lblw_addr_r <= cur_lw_addr;
+                    lblw_key_q  <= cur_lw_addr; lblw_busy <= 1'b1;
+                end
+                if (lblw_accept) lblw_pend_r <= 1'b0;
+                if (xbar_resp_valid & (xbar_resp_tag == TAG_LBLW)) begin
+                    lblw_col_q     <= xbar_resp_data[0 +: LM_TN*16]; // low LM_TN*16 = bf16 cols
+                    lblw_col_valid <= 1'b1; lblw_busy <= 1'b0;
+                end
+            end
+        end
+        // ---- gn family FSM ----
+        always @(posedge clk) begin
+            if (rst) begin
+                lbgn_val_q <= 16'd0; lbgn_col_valid <= 1'b0;
+                lbgn_key_q <= {DDR_ADDR_W{1'b0}}; lbgn_busy <= 1'b0;
+                lbgn_pend_r <= 1'b0; lbgn_addr_r <= {DDR_ADDR_W{1'b0}};
+            end else begin
+                if (die_ce_rest & gn_req) lbgn_col_valid <= 1'b0;
+                if (lbgn_want & ~lbgn_pend_r) begin
+                    lbgn_pend_r <= 1'b1; lbgn_addr_r <= cur_gn_addr;
+                    lbgn_key_q  <= cur_gn_addr; lbgn_busy <= 1'b1;
+                end
+                if (lbgn_accept) lbgn_pend_r <= 1'b0;
+                if (xbar_resp_valid & (xbar_resp_tag == TAG_LBGN)) begin
+                    lbgn_val_q     <= xbar_resp_data[0 +: 16];       // low 16 = bf16 gain/norm
+                    lbgn_col_valid <= 1'b1; lbgn_busy <= 1'b0;
+                end
+            end
+        end
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire _lbrest_on_unused = &{1'b0, xbar_resp_data[DDR_DATA_W-1:LBREST_LOWMAX]};
         /* verilator lint_on UNUSEDSIGNAL */
     end
     endgenerate

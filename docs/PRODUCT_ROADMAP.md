@@ -212,10 +212,11 @@ thing the slice and the spec==greedy self-consistency cannot.
 - P2.2 Full CDC sign-off across USB / memory / compute clock domains; reset/init/boot-load hardening.
   *(Built: `reset_sync` wired at both host/core boundaries of `glm_q4k_system_cdc`; `make cdc` structural
   crossing check; the PHY-closure loopback feeds ddr5_xbar's returned weight bytes back into the die,
-  **proven bit-exact** for the two big families — attention (`make loopback`, `LOOPBACK=1`, 7168 round-trips)
-  and the bandwidth-dominant routed-expert `fw` codes (`make loopback-fw`, `LOOPBACK_FW=1`, 7680 round-trips;
-  both vs the standalone reference, both with a corruption-injection build that FAILS). Remains: the smaller
-  `rw`/`lw`/`gn` families (same mechanism) and the real vendor PHY IP.)*
+  **proven bit-exact** for **all five die weight-input families**: attention (`make loopback`), the
+  bandwidth-dominant routed-expert `fw` codes (`make loopback-fw`), and the `rw`/`lw`/`gn` families
+  (`make loopback-rest`, ALL 10 — committed bit-exact PLUS a direct per-beat byte binding that asserts the
+  die's presented input equals the expected byte every beat, needed because `rw`/`gn` are output-insensitive;
+  all with a corruption-injection build that FAILS). Remains: the real vendor PHY IP transport.)*
 - P2.3 Reliability (FPGA path): the built ECC (SECDED scrub) + KV-ring ECC + CDC/reset hardening carry
   over; MBIST maps to a BRAM self-test. ASIC-specific DFT (scan-chain insertion, boundary scan) is **not
   needed on the FPGA rungs (①②)** — the vendor JTAG/config handles device test — and is **deferred to the
