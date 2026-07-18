@@ -96,7 +96,7 @@ scale, robustly, and ship it.*
 | Batching/KV | per-row position/extent/sequence (`PER_ROW_POS/SLEN/SEQ`) threaded model→decoder→mla; `kv_cache_pager` `NSEQ` independent ring windows; multi-sequence batched attention (`PER_ROW_SEQ`) end-to-end through `glm_model_q4k`; batched multi-seq top `glm_q4k_soc_ms` with a top-owned per-layer KV store (`kv_mem`) + `N_STEPS` continuous-batching decode loop; expert-union-skip MoE batching **folded inline into `glm_decoder_block_q4k`** (standalone `batched_moe.v` removed); `spec_chain_top` MTP-chain draft — **validated as per-row / spec==greedy self-consistency (DUT-vs-DUT vs a standalone PE_M=1 `glm_model_q4k`), not a numeric golden**; byte-identical at `PER_ROW_SEQ=0`. **Scope of that "validated" (2026-07 correction): it covers the MODEL-level per-row path that gates exercise (`make mla-sparse`, `make batched-q4k`). The top `glm_q4k_soc_ms` itself is in NO gate and has NO testbench — repo-wide it is referenced only by docs — so its bit-exactness is the prior-FP8 result with the Q4_K re-run PENDING, exactly as `OPERATION_FLOW.md:331` / `SCALE_FUNCTIONAL.md:157` / `ULTRA_PERF.md:125` already state. This row previously read "all validated", which claimed more than the ledger proves. Also note no gate anywhere sets `PER_ROW_POS=1` at model level, and neither spec top enables it (`spec_batched_top.v` drives one shared scalar `.pos(cur_pos)`) — see that file's header.** | a resident dense DRAFT model (K_eff↑, needs a trained draft's weights); real-checkpoint validation on a GPU/large host |
 | Memory | DDR5/NVMe/USB-C **PHYs stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (7 controllers + 1 ECC-ring) + 5 lifted to unbounded k-induction (`make formal`/`formal-ind`); directed TBs at slice; verilator line/toggle/branch coverage (`make coverage`) | coverage *closure*, constrained-random regression, gate-level sim, production-width formal |
-| Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`) — but `mbist_ctrl`/`icg_cell` **not yet instantiated** in `glm_q4k_system*` | full ECC/recovery, CDC sign-off, reset/init hardening, DFT/scan closed |
+| Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`); the die already carries the inline `die_clk` ICG (`glm_q4k_system.v:1307-1311`); `mbist_ctrl` is the verified single-port March **reference** (per-macro BIST collars are the physical-flow insertion, [`P2_MEMORY_MAP.md`](P2_MEMORY_MAP.md) §4 — not a hand-wire-in-top task) | full ECC/recovery, CDC sign-off, reset/init hardening, dual-port BIST collars + DFT/scan closed |
 | Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 142,320 LUT (87.5%), ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over bit-exact repipeline rounds, **campaign CLOSED at 4.6×** — the worst path is now route-dominated (wide-bus wiring at 87% utilization), physical work not arithmetic (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | **bitstream** on a board — the Fmax campaign is closed at 46.5 MHz (in the bring-up demo's target band; 200 MHz-class is rung-②/③ work) (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
 | Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend is fp8-era — it still hardcodes the removed `glm_model_fp8` build and does not run on `main`; a `glm_model_q4k` port is pending) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
@@ -216,12 +216,21 @@ thing the slice and the spec==greedy self-consistency cannot.
 - P2.3 Reliability (FPGA path): the built ECC (SECDED scrub) + KV-ring ECC + CDC/reset hardening carry
   over; MBIST maps to a BRAM self-test. ASIC-specific DFT (scan-chain insertion, boundary scan) is **not
   needed on the FPGA rungs (①②)** — the vendor JTAG/config handles device test — and is **deferred to the
-  rung-③ ASIC endgame**, where it becomes required (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). *(Open:
-  `mbist_ctrl`/`icg_cell` are unit-verified but **not yet instantiated** in `glm_q4k_system*` — the MBIST
-  wrapper + top `scan_enable` stitch remain.)*
-- P2.4 Power: real ICG clock-gating cells, power domains, DVFS hooks, thermal budget. *(Built:
-  `clk_throttle` DVFS prescaler — unit + BMC verified; `clk_en_ctrl`/`icg_cell`/`clk_gate_cluster`
-  unit-verified. Remains: instantiate the ICG cluster in the system top.)*
+  rung-③ ASIC endgame**, where it becomes required (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)). *(Status
+  2026-07, corrected: `mbist_ctrl` is the unit-verified **single-port March C- reference algorithm**, not a
+  block to hand-instantiate in `glm_q4k_system*` — a verified sweep of the production memories found the two
+  arrays that actually hold model state (`kv_cache_pager.ring`, `mla_attn_q4k.vstore_mem`) are concurrent-R/W
+  2-port, which a single-port March engine cannot test as-is, so wiring one in would be theatre. The DFT
+  insertion **contract** — per-macro BIST collar matching each macro's ports — is documented in
+  [`P2_MEMORY_MAP.md`](P2_MEMORY_MAP.md) §4; the one real open item is the **dual-port BIST collar**, which
+  the memory compiler generates per macro in the physical flow. Top `scan_enable` stitch is still an ASIC-endgame step.)*
+- P2.4 Power: real ICG clock-gating cells, power domains, DVFS hooks, thermal budget. *(Status 2026-07,
+  corrected: the production top **already** gates the entire compute die with an inline glitch-free ICG —
+  `die_clk = clk & die_en_lat`, the `icg_cell` low-phase-latch pattern hand-coded at `glm_q4k_system.v:1307-1311`,
+  driving `u_model`; it freezes the die on weight-stream stall / expert miss (byte-identical when off). So the
+  biggest clock gate is instantiated; finer-grain ICGs are **synthesis-inferred** from enable-qualified register
+  banks (the correct flow), not hand-placed. `clk_throttle` DVFS prescaler unit + BMC verified; `icg_cell`/
+  `clk_en_ctrl`/`clk_gate_cluster` are the unit-verified reference/demonstrator blocks. See [`LOW_POWER.md`](LOW_POWER.md) §5.)*
 - P2.5 Verification closure: functional + code coverage targets, constrained-random regression, gate-level
   (post-synth) sim, production-width controller formal + k-induction for unboundedness.
 

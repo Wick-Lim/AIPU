@@ -56,8 +56,11 @@
 > **완료(코드 확인):** B1·B2·B3·B4·B6·B7·B8, C1·C2·C3·C4·C5·C9 (+ C8: LOOPBACK default-off & `make cdc`).
 > **부분/진행:** B5(구조·elaboration 계약 확립 — 중간크기 **기능** sim 미확인) · C6(`kv_ecc_ring`
 > lane-SECDED 유닛 + `kv_cache_pager_ecc_fv` formal 완료; DDR5/NVMe payload ECC·BMC 재파라미터 잔여) ·
-> C7(`clk_gate_cluster` ICG+clk_en 유닛검증 완료 — MBIST 래퍼 + system-top scan stitch 잔여,
-> `mbist_ctrl`/`icg_cell`은 아직 `glm_q4k_system*`에 **미인스턴스**) · C10(P2 클로저 잔여).
+> C7(**정정 2026-07**: ICG는 이미 탑에 realized — `die_clk = clk & die_en_lat`
+> (`glm_q4k_system.v:1307-1311`)가 `icg_cell` 글리치-프리 패턴 인라인으로 다이 전체를 게이트; 미세 ICG는
+> 합성 추론. `mbist_ctrl`은 검증된 단일포트 March **레퍼런스** — 실제 저장소 `ring`/`vstore_mem`이 2-port
+> async라 손배선은 theatre. 계약 [`docs/P2_MEMORY_MAP.md`](docs/P2_MEMORY_MAP.md) §4에 문서화; 잔여는
+> **2-port BIST collar**(메모리 컴파일러 생성) + top scan stitch) · C10(P2 클로저 잔여).
 
 ## ⚠️ 여전히 열린 갭 — **진짜 남은 것** (증거 원장 기준, 2026-07 재감사)
 
@@ -71,8 +74,10 @@
    dequant 계층은 실 GGUF 바이트로 봉인됐다(`docs/GGUF_CROSSCHECK.md` — Q4_K/Q6_K/Q8_0 전부,
    2026-07-11 Q8_0 확장 포함) — 남은 것은 **whole-runtime** 대조 자체다. llama.cpp 전체
    런타임(어텐션/누산 순서) 수치 동일성은 계약 밖으로 유지.
-2. **P2 클로저 잔여.** `mbist_ctrl`/`icg_cell`이 `glm_q4k_system*`에 **여전히 미인스턴스**; DDR5/NVMe
-   payload ECC + BMC 재파라미터; PHY-클로저 loopback(바이트를 실제 die로 되먹임). → **C6·C7·C10**.
+2. **P2 클로저 잔여.** (정정 2026-07) ICG는 이미 탑에 인라인(`die_clk`, `glm_q4k_system.v:1307-1311`);
+   `mbist_ctrl`은 검증된 단일포트 March 레퍼런스이고 실제 저장소가 2-port async라 탑 손배선은 theatre —
+   진짜 잔여는 **2-port BIST collar**(메모리 컴파일러 생성, 계약 `docs/P2_MEMORY_MAP.md` §4) + top scan
+   stitch; DDR5/NVMe payload ECC + BMC 재파라미터; PHY-클로저 loopback(바이트를 실제 die로 되먹임). → **C6·C7·C10**.
 3. **경제성/BOM/TCO·LOI는 미검증 계획 문서**다(`docs/BOM.md`, `docs/USBC_PRODUCT_PLAN.md`,
    `docs/ICP*.md`). **LOI는 존재하지 않는다** — ICP 킷의 "서명된 비구속 LOI 1건"은 목표이지 증거가
    아니다.
@@ -92,8 +97,9 @@
 2. **sparse-DSA 마스킹 버그** → **B1+B6로 폐쇄**: `mla_attn_q4k`가 선택 슬롯이 아니라 실제 키 인덱스로
    마스크; sparse per-row **union** 데이터패스 완결(dense TB 전부 byte-identical, line-81 caveat 제거).
 3. **P2 신뢰성 유닛 + weight_decomp 미인스턴스** → **부분 폐쇄**: `reset_sync` CDC top 배선(C3),
-   `weight_decomp` NVMe→loader refill 경로 배선(C9, `glm_q4k_system` `DECOMP=1` 빌드옵션). **잔여:**
-   `mbist_ctrl`/`icg_cell` system-top 미인스턴스(C7).
+   `weight_decomp` NVMe→loader refill 경로 배선(C9, `glm_q4k_system` `DECOMP=1` 빌드옵션). **잔여(정정
+   2026-07):** ICG는 이미 탑 인라인(`die_clk`); MBIST는 2-port BIST collar(메모리 컴파일러 생성)가
+   실질 잔여 — 단일포트 `mbist_ctrl` 손배선은 theatre(C7, 계약 `docs/P2_MEMORY_MAP.md` §4).
 4. **`weight_decomp`이 tok/s를 움직이는 유일한 die-side 레버인데 미배선** → **C9로 배선**(order-0, quant
    바이트를 불투명 심볼로 처리; 실 NVMe 바이트 1.34×→~1.42× 절감 **[EST]**, 토큰 출력 불변).
 5. **`spec_chain_top` 미완성** → **B8로 완전 승격**(pull 포트 승격, seed 규약 헤더 문서화,
@@ -131,7 +137,7 @@
 | **C4** (완료) | `ecc_mem_wrap` scrub-write-back + sticky `serr`/`derr` + ack | `ecc_mem_wrap_tb`: `bd_we` 주입 → read(serr=1, 정정) → 재read ⇒ serr=0(scrub) | M |
 | **C5** (완료) | `ddr5_xbar` 응답-FIFO no-overflow/underflow를 **unbounded k-induction**으로 승격 — `cnt[]` connect-bind, `test/formal/ddr5_xbar_ind_fv.v` | `make formal-ind` ddr5 통과(base+step, 비-vacuity 재보증); `docs/FORMAL.md` BOUNDED→UNBOUNDED | M |
 | **C6** (부분: `kv_ecc_ring`+`kv_cache_pager_ecc_fv` 완료·DDR5/NVMe payload ECC 잔여) | DDR5/NVMe payload(가중치 바이트) + `kv_cache_pager` ring에 ECC; 위젠 워드에 대해 committed BMC 증명 재파라미터/재검증 | fault-injection TB: single-bit 정정 / double-bit `derr`; 기존 유닛+formal green. ROW_BITS=768(/64 아님) lane 분할 주의 | L |
-| **C7** (부분: `clk_gate_cluster` 완료·MBIST+scan 잔여) | MBIST 래퍼 + `clk_en_ctrl`/`icg_cell`을 실 compute cluster에 + top `scan_enable`. **현재 `mbist_ctrl`/`icg_cell`은 `glm_q4k_system*`에 미인스턴스** | 주입 stuck-at에 `bist_fail=1`; `bist_mode=0`서 bit-identical; gated-clock TB가 free-running과 bit-identical·runt 없음 | L/XL |
+| **C7** (정정 2026-07: ICG 탑 인라인 완료·MBIST collar 잔여) | ICG는 이미 탑에 realized (`die_clk`, `glm_q4k_system.v:1307-1311`, 다이 전체 게이트); `mbist_ctrl`은 검증된 단일포트 March **레퍼런스**로 실제 저장소 `ring`/`vstore_mem`이 2-port async라 손배선 불가 → 잔여는 **2-port BIST collar**(메모리 컴파일러 생성) + top `scan_enable`. 계약 `docs/P2_MEMORY_MAP.md` §4 | 주입 stuck-at에 `bist_fail=1`; `bist_mode=0`서 bit-identical; gated-clock는 `die_clk` off서 bit-identical·runt 없음(`make cdc`) | L/XL |
 | **C8** (완료: LOOPBACK default-off + `make cdc`) | CDC 사인오프 — async crossing에 SDC + `make cdc` 구조 체커; "returned bytes not fed into die" loopback 폐쇄(default-off, 검증된 combinational 경로 불변) | `make cdc` unguarded crossing 0; loopback 모드가 combinational-stub와 동일 next token; `synth-glm check -assert` clean | M/XL |
 | **C9** (완료) | `weight_decomp`(order-0)를 `glm_q4k_system` NVMe→DDR5 refill 경로 배선(`DECOMP=1` 빌드옵션, quant 바이트를 불투명 심볼로) + raw-vs-decompressed byte-identical 증명 | **tok/s를 움직이는 유일한 die-side 레버**(실 NVMe 1.34×→~1.42× [EST]); 토큰 출력 불변, `make unittests` green | L |
 | **C10** (부분: `synth-glm`은 `make all` 편입·MBIST system TB 잔여) | P2 클로저 — `make all`에 ECC/MBIST/gated-clock system TB; PRODUCT_ROADMAP P2 항목을 증명 TB에 링크; unit-proven vs system-proven 문서화 | `make all`이 P2 system TB green; 각 `ALL N TESTS PASSED` | S |
@@ -174,7 +180,7 @@ WEEKS 3-5 — 중량급 (완료)
 
 WEEKS 4-8 — XL 구조 (완료)
   Track B:  B8 spec_chain → B6 sparse union(B2 게이트) → B7 SWIN 디커플
-  Track C:  C6 payload/KV ECC(부분) ; C7 MBIST+ICG+scan(부분) ; C10 P2 클로저(부분)
+  Track C:  C6 payload/KV ECC(부분) ; C7 ICG 탑 인라인 완료·MBIST collar+scan 잔여 ; C10 P2 클로저(부분)
 
 DONE (이후 커밋에서 완료)
   Track B:  B9 조립-Q4_K 수치 golden(GAP#1, make model-q4k 1155/1155) ;
@@ -184,7 +190,7 @@ DONE (이후 커밋에서 완료)
 
 NEXT (🔴 OPEN — 진짜 다음 단계)
   Track D:  D1 실체크포인트 whole-runtime 검증(GPU) — 전제 B9·B10은 닫힘
-  Track C:  C6/C7/C10 P2 클로저 잔여 (mbist/icg 미인스턴스 등)
+  Track C:  C6/C7/C10 P2 클로저 잔여 (ICG 탑 인라인 완료; MBIST 2-port collar = 메모리 컴파일러 생성)
 ```
 
 **게이트 관계:** B9(조립 golden)가 D1(실체크포인트)의 전제 · B10(혼합타입)도 D1 전제 · B2가 B6 게이트 ·
@@ -226,8 +232,9 @@ B6는 B7보다 먼저 · C1+C2가 C6/C7 게이트.
    레퍼런스는 추가 필요.
 5. **`spec_chain_top`은 B8로 완전 승격됨**(pull 포트 전부, seed 헤더, `test/spec_chain_top_tb.v`,
    `make spec-slow`). committed==greedy는 **DUT-vs-DUT 자기일관**(수치 golden 아님).
-6. **`reset_sync`는 CDC top 배선됨(C3), `weight_decomp`는 refill 경로 배선됨(C9, `DECOMP=1`).** 잔여
-   미인스턴스: `mbist_ctrl`/`icg_cell`(`glm_q4k_system*` 미배선 — C7).
+6. **`reset_sync`는 CDC top 배선됨(C3), `weight_decomp`는 refill 경로 배선됨(C9, `DECOMP=1`).** ICG는
+   이미 탑 인라인(`die_clk`, `glm_q4k_system.v:1307-1311`); `mbist_ctrl`은 단일포트 March 레퍼런스로
+   2-port 저장소엔 손배선 불가 → 잔여는 2-port BIST collar(메모리 컴파일러 생성, C7; 계약 `docs/P2_MEMORY_MAP.md` §4).
 7. **`ecc_mem_wrap`은 scrub-write-back + sticky serr/derr + ack**(C4로 read-후-재read serr=0).
 8. **풀config는 elaborate만.** `test/full_config_elab_wrap.v`(MODEL_DIM 6144/L 78/N_EXPERT 256/VOCAB
    154880/Q_LORA 2048/KV_LORA 512 [PENDING])는 **elaboration 스터디이지 시뮬레이션이 아니다**(no stimulus,

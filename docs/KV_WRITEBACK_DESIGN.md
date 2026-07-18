@@ -1,7 +1,14 @@
 # KV latent write-back → self-attending die (design, 2026-07)
 
-**Status: DESIGN + scoping. Multi-step RTL build, not a single-patch change. This file
-is the honest, reviewable foundation before any RTL is touched — no compromise.**
+**Status: BUILT + VERIFIED (2026-07). This file was the design foundation; all of it is
+now RTL. Steps 1–3 (expose latent → L=1 round-trip → layer keying) are built and
+bit-exact vs an independent (layer,pos) reference (`make self-kv-roundtrip` /
+`self-kv-l6-roundtrip`), byte-identical when off (`make self-kv-equiv`); Step 4 (prefill)
+resolved as already-covered; Step 5 (spec composition — the A_eff payoff) is complete in
+`glm_q4k_spec_system` (`make spec-greedy`, spec==greedy; A_eff hardware-measured — see
+[`SPEC_COMPOSITION_DESIGN.md`](SPEC_COMPOSITION_DESIGN.md) 5d). The text below is retained
+as the design record; the "the die has never consumed a KV latent it produced" premise it
+opens with is the problem this design SOLVED, not an open gap.**
 
 ## Why this is the tok/s critical path
 

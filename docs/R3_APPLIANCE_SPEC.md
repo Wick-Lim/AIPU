@@ -380,6 +380,9 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
   `glm_q4k_system`이 `PE_M`(+`SWIN`, `PER_ROW_POS/SLEN`)을 스레드하고 스펙체인을 품어야 하며,
   그건 **[설계필요]**다.
 
+  > **⚠️ SUPERSEDED (아래 "(완료 2026-07, Step 5 = spec composition)" 노트가 이 진행 노트를 대체함 —
+  > 이 노트의 "111은 여전히 미실현"은 Step 5 완료로 폐기됐다; 감사 이력으로만 보존).**
+  >
   > **(진행 2026-07, KV write-back)** 위 (c) *위치 정확 검증*의 근본 전제 — `spec_batched_top`이
   > *"the computed latent is write-only, so draft j cannot attend to draft j-1"*이라 밝힌 **다이 내부
   > KV write-back 경로** — 이 이제 **실제로 구축·검증됐다**(`docs/KV_WRITEBACK_DESIGN.md`, Steps 1–3):
@@ -388,8 +391,9 @@ FSM이 `T_ATTN` → `T_ESCAN` 순서이고, 어텐션 출력이 있어야 MoE가
   > 독립 참조 대비 **full-logit 비트정확**(`make self-kv-roundtrip`/`self-kv-l6-roundtrip`), `SELF_KV=0`은
   > byte-identical(`make self-kv-equiv`), 레이어 앨리어싱·append 손상 주입 모두 잡힘. 즉 스펙 검증을
   > *위치 정확*하게 만들 재료가 이제 있다. **남은 것은 (a)(b)(d)와 이 KV 경로를 한 탑에 합쳐
-  > draft-verify 루프를 품는 것**(Step 5) — 그때 A_eff=1.87이 실측 가능해진다. 아직 프로덕션 탑의
-  > 실측은 60 tok/s(K=0)이며, 111은 여전히 **미실현 설계점**이다(오버클레임 금지). *(관련: `SWIN` 기본식 `min(S_MAX,TOPK_ATTN)`의 안전성 논증은
+  > draft-verify 루프를 품는 것**(Step 5) — 그때 A_eff=1.87이 실측 가능해진다. ~~아직 프로덕션 탑의
+  > 실측은 60 tok/s(K=0)이며, 111은 여전히 **미실현 설계점**이다~~ **[이 문장은 폐기 — 아래 완료 노트 참조:
+  > Step 5가 `glm_q4k_spec_system`으로 완료됐고 A_eff는 하드웨어 `weight_loads` 카운터 실측이 됐다.]** *(관련: `SWIN` 기본식 `min(S_MAX,TOPK_ATTN)`의 안전성 논증은
   `mla_attn_q4k.v:113-118`이 밝히듯 **한 행이 최대 TOPK개를 고른다**는 것 — 즉 **PE_M=1 전용**이다.
   PE_M>1이면 행별 선택의 union이 최대 `PE_M*TOPK`라 기본식이 PE_M× 부족하고, 이를 증명 TB는
   알고 있어 `SWIN=PE_M*TOPK`를 명시한다(`test/mla_attn_q4k_sparse_perrow_tb.v:99`). 그런데
