@@ -187,9 +187,9 @@ so this is real warming-up UX, not a spinner flash. (Phase D2.)
   (`/v1/chat/completions`, streaming SSE), the exact RTL host protocol (`aipu_device.py`, mirrors
   `glm_q4k_system_cdc` + the boot-loader-done readiness gate), the **real GLM-5.2 BPE tokenizer** +
   a port of GLM's chat template, and host-side sampling — buildable/testable with **zero hardware**
-  against a mock backend (the Phase D2 first deliverable). *(Honest note: the simulator backend is **fp8-era** — it still
-  hardcodes the removed `glm_model_fp8` build (now only on branch `fp8`), so it does not run on
-  `main`; a `glm_model_q4k` port is pending.)*
+  against a mock backend (the Phase D2 first deliverable). *(The simulator backend targets the
+  on-`main` `glm_model_q4k` slice via `vvp` and returns real RTL argmax tokens — parse/protocol
+  path covered by `make host-test` (32 tests), the full `vvp` run validated separately.)*
 
 **Not done (the gaps to a product):**
 - **Real-model full-scale fidelity** (PRODUCT_ROADMAP P1 — *the* gate: the real ~467 GB Q4_K weights
