@@ -229,6 +229,12 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mbist_ctrl_sim test/mbist_ctrl_tb.v src/mbist_ctrl.v
 	@printf '[%s] ' "mbist_ctrl"; $(VVP) $(BUILD_DIR)/mbist_ctrl_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: mbist_ctrl"; exit 1; }
+	@# mbist_ctrl_2p: dual-port (1R1W) March C- + concurrent write/read coupling BIST -- the collar for the
+	@#   2-port resident stores (kv_cache_pager.ring / mla_attn_q4k.vstore_mem) the single-port engine cannot
+	@#   test. good->pass; stuck-at->fail kind=0; concurrent-coupling (invisible to march)->fail kind=1.
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mbist_ctrl_2p_sim test/mbist_ctrl_2p_tb.v src/mbist_ctrl_2p.v
+	@printf '[%s] ' "mbist_ctrl_2p"; $(VVP) $(BUILD_DIR)/mbist_ctrl_2p_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mbist_ctrl_2p"; exit 1; }
 	@# icg_cell: glitch-free integrated clock gate (low-phase enable latch + AND) -- turns clk_en into a real gated clock with no runt pulses.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/icg_cell_sim test/icg_cell_tb.v src/icg_cell.v
 	@printf '[%s] ' "icg_cell"; $(VVP) $(BUILD_DIR)/icg_cell_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
