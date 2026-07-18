@@ -239,6 +239,25 @@ module glm_q4k_system #(
     //       code lanes round-tripped through ddr5_xbar (7168 marked reads); a
     //       -DLBINJECT build that corrupts the fed-back lanes correctly FAILS.
     parameter integer LOOPBACK    = 0,
+    // ---- C8 loopback for the FFN routed-expert (fw) weight CODE family ----------
+    //   The exact mirror of LOOPBACK above, applied to the bandwidth-dominant `fw`
+    //   family (the routed experts, ~14 GB/token).  LOOPBACK loops only the die's
+    //   ATTENTION code lanes (aw_q); this loops only the die's FFN code lanes -- the
+    //   two buses fw_q (GATE/DOWN) and fw_q_up (UP).  The d/dmin/scales stay served
+    //   same-cycle by the stub, exactly as LOOPBACK keeps aw_d/aw_dmin/aw_scales.
+    //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-fw-loopback module.  die_fw_q =
+    //       fw_q and die_fw_q_up = fw_q_up straight from the same-cycle stub, and no
+    //       extra die_clk gate term (die_clk == die_clk_aw).
+    //   1 = ON: the die's fw_q / fw_q_up Q4_K code lanes are SOURCED from a banked
+    //       ddr5_xbar read (TAG_LBFW; addr marker 8'hB6, distinct from LOOPBACK's
+    //       8'hA5) whose address encodes the exact fw pull key {layer,eidx,sel,
+    //       shared,grp,k}.  Because the die's fw pull is COMBINATIONAL but the xbar
+    //       answers only after ROW_LAT, the die is STALLED by clock-gating (die_clk =
+    //       die_clk_aw & fw-enable) until the beat returns; then BOTH code buses
+    //       (packed low 4*TN = fw_q, next 4*TN = fw_q_up, one 256b beat) are presented
+    //       and the die advances one edge.  Composable with LOOPBACK (either/both/
+    //       neither on).  Proven: test/glm_q4k_loopback_fw_tb.v (`make loopback-fw`).
+    parameter integer LOOPBACK_FW = 0,
     // ---- FAITHFUL EXPERT-MISS STALL (make the die pay the Flash memory wait) ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-stall module.  die_clk===clk;
     //       the compute die runs at full speed and a demand miss is only OBSERVED
@@ -567,6 +586,20 @@ module glm_q4k_system #(
     wire [DDR_ADDR_W-1:0]     lb_req_addr;
     wire                      lb_accept;
 
+    // ---- C8 loopback-FW nets (driven in the §9b generate; tied off at LOOPBACK_FW=0)
+    //   die_clk_aw   : the aw-gated die clock (== today's die_clk).  The §9b block
+    //                  forms the FINAL die_clk = die_clk_aw & fw-enable so the aw and
+    //                  fw stalls COMPOSE; at LOOPBACK_FW=0 die_clk === die_clk_aw.
+    //   die_fw_q / die_fw_q_up : the die's FFN Q4_K CODE lanes -- == the stub fw_q /
+    //                  fw_q_up when LOOPBACK_FW=0, or the xbar-returned lanes when =1.
+    //   lbfw_pending / lbfw_req_addr / lbfw_accept : loopback-FW source into §8.
+    wire                      die_clk_aw;
+    wire [4*TN-1:0]           die_fw_q;
+    wire [4*TN-1:0]           die_fw_q_up;
+    wire                      lbfw_pending;
+    wire [DDR_ADDR_W-1:0]     lbfw_req_addr;
+    wire                      lbfw_accept;
+
     // ---- RESIDENT=1 expert-refill nets (driven in the §10 generate; tied off
     //      when RESIDENT==0 -- the same idiom as the C8 loopback nets above) ----
     //   ef_pending / ef_id  : one banked DDR read request into the §8 issuer.
@@ -635,7 +668,7 @@ module glm_q4k_system #(
         .rw_q(rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
-        .fw_q(fw_q), .fw_q_up(fw_q_up),
+        .fw_q(die_fw_q), .fw_q_up(die_fw_q_up),
         .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
         .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
         .fn_req(fn_req), .fn_idx(fn_idx), .fn_val(fn_val),
@@ -1135,6 +1168,7 @@ module glm_q4k_system #(
     localparam [DDR_TAG_W-1:0] TAG_LOAD = 8'h03;
     localparam [DDR_TAG_W-1:0] TAG_LBAW = 8'h04;   // C8 loopback attention-weight read
     localparam [DDR_TAG_W-1:0] TAG_EFILL= 8'h05;   // RESIDENT=1 expert refill read
+    localparam [DDR_TAG_W-1:0] TAG_LBFW = 8'h06;   // C8 loopback FFN-expert (fw) read
 
     wire hot_pull = em_req | gn_req | aw_req | rw_req | fw_req | fn_req | lw_req;
 
@@ -1148,12 +1182,17 @@ module glm_q4k_system #(
     // The §10 RESIDENT expert-refill read is next (the expert cache -- and with
     // EXPERT_STALL==1 the die itself -- is stalled on it); when RESIDENT==0,
     // ef_pending===0 so every term folds back to the original as well.
+    // §9b fw-loopback read sits just below the aw loopback (both freeze the die and
+    // are temporally disjoint -- the die pulls aw in attention, fw in FFN); when
+    // LOOPBACK_FW==0, lbfw_pending===0 so every `& ~lbfw_pending` folds to the
+    // original and sel_lbfw folds to 0 (byte-identical to the pre-fw-loopback issuer).
     wire sel_lb     = lb_pending;
-    wire sel_ef     = ef_pending & ~lb_pending;
-    wire sel_load   = p_load & ~ef_pending & ~lb_pending;
-    wire sel_slot   = p_slot & ~p_load & ~ef_pending & ~lb_pending;
-    wire sel_hot    = p_hot  & ~p_load & ~p_slot & ~ef_pending & ~lb_pending;
-    wire any_pending = lb_pending | ef_pending | p_load | p_slot | p_hot;
+    wire sel_lbfw   = lbfw_pending & ~lb_pending;
+    wire sel_ef     = ef_pending & ~lb_pending & ~lbfw_pending;
+    wire sel_load   = p_load & ~ef_pending & ~lb_pending & ~lbfw_pending;
+    wire sel_slot   = p_slot & ~p_load & ~ef_pending & ~lb_pending & ~lbfw_pending;
+    wire sel_hot    = p_hot  & ~p_load & ~p_slot & ~ef_pending & ~lb_pending & ~lbfw_pending;
+    wire any_pending = lb_pending | lbfw_pending | ef_pending | p_load | p_slot | p_hot;
     /* verilator lint_off UNUSEDSIGNAL */
     wire _sel_hot_unused = sel_hot;
     /* verilator lint_on UNUSEDSIGNAL */
@@ -1165,6 +1204,9 @@ module glm_q4k_system #(
         if (sel_lb) begin
             xreq_tag  = TAG_LBAW;
             xreq_addr = lb_req_addr;
+        end else if (sel_lbfw) begin
+            xreq_tag  = TAG_LBFW;
+            xreq_addr = lbfw_req_addr;
         end else if (sel_ef) begin
             xreq_tag  = TAG_EFILL;
             xreq_addr = { {(DDR_ADDR_W-EIDXW-CH_IDX_W){1'b0}}, ef_id, bank_rot };
@@ -1183,8 +1225,9 @@ module glm_q4k_system #(
     wire xreq_valid = any_pending;
     wire xreq_ready;
     wire xreq_fire  = xreq_valid & xreq_ready;
-    assign lb_accept = xreq_fire & sel_lb;   // §9 loopback read accepted by the xbar
-    assign ef_accept = xreq_fire & sel_ef;   // §10 refill read accepted by the xbar
+    assign lb_accept   = xreq_fire & sel_lb;   // §9 loopback read accepted by the xbar
+    assign lbfw_accept = xreq_fire & sel_lbfw; // §9b fw-loopback read accepted by the xbar
+    assign ef_accept   = xreq_fire & sel_ef;   // §10 refill read accepted by the xbar
 
     // issuer state: clears come FIRST, sets AFTER -> a same-cycle new event keeps
     // the source pending (never lost), bank_rot still advances on every accept.
@@ -1262,7 +1305,7 @@ module glm_q4k_system #(
         assign lb_req_addr = {DDR_ADDR_W{1'b0}};
         if (EXPERT_STALL == 0) begin : g_free
             // die runs at full clk -- BYTE-IDENTICAL to the pre-stall module.
-            assign die_clk = clk;
+            assign die_clk_aw = clk;
         end else begin : g_estall
             // FAITHFUL EXPERT-MISS STALL: freeze the die (glitch-free clock gate,
             // enable latched on the LOW phase of clk) for exactly the cycles the
@@ -1276,7 +1319,7 @@ module glm_q4k_system #(
             reg  die_en_lat;
             initial die_en_lat = 1'b1;
             always @(negedge clk) die_en_lat <= die_ce;
-            assign die_clk = clk & die_en_lat;
+            assign die_clk_aw = clk & die_en_lat;
         end
         /* verilator lint_off UNUSEDSIGNAL */
         wire _lb_off_unused = &{1'b0, lb_accept, xbar_resp_tag, xbar_resp_data};
@@ -1312,7 +1355,7 @@ module glm_q4k_system #(
         reg die_en_lat;
         initial die_en_lat = 1'b1;
         always @(negedge clk) die_en_lat <= die_ce;
-        assign die_clk = clk & die_en_lat;
+        assign die_clk_aw = clk & die_en_lat;
 
         assign die_aw_q    = lb_col_q;   // the die reads the xbar-returned Q4_K code lanes
         assign lb_pending  = lb_pend_r;
@@ -1348,6 +1391,117 @@ module glm_q4k_system #(
         end
         /* verilator lint_off UNUSEDSIGNAL */
         wire _lb_on_unused = &{1'b0, xbar_resp_data[DDR_DATA_W-1:PE_N*4]};
+        /* verilator lint_on UNUSEDSIGNAL */
+    end
+    endgenerate
+
+    //========================================================================
+    // 9b) C8 LOOPBACK-FW -- feed ddr5_xbar's returned bytes into the die's fw code
+    //     buses (fw_q GATE/DOWN + fw_q_up UP).  The EXACT mirror of §9, applied to
+    //     the FFN routed-expert (fw) family instead of attention (aw).
+    //     (LOOPBACK_FW==0 : this generate aliases die_clk = die_clk_aw and ties the
+    //      fw code buses to the same-cycle stub, so the module is BYTE-IDENTICAL to
+    //      the pre-fw-loopback design -- die_clk_aw is whatever §9 produced.)
+    //
+    //     The die's fw pull is COMBINATIONAL: it drives {db_layer,fw_eidx,fw_sel,
+    //     fw_shared,fw_grp,fw_k} and expects fw_q/fw_q_up the SAME cycle.  The xbar
+    //     answers only ROW_LAT cycles later, so we STALL the die by gating its clock
+    //     (die_clk = die_clk_aw & fw-enable, enable latched on the LOW phase => glitch
+    //     -free -- COMPOSES with the §9 aw stall: die freezes while EITHER an aw beat
+    //     OR an fw beat is outstanding).  Per fw beat: freeze the die, issue ONE
+    //     banked DDR5 read (TAG_LBFW) whose address encodes the exact fw key (marker
+    //     8'hB6), capture the tagged response, present its low 4*TN bits on die_fw_q
+    //     and next 4*TN bits on die_fw_q_up (both code buses fit one 256b beat --
+    //     8*TN = 32 bits <= DDR_DATA_W), then release the die for exactly one edge.
+    //     A synchronous die tolerates the freeze bit-for-bit, so the committed token
+    //     is identical to the LOOPBACK_FW==0 run.  Proven: test/glm_q4k_loopback_fw_tb.v.
+    //========================================================================
+    generate
+    if (LOOPBACK_FW == 0) begin : g_lbfw
+        assign die_fw_q      = fw_q;                 // stub GATE/DOWN codes, straight through
+        assign die_fw_q_up   = fw_q_up;              // stub UP codes, straight through
+        assign die_clk       = die_clk_aw;           // no extra gate -> byte-identical alias
+        assign lbfw_pending  = 1'b0;
+        assign lbfw_req_addr = {DDR_ADDR_W{1'b0}};
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire _lbfw_off_unused = &{1'b0, lbfw_accept, xbar_resp_tag, xbar_resp_data};
+        /* verilator lint_on UNUSEDSIGNAL */
+    end else begin : g_lbfw
+        // ---- encode the die's current fw pull key -> a banked-read address ----
+        //   marker 8'hB6 (distinct from §9's 8'hA5 and TAG_LOAD/SLOT/HOT/EFILL, which
+        //   all leave addr[31:24]=0) so the responder decode is unambiguous.
+        reg [DDR_ADDR_W-1:0] cur_fw_addr;
+        always @* begin
+            cur_fw_addr                = {DDR_ADDR_W{1'b0}};
+            cur_fw_addr[0  +: 2]       = fw_sel;
+            cur_fw_addr[2  +: FF_KWD]  = fw_k;
+            cur_fw_addr[10 +: FF_GWD]  = fw_grp;
+            cur_fw_addr[16 +: 1]       = fw_shared;
+            cur_fw_addr[17 +: EIDXW]   = fw_eidx;
+            cur_fw_addr[20 +: LAYW]    = db_layer;
+            cur_fw_addr[24 +: 8]       = 8'hB6;       // TAG_LBFW address marker
+        end
+
+        // ---- staging + fetch state (two code buses staged from ONE beat) ----
+        reg  [4*TN-1:0]       lbfw_q_q;      // xbar-returned GATE/DOWN Q4_K codes (staged)
+        reg  [4*TN-1:0]       lbfw_qup_q;    // xbar-returned UP Q4_K codes (staged)
+        reg                   lbfw_col_valid;// staged lanes valid for lbfw_key_q
+        reg  [DDR_ADDR_W-1:0] lbfw_key_q;    // key the staged lanes belong to
+        reg                   lbfw_busy;     // a loopback-fw read is in flight
+        reg                   lbfw_pend_r;   // request asserted into the §8 issuer
+        reg  [DDR_ADDR_W-1:0] lbfw_addr_r;   // encoded request address
+
+        // staged lanes are for the exact key the die wants right now?
+        wire lbfw_have = lbfw_col_valid && (lbfw_key_q == cur_fw_addr);
+        // die may advance iff it is not mid-fw-pull, or the beat is ready
+        wire die_ce_fw = ~fw_req | lbfw_have;
+        // need a fresh fetch: mid-fw-pull, nothing staged for this key, none in flight
+        wire lbfw_want = fw_req & ~lbfw_have & ~lbfw_busy;
+
+        // glitch-free clock gate: latch the enable on the LOW phase of clk, then AND
+        // into the aw-gated clock so the aw and fw stalls compose (freeze on EITHER).
+        reg die_en_fw_lat;
+        initial die_en_fw_lat = 1'b1;
+        always @(negedge clk) die_en_fw_lat <= die_ce_fw;
+        assign die_clk = die_clk_aw & die_en_fw_lat;
+
+        assign die_fw_q      = lbfw_q_q;     // die reads the xbar-returned GATE/DOWN codes
+        assign die_fw_q_up   = lbfw_qup_q;   // die reads the xbar-returned UP codes
+        assign lbfw_pending  = lbfw_pend_r;
+        assign lbfw_req_addr = lbfw_addr_r;
+
+        always @(posedge clk) begin
+            if (rst) begin
+                lbfw_q_q       <= {4*TN{1'b0}};
+                lbfw_qup_q     <= {4*TN{1'b0}};
+                lbfw_col_valid <= 1'b0;
+                lbfw_key_q     <= {DDR_ADDR_W{1'b0}};
+                lbfw_busy      <= 1'b0;
+                lbfw_pend_r    <= 1'b0;
+                lbfw_addr_r    <= {DDR_ADDR_W{1'b0}};
+            end else begin
+                // (1) the die consumed the staged lanes this edge -> retire them
+                if (die_ce_fw & fw_req) lbfw_col_valid <= 1'b0;
+                // (2) launch a new banked read for the current key
+                if (lbfw_want & ~lbfw_pend_r) begin
+                    lbfw_pend_r <= 1'b1;
+                    lbfw_addr_r <= cur_fw_addr;
+                    lbfw_key_q  <= cur_fw_addr;
+                    lbfw_busy   <= 1'b1;
+                end
+                // (3) the issuer accepted our request -> drop the request line
+                if (lbfw_accept) lbfw_pend_r <= 1'b0;
+                // (4) the tagged response returned -> stage BOTH code buses
+                if (xbar_resp_valid & (xbar_resp_tag == TAG_LBFW)) begin
+                    lbfw_q_q       <= xbar_resp_data[0      +: 4*TN]; // low 4*TN = GATE/DOWN
+                    lbfw_qup_q     <= xbar_resp_data[4*TN   +: 4*TN]; // next 4*TN = UP
+                    lbfw_col_valid <= 1'b1;
+                    lbfw_busy      <= 1'b0;
+                end
+            end
+        end
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire _lbfw_on_unused = &{1'b0, xbar_resp_data[DDR_DATA_W-1:8*TN]};
         /* verilator lint_on UNUSEDSIGNAL */
     end
     endgenerate
