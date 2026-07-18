@@ -1,3 +1,8 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AIPU — GLM-5.2 Q4_K local-inference accelerator</title>
 <style>
   :root {
@@ -74,7 +79,12 @@
   }
   .brand b { color:var(--accent); font-weight:700; }
   .brand-def { color:var(--ink-dim); font-family:var(--mono); font-size:.8rem; }
-  .repo { margin-left:auto; font-family:var(--mono); font-size:.78rem; }
+  .nav { margin-left:auto; display:flex; gap:20px; font-family:var(--mono); font-size:.82rem; }
+  .nav a { color:var(--ink-dim); padding:2px 0; border-bottom:2px solid transparent; }
+  .nav a:hover { color:var(--ink); text-decoration:none; }
+  .nav a.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .repo { font-family:var(--mono); font-size:.78rem; }
+  @media (max-width:640px){ .mast-row { flex-wrap:wrap; } .nav { margin-left:0; order:3; width:100%; } .repo { margin-left:auto; } }
 
   /* ---- hero ---- */
   .hero { padding:34px 0 40px; position:relative; }
@@ -163,13 +173,20 @@
   footer b { color:var(--ink-2); }
   .k { font-family:var(--mono); color:var(--ink-2); }
 </style>
+</head>
+<body>
 
 <header class="mast">
   <div class="wrap">
     <div class="mast-row">
       <span class="brand"><b>AI</b>PU</span>
       <span class="brand-def">GLM-5.2 · Q4_K · Verilog</span>
-      <a class="repo" href="https://github.com/Wick-Lim/AIPU">github.com/Wick-Lim/AIPU ↗</a>
+      <nav class="nav">
+        <a href="index.html" class="active">Overview</a>
+        <a href="board.html">Board</a>
+        <a href="roadmap.html">Roadmap</a>
+      </nav>
+      <a class="repo" href="https://github.com/Wick-Lim/AIPU">GitHub ↗</a>
     </div>
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
       <div class="eyebrow kicker">Synthesizable inference accelerator</div>
@@ -284,3 +301,5 @@
     <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/AIPU">github.com/Wick-Lim/AIPU</a> &nbsp;·&nbsp; a GLM-5.2 Q4_K local-inference accelerator in Verilog</p>
   </div>
 </footer>
+</body>
+</html>
