@@ -250,8 +250,9 @@ the two access patterns cleanly:
     `flash_xbar`'s deep-queue latency-hiding already does this), and **write endurance is a non-issue**
     (weights are written once at provisioning, then read-only).
 - **KV cache → HBM.** The MLA latent KV is **87.8 KB/token** (`(kv_lora 512 + rope 64) × 2 B × 78
-  layers`), accumulating with context: **~90 GB at the full 1M context** — so a **~128 GB HBM is
-  sufficient** (≈38 GB headroom, or less if context is capped), against **467 GB of weights in HBF**.
+  layers`), accumulating with context: **~90 GB at the full 1M context** — so a **96 GB HBM is
+  sufficient** (~6 GB headroom — a tight fit for full 1M context; less capacity if context is capped),
+  against **467 GB of weights in HBF**.
   KV is small relative to the weight stream but **random-access and latency-sensitive** — the one pattern
   flash latency cannot serve, so it lives in low-latency HBM. Moving KV to HBM is about latency/capacity,
   not raw tok/s; the tok/s win comes from the **weight-stream BW (HBF)**.
@@ -259,7 +260,7 @@ the two access patterns cleanly:
 **Two independent stores, both feeding the die directly** — HBF streams weights straight to the compute
 die (no staging copy through HBM), and HBM holds only the KV. There is no HBF→HBM path; the asymmetry is
 the point. Concretely: a **512 GB HBF** (467 GB weights + ~45 GB / ~10 % headroom — a tight exact fit;
-~1 TB for larger / future models) at **~1.6 TB/s**, + a **~128 GB HBM** (90 GB max-context KV + headroom) —
+~1 TB for larger / future models) at **~1.6 TB/s**, + a **96 GB HBM** (90 GB max-context KV + ~6 GB) —
 a large cheap non-volatile weight store and a modest low-latency KV store, sized to their very different jobs.
 
 **Speed `[EST]`:** at the announced HBF **~1.6 TB/s** → **~115 tok/s peak, ~100 sustained** (BW ÷ 13.87,
