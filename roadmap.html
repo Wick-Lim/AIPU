@@ -317,7 +317,7 @@
     <p class="sec-sub">A forward-looking architecture note <span class="k">[EST]</span>, not designed or verified — contingent on emerging memory technology. It maps cleanly onto what the RTL already is: a weight-streaming, bandwidth-bound machine (<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). Source: <a href="https://github.com/Wick-Lim/AIPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
     <div class="flow">
       today &nbsp; <span class="arrow">NVMe (persist)</span> + <span class="arrow">DDR/LPDDR (stream BW)</span> → die &nbsp;·&nbsp; KV in DRAM<br>
-      rung ④ &nbsp; <b>weights → 512GB HBF @ 1.6 TB/s</b> <span class="arrow">(non-volatile)</span> → die &nbsp;·&nbsp; die → <b>KV → 96GB HBM</b> &nbsp; <span class="arrow">(no HBF→HBM path)</span>
+      rung ④ &nbsp; <b>512GB HBF</b> <span class="arrow">(weights already resident · non-volatile)</span> <b>&nbsp;—1.6 TB/s→&nbsp;</b> die &nbsp;·&nbsp; die <span class="arrow">&#8644;</span> <b>KV in 96GB HBM</b> &nbsp; <span class="arrow">(no load / no HBF→HBM path)</span>
     </div>
     <div class="roof">
       <div class="card">
