@@ -258,14 +258,15 @@ the two access patterns cleanly:
 
 **Two independent stores, both feeding the die directly** — HBF streams weights straight to the compute
 die (no staging copy through HBM), and HBM holds only the KV. There is no HBF→HBM path; the asymmetry is
-the point. Concretely: a **~1 TB HBF** (467 GB weights + ~2× headroom) + a **~128 GB HBM** (90 GB max-context
-KV + headroom) — a large cheap non-volatile weight store and a modest low-latency KV store, sized to their
-very different jobs.
+the point. Concretely: a **512 GB HBF** (467 GB weights + ~45 GB / ~10 % headroom — a tight exact fit;
+~1 TB for larger / future models) at **~1.6 TB/s**, + a **~128 GB HBM** (90 GB max-context KV + headroom) —
+a large cheap non-volatile weight store and a modest low-latency KV store, sized to their very different jobs.
 
-**Speed `[EST]`:** at HBF ~2 TB/s → **~120–145 tok/s** (BW ÷ 13.87), above the rung-③ 1.1 TB/s LPDDR5X
-point (≈80). Capped by the same **sublinear lane scaling** (4× lanes → ~2.40×) — the die must be
-provisioned to consume the higher BW or compute becomes the bottleneck — and it is **higher power**
-(HBF + HBM both run hotter than LPDDR5X, so this pulls *against* the fanless / low-power direction).
+**Speed `[EST]`:** at the announced HBF **~1.6 TB/s** → **~115 tok/s peak, ~100 sustained** (BW ÷ 13.87,
+sustained ≈85% of peak) — call it **~100–115 tok/s**, ~1.4× the rung-③ 1.1 TB/s LPDDR5X point (≈80).
+Capped by the same **sublinear lane scaling** (4× lanes → ~2.40×) — the die must be provisioned to consume
+the BW or compute becomes the bottleneck — and it is **higher power** (HBF + HBM both run hotter than
+LPDDR5X, so this pulls *against* the fanless / low-power direction).
 
 **RTL fit.** `flash_xbar` is a **medium-agnostic** address→weight-bytes crossbar ("the NAND-specific
 backend is the swapped part, not the abstraction"), so fronting HBF is a backend swap, and
