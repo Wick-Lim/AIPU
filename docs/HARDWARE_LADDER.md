@@ -263,14 +263,14 @@ the point. Concretely: a **512 GB HBF** (467 GB weights + ~45 GB / ~10 % headroo
 ~1 TB for larger / future models) at **~1.6 TB/s**, + a **96 GB HBM** (90 GB max-context KV + ~6 GB) —
 a large cheap non-volatile weight store and a modest low-latency KV store, sized to their very different jobs.
 
-**Speed `[EST]`:** the announced **~1.6 TB/s is per-stack**; at ONE stack → **~115 tok/s peak, ~100
-sustained** (BW ÷ 13.87, sustained ≈85%), ~1.4× the rung-③ LPDDR5X point (≈80). **HBF is stacked like
-HBM, so bandwidth multiplies with stack count** — a single 512 GB stack already holds the model, so extra
-stacks buy pure bandwidth. For the appliance class we quote the ceiling conservatively as **~200+ tok/s
-`[EST]` at 2 stacks (3.2 TB/s)**: beyond that the binding constraint is no longer memory but the die
-(consuming 1.54 TB/s already needs ~12.7K MAC lanes @490 MHz; 3.2 TB/s needs ~26K) and power (the memory
-rail alone scales past 100 W), and measured lane scaling is **sublinear** (4× lanes → ~2.40×). Higher
-stack counts are arithmetically possible but push into chiplet/kW territory — a different product
+**Speed `[EST]`:** the announced **~1.6 TB/s is per-stack**, and HBF is stacked like HBM, so the rung-④
+design point assumes **multi-stack by default: 2 stacks (3.2 TB/s aggregate; a single 512 GB stack
+already holds the model, so the second stack buys pure bandwidth) → ~200+ tok/s `[EST]`**. A 1-stack
+entry configuration lands at ~100--115 `[EST]`. The engineering cost that comes WITH the default: the
+binding constraint is no longer memory but the die (consuming 1.54 TB/s already needs ~12.7K MAC lanes
+@490 MHz; 3.2 TB/s needs ~26K) and power (the memory rail alone passes 100 W), and measured lane scaling
+is **sublinear** (4× lanes → ~2.40×), so the 2-stack point requires roughly doubling the compute silicon.
+Higher stack counts are arithmetically possible but push into chiplet/kW territory — a different product
 bracket — so they are deliberately not quoted as this design's numbers.
 
 **RTL fit.** `flash_xbar` is a **medium-agnostic** address→weight-bytes crossbar ("the NAND-specific
