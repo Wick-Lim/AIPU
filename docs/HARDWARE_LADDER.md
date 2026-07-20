@@ -263,11 +263,14 @@ the point. Concretely: a **512 GB HBF** (467 GB weights + ~45 GB / ~10 % headroo
 ~1 TB for larger / future models) at **~1.6 TB/s**, + a **96 GB HBM** (90 GB max-context KV + ~6 GB) —
 a large cheap non-volatile weight store and a modest low-latency KV store, sized to their very different jobs.
 
-**Speed `[EST]`:** at the announced HBF **~1.6 TB/s** → **~115 tok/s peak, ~100 sustained** (BW ÷ 13.87,
-sustained ≈85% of peak) — call it **~100–115 tok/s**, ~1.4× the rung-③ 1.1 TB/s LPDDR5X point (≈80).
-Capped by the same **sublinear lane scaling** (4× lanes → ~2.40×) — the die must be provisioned to consume
-the BW or compute becomes the bottleneck — and it is **higher power** (HBF + HBM both run hotter than
-LPDDR5X, so this pulls *against* the fanless / low-power direction).
+**Speed `[EST]`:** the announced **~1.6 TB/s is per-stack**; at ONE stack → **~115 tok/s peak, ~100
+sustained** (BW ÷ 13.87, sustained ≈85%), ~1.4× the rung-③ LPDDR5X point (≈80). **HBF is stacked like
+HBM, so bandwidth multiplies with stack count**: 2 stacks (3.2 TB/s) → ~195–230 `[EST]`, 4 stacks
+(6.4 TB/s) → ~390–460 `[EST]` — a single 512 GB stack already holds the model, so extra stacks buy pure
+bandwidth. **The binding constraint then shifts from memory to the die**: consuming 1.54 TB/s already
+needs ~12.7K MAC lanes @490 MHz, so 3.2 TB/s needs ~26K and 6.4 TB/s ~53K — 2–4× the compute silicon,
+power, and heat — and measured lane scaling is **sublinear** (4× lanes → ~2.40×), so the multi-stack
+numbers require aggressive lane overprovisioning and are the most speculative figures in this note.
 
 **RTL fit.** `flash_xbar` is a **medium-agnostic** address→weight-bytes crossbar ("the NAND-specific
 backend is the swapped part, not the abstraction"), so fronting HBF is a backend swap, and
