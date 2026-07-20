@@ -10,6 +10,12 @@
 > (contact: <wicklim90@gmail.com>). Every proven/measured claim in the paper is
 > reproducible from this repository's `make` gates.
 
+**🌐 Project site:** [**Overview**](https://wick-lim.github.io/AIPU/) (status ledger + product
+concept) · [**Board**](https://wick-lim.github.io/AIPU/board.html) (measured FPGA fit + the
+rung-③ 512 GB LPDDR5X design point, with the concept floorplan) ·
+[**Roadmap**](https://wick-lim.github.io/AIPU/roadmap.html) (the 3-rung hardware ladder + the
+future HBF/HBM tier) — all figures info-only, every projection tagged `[EST]`.
+
 A synthesizable Verilog accelerator that runs one real model on a local, offline box: the
 published GGUF k-quant of GLM-5.2,
 [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF) — a 753B-param
@@ -195,6 +201,10 @@ model adds the memory/streaming system + array scaling.
 
 ## Documents
 
+- **[Project site](https://wick-lim.github.io/AIPU/)** — the one-page status
+  [Overview](https://wick-lim.github.io/AIPU/), the
+  [Board](https://wick-lim.github.io/AIPU/board.html) design point, and the
+  [Roadmap](https://wick-lim.github.io/AIPU/roadmap.html) ladder.
 - **[`docs/Q4K_RETARGET.md`](docs/Q4K_RETARGET.md)** — the Q4_K dequant math, GEMM contract, per-type status.
   Start here for "what is Q4_K-exact and what isn't."
 - **[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)** — the 3-rung hardware plan. Start here for "how
