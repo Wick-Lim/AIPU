@@ -265,12 +265,13 @@ a large cheap non-volatile weight store and a modest low-latency KV store, sized
 
 **Speed `[EST]`:** the announced **~1.6 TB/s is per-stack**; at ONE stack → **~115 tok/s peak, ~100
 sustained** (BW ÷ 13.87, sustained ≈85%), ~1.4× the rung-③ LPDDR5X point (≈80). **HBF is stacked like
-HBM, so bandwidth multiplies with stack count**: 2 stacks (3.2 TB/s) → ~195–230 `[EST]`, 4 stacks
-(6.4 TB/s) → ~390–460 `[EST]` — a single 512 GB stack already holds the model, so extra stacks buy pure
-bandwidth. **The binding constraint then shifts from memory to the die**: consuming 1.54 TB/s already
-needs ~12.7K MAC lanes @490 MHz, so 3.2 TB/s needs ~26K and 6.4 TB/s ~53K — 2–4× the compute silicon,
-power, and heat — and measured lane scaling is **sublinear** (4× lanes → ~2.40×), so the multi-stack
-numbers require aggressive lane overprovisioning and are the most speculative figures in this note.
+HBM, so bandwidth multiplies with stack count** — a single 512 GB stack already holds the model, so extra
+stacks buy pure bandwidth. For the appliance class we quote the ceiling conservatively as **~200+ tok/s
+`[EST]` at 2 stacks (3.2 TB/s)**: beyond that the binding constraint is no longer memory but the die
+(consuming 1.54 TB/s already needs ~12.7K MAC lanes @490 MHz; 3.2 TB/s needs ~26K) and power (the memory
+rail alone scales past 100 W), and measured lane scaling is **sublinear** (4× lanes → ~2.40×). Higher
+stack counts are arithmetically possible but push into chiplet/kW territory — a different product
+bracket — so they are deliberately not quoted as this design's numbers.
 
 **RTL fit.** `flash_xbar` is a **medium-agnostic** address→weight-bytes crossbar ("the NAND-specific
 backend is the swapped part, not the abstraction"), so fronting HBF is a backend swap, and
