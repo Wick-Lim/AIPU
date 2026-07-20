@@ -1,5 +1,15 @@
 # AIPU — a GLM-5.2 Q4_K local-inference accelerator in Verilog
 
+> **🙏 Looking for an arXiv endorsement (cs.AR).** The preprint of this work —
+> *Bit-Exact by Construction: A Verification-First RTL Accelerator that Inherits the
+> GGUF k-Quant Checkpoint Ecosystem* ([`paper/aipu.tex`](paper/aipu.tex),
+> [compiled PDF](paper/aipu.pdf)) — needs a first-time-author endorsement for arXiv
+> **cs.AR**. If you are qualified to endorse in cs.AR and, after looking at the paper
+> and this repository's verification ledger, consider the work credible, you can
+> endorse here: **<https://arxiv.org/auth/endorse?x=7L4XXQ>**
+> (contact: <wicklim90@gmail.com>). Every proven/measured claim in the paper is
+> reproducible from this repository's `make` gates.
+
 A synthesizable Verilog accelerator that runs one real model on a local, offline box: the
 published GGUF k-quant of GLM-5.2,
 [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF) — a 753B-param
