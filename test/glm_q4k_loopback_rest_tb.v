@@ -636,7 +636,17 @@ module glm_q4k_loopback_rest_tb;
         kk  = ad[0  +: R_KW];
         ly  = ad[20 +: LAYW];
         for (ln=0; ln<N_EXPERT; ln=ln+1)
+`ifdef LBRESTINJECT_RW
+            // INJECTION (injection-ONLY): corrupt the fed-back rw router-code lane 0 on
+            // every loopback beat.  rw is OUTPUT-INSENSITIVE (a one-code router step is
+            // absorbed by top-k selection), so the committed-token binding alone would
+            // MISS this -- the DIRECT per-beat die_rw_q byte binding must catch it and
+            // fail the gate.  This is the load-bearing demonstration that direct bindings
+            // are required for output-insensitive weight families.
+            b[4*ln +: 4] = f_rwq(ly, ln, kk) ^ (ln == 0 ? 4'h1 : 4'h0);
+`else
             b[4*ln +: 4] = f_rwq(ly, ln, kk);
+`endif
         gen_lbrw_beat = b;
         end
     endfunction

@@ -1234,6 +1234,15 @@ spec-greedy:
 	    if $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_inject 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
 	        echo "FAILED: RAW_DRAFT injection NOT caught (loop committed raw drafts and still matched greedy)"; exit 1; \
 	    else echo "injection correctly FAILED (spec_decode_seq committing only the model argmaxes is load-bearing)"; fi
+	@# (3) INJECTION -- ALSO write back the KV of the REJECTED row p+1 (phantom KV after a
+	@#     partial accept) : greedy never wrote that key, so the next pass's attention set
+	@#     differs and the committed stream / full-logit binding diverges -> MUST FAIL.
+	@#     (-DSPEC_FULL so the K=1,2,3 MIXED partial-accept schedules exercise it.)
+	@$(IVERILOG) $(IFLAGS) -DSPEC_FULL -DINJECT_PHANTOM_KV -o $(BUILD_DIR)/glm_q4k_spec_greedy_phantom $(SPEC_GREEDY_SRCS)
+	@printf '[%s] ' "glm_q4k_spec_greedy_INJECT_phantomkv"; \
+	    if $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_phantom 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: PHANTOM_KV injection NOT caught (a rejected row's KV was appended and the stream still matched greedy)"; exit 1; \
+	    else echo "injection correctly FAILED (only ACCEPTED rows may write back KV -- a phantom row after a reject diverges from greedy)"; fi
 
 # ============================================================================
 # loopback : C8 LOOPBACK==1 committed stream == LOOPBACK==0 (== reference).
@@ -1357,6 +1366,16 @@ loopback-rest:
 	    if $(VVP) $(BUILD_DIR)/glm_q4k_loopback_rest_inject 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
 	        echo "FAILED: LBRESTINJECT NOT caught (corrupted fed-back gn bytes still passed -- the direct byte binding is not load-bearing)"; exit 1; \
 	    else echo "injection correctly FAILED (the DIRECT byte binding caught the corrupted fed-back gn value -- the fabric round-trip is proven to deliver the die's bytes)"; fi
+	@# (3) INJECTION -- corrupt the fed-back rw ROUTER-CODE lane 0.  rw is OUTPUT-INSENSITIVE
+	@#     (a one-code router step is absorbed by top-k selection), so the committed-token
+	@#     binding alone would MISS this: the DIRECT per-beat die_rw_q byte binding must
+	@#     catch it -> MUST FAIL.  The load-bearing demo that output-insensitive families
+	@#     need direct bindings.
+	@$(IVERILOG) $(IFLAGS) -DLBRESTINJECT_RW -o $(BUILD_DIR)/glm_q4k_loopback_rest_inject_rw $(LOOPBACK_REST_SRCS)
+	@printf '[%s] ' "glm_q4k_loopback_rest_INJECT_rw"; \
+	    if $(VVP) $(BUILD_DIR)/glm_q4k_loopback_rest_inject_rw 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: LBRESTINJECT_RW NOT caught (corrupted router codes passed -- the rw direct binding is not load-bearing)"; exit 1; \
+	    else echo "injection correctly FAILED (the DIRECT rw byte binding caught the corrupted router codes that top-k absorption hides from the token stream)"; fi
 
 #============================================================================
 # ---- PERF (Q4_K): cycle-accurate throughput harness (audit #15) -----------

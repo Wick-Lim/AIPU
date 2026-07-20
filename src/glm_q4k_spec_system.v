@@ -573,7 +573,16 @@ module glm_q4k_spec_system #(
                 ext_av  <= 1'b1;
                 ext_row <= buf_lat[wb_m][wb_r];
                 ext_seq <= wb_m[KV_SEQW-1:0];
+`ifdef INJECT_PHANTOM_KV
+                // INJECTION (injection-ONLY, never a normal build): stop the write-back
+                // loop ONE row late, so the KV of the REJECTED row p+1 is also appended
+                // (phantom KV).  On any partial-accept schedule the next pass then attends
+                // a key that greedy decode never wrote -> the committed stream / full-logit
+                // binding diverges and the spec-greedy gate MUST FAIL.
+                if (wb_r == pfx_pw + 1'b1) begin
+`else
                 if (wb_r == pfx_pw) begin
+`endif
                     wb_r <= {PW{1'b0}};
                     if (wb_m == (L[LW-1:0]-1'b1)) begin
                         // write-back complete : advance the committed frontier
