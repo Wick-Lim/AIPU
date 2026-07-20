@@ -31,46 +31,38 @@ GGUF $k$-Quant Checkpoint Ecosystem}}
 \maketitle
 
 \begin{abstract}
-We present the design and verification of a synthesizable RTL accelerator for
-running a frontier open-weight mixture-of-experts (MoE) language model---the
-753-billion-parameter GLM-5.2, in its published $\sim$467\,GB GGUF $k$-quant
-form---as a single-user, fully offline appliance. The work is deliberately
-\emph{verification-first} and \emph{pre-silicon}: we do not report a fabricated
-chip or a measured end-to-end token rate. Our central claim is a
+We present a synthesizable RTL accelerator for running a frontier open-weight
+mixture-of-experts model---the 753B-parameter GLM-5.2, in its published
+$\sim$467\,GB GGUF $k$-quant form---as a single-user, fully offline appliance.
+The work is deliberately \emph{verification-first} and \emph{pre-silicon}: no
+fabricated chip, no measured end-to-end token rate. The central claim is a
 \emph{bit-exactness contract}: the dequantization of GGUF $k$-quants
-(Q4\_K/Q6\_K/Q8\_0) is proven---via an independently cross-checked reference---%
+(Q4\_K/Q6\_K/Q8\_0) is proven, via an independently cross-checked reference,
 bitwise-equal to llama.cpp's own \code{ggml} kernels on 376{,}586{,}240 weights
-drawn from two real published GGUF files (F16 is a lossless conversion verified
-by the same mixed-type gates), so the silicon inherits the community's
-checkpoint ecosystem \emph{by construction}---closing the ``self-referential
-golden'' gap endemic to reimplementation-based accelerators. Around this contract we contribute:
-(i)~speculative decoding composed into the memory-system top and \emph{proven}
-in RTL---the committed token stream is a bit-exact prefix of greedy decoding
-(the \code{spec==greedy} invariant), enabled by a new intra-batch causal
-attention mode and a die-internal KV write-back, with the bandwidth-amortization
-factor $A_{\mathrm{eff}}$ \emph{measured from a hardware weight-load counter}
-(an all-accept schedule commits exactly $K{+}1$ tokens per weight load);
-(ii)~an adversarial verification discipline in which the load-bearing gates are
-paired with fault-injection builds that must fail, exact per-gate test counts
-are pinned by the release gate, and---a finding we believe is
-underappreciated---%
-\emph{output-insensitive} inputs (MoE router codes absorbed by top-$k$
-selection; normalization gains) are shown to defeat end-to-end equality checks,
-requiring direct per-beat die-input bindings; and (iii)~a memory-bandwidth-bound
-residency design methodology whose roofline is parameterized by
-\emph{measured} expert-union growth $U(K)$ and speculative accept rates, and
-whose stall mechanism is validated on real RTL cycles ($\sim$73$\times$ exposed
-stall reduction under residency). The compute datapath places and routes on a
-commodity Kintex UltraScale+ FPGA. Throughout, projected token rates are tagged
-as estimates; the remaining physical gates---vendor PHY IP and tapeout---are
-named, not hidden.
+from two real published GGUF files, so the silicon inherits the community's
+checkpoint ecosystem by construction. This closes the ``self-referential
+golden'' gap endemic to reimplementation-based accelerators. Around the
+contract we contribute: (i)~speculative decoding proven in RTL---the committed
+stream is a bit-exact prefix of greedy decoding (\code{spec==greedy}), enabled
+by an intra-batch causal attention mode and a die-internal KV write-back, with
+the amortization $A_{\mathrm{eff}}$ measured from a hardware weight-load
+counter; (ii)~an adversarial verification discipline---load-bearing gates
+paired with must-fail fault injections, exact per-gate test counts pinned by
+the release gate, and the finding that \emph{output-insensitive} inputs (MoE
+router codes absorbed by top-$k$; normalization gains) defeat end-to-end
+equality checks and require direct per-beat die-input bindings; and (iii)~a
+bandwidth-bound residency design whose roofline uses measured expert-union
+growth and accept rates, with its stall mechanism validated on real RTL cycles
+($\sim$73$\times$ under residency). The datapath places and routes on a
+commodity FPGA. All projected token rates are tagged as estimates; the
+remaining physical gates---vendor PHY IP and tapeout---are named, not hidden.
 \end{abstract}
 
 \section{Introduction}
 
 Frontier large language models are increasingly available as open weights, yet
-running the largest of them locally---offline, on data that cannot leave a
-network---remains out of reach for most users. The obstacle is not compute but
+running the largest of them locally---offline, on data that must not leave the
+premises---remains out of reach for most users. The obstacle is not compute but
 memory bandwidth. A 753B-parameter MoE model quantized to roughly four bits
 occupies $\sim$467\,GB; each decoded token reads on the order of 25\,GB of
 active weights, so single-stream throughput is governed by
@@ -99,13 +91,15 @@ diverging from the software the community actually runs. Prior FPGA work on
 GGUF-format kernels~\cite{secdallm,fbfq} accelerates $k$-quant matrix
 multiplies but states no bitwise-equivalence contract with \code{ggml}; and
 systems that run GGUF checkpoints on other backends via format conversion do
-not in general preserve bitwise numerics. We instead make the contract the headline: the RTL dequantization
+not in general preserve bitwise numerics. We instead make the contract the
+headline: the RTL dequantization
 is bit-exact to an independent reference implementation, and that reference is
 proven bitwise-identical to llama.cpp's own \code{dequantize\_row\_*} kernels
-on every Q4\_K, Q6\_K, and Q8\_0 super-block of two real published GGUF
-files---376{,}586{,}240 weights compared as raw \code{uint32}, no tolerance.
-By transitivity, the silicon dequantizes the real file exactly as the software
-ecosystem does, so it inherits the GGUF checkpoint zoo \emph{by construction}.
+on every Q4\_K and Q6\_K super-block and every Q8\_0 block of two real
+published GGUF files---376{,}586{,}240 weights compared as raw \code{uint32},
+no tolerance. By transitivity, the silicon dequantizes real checkpoint bytes
+exactly as the software ecosystem does, so it inherits the GGUF checkpoint zoo
+\emph{by construction}.
 We are equally explicit about what the contract excludes: whole-runtime numeric
 equality with llama.cpp (attention and accumulation orders differ by design)
 and any claim about fabricated silicon.
@@ -116,10 +110,11 @@ and any claim about fabricated silicon.
 llama.cpp on real checkpoint bytes} (Sections~\ref{sec:design}
 and~\ref{sec:verif}). The RTL dequantization of Q4\_K/Q6\_K/Q8\_0/F16 and the
 assembled GLM-5.2 forward pass (multi-head latent attention, data-dependent
-sparse attention, fine-grained MoE, multi-token prediction) are bit-exact to
-independent goldens at the faithful slice of Section~\ref{sec:design}; the
-$k$-quant dequantization layer is additionally proven on 376.6M real GGUF
-weights. To our knowledge this ecosystem-inheritance contract has not been
+sparse attention, fine-grained MoE) are bit-exact to independent goldens at the
+faithful slice of Section~\ref{sec:design}; the multi-token-prediction head is
+verified through the \code{spec==greedy} invariant of Section~\ref{sec:spec};
+and the $k$-quant dequantization layer is additionally proven on 376.6M real
+GGUF weights. To our knowledge this ecosystem-inheritance contract has not been
 stated or verified by prior accelerator work.
 
 \item \textbf{Speculative decoding proven correct in RTL} (Section~\ref{sec:spec}).
@@ -136,11 +131,12 @@ under all-accept.
 
 \item \textbf{An adversarial, non-vacuity verification discipline}
 (Section~\ref{sec:verif}). Every load-bearing composition gate---the
-speculative loop, the intra-batch oracle, the KV write-back, each loopback
-family---is paired with a fault-injection build whose failure its make target
-asserts; the release gate pins the exact multiset of per-gate test counts (68
-gates), catching silently reduced testing; default-off features are held to a
-structural or sequential equivalence of the default netlist. We report a finding with, we believe,
+speculative loop, the intra-batch oracle, each loopback family---is paired
+with a fault-injection build whose failure its make target asserts; the
+release gate pins the exact multiset of per-gate test counts (68 gates),
+catching silently reduced testing; and default-off features are held to
+structural or sequential equivalence against the pre-feature netlist where
+such a gate exists (Section~\ref{sec:design}). We report a finding with, we believe,
 general relevance: \emph{output-insensitive inputs defeat end-to-end equality
 checks}---corrupting MoE router weight codes is absorbed by top-$k$ selection
 and corrupting normalization-gain LSBs is normalized away---so proving those
@@ -156,17 +152,18 @@ mechanism it presumes is validated on real RTL cycles ($\sim$73$\times$ exposed
 stall reduction under residency), while all absolute token rates remain tagged
 estimates.
 
-\item \textbf{Physical realizability evidence.} The compute datapath places and
-routes on a commodity Kintex UltraScale+ FPGA (87.5\% LUT, hold met, routed
-$F_{\max}$ 46.5\,MHz), the full 753B-shape hierarchy elaborates cleanly, and a
-retail-parts residency prototype (1280-bit LPDDR5X, 480\,GB) is supported by an
-analytical board routability study (Section~\ref{sec:analysis}).
+\item \textbf{Physical realizability evidence} (Section~\ref{sec:analysis}).
+The product top synthesizes at 87.5\% LUT utilization on a commodity Kintex
+UltraScale+ FPGA and a bring-up harness of it places and routes (hold met,
+routed $F_{\max}$ 46.5\,MHz); the full 753B-shape hierarchy elaborates cleanly;
+and a retail-parts residency prototype (1280-bit LPDDR5X, 480\,GB) is supported
+by an analytical board routability study.
 \end{enumerate}
 
 \section{Background}
 
 \paragraph{GGUF $k$-quants.} \code{llama.cpp} and its \code{ggml} tensor
-library~\cite{llamacpp} are the de-facto substrate for local inference, and
+library~\cite{llamacpp} are the de facto substrate for local inference, and
 GGUF is their model format. The $k$-quant family stores weights in 256-element
 super-blocks with a compact hierarchy of scales: Q4\_K packs 256 four-bit
 weights with six-bit sub-block scales and minima into 144 bytes; Q6\_K uses 210
@@ -215,14 +212,17 @@ Section~\ref{sec:verif}.
 \paragraph{Slice and full shape.} Functional verification runs at a
 small-but-faithful \emph{slice} that preserves every operator and ratio
 (model dimension 128; six layers, three dense and three MoE; four heads;
-eight experts top-2 plus one shared; vocabulary 256). Three further pieces of
+eight experts top-$2$ plus one shared; vocabulary 256). Three further pieces of
 evidence support the slice-to-full argument: (i)~the real-dimension operator
-sweep, in which each operator is re-verified at its true 753B-configuration
-magnitude under the same check contract as at the slice (the GEMM bit-exact
-against the \code{ggml} reference at $K{=}6144$; the router's top-$k$ and
-renormalization invariants at 256 experts top-8; SwiGLU, softmax, RMSNorm, and
-RoPE against their high-precision goldens at intermediate 2048, length 2048,
-dimension 6144, and rotary dimension 64 respectively); (ii)~batched-shape gates in which a
+sweep, in which each operator is re-verified with its dominant dimension at the
+true 753B-configuration magnitude, under the same check contract as at the
+slice (the GEMM bit-exact against the \code{ggml} reference at reduction
+dimension 6144; the router's top-$k$ and renormalization invariants at 256
+experts top-$8$; SwiGLU, softmax, RMSNorm, and RoPE against their
+high-precision goldens at intermediate 2048, length 2048, dimension 6144, and
+rotary dimension 64 respectively---the GEMV reduction depth of the router
+and SwiGLU stays at slice scale, that mechanism being covered by the GEMM
+point); (ii)~batched-shape gates in which a
 $\mathrm{PE}_M{>}1$ batched forward is proven row-wise bit-exact to standalone
 single-row runs; and (iii)~a clean structural elaboration of the entire model
 at the true shape (dimension 6144, 78 layers, 64 heads, 256 experts,
@@ -231,8 +231,9 @@ vocabulary 154{,}880)---a type/width check with no stimulus, which we label
 
 \paragraph{Memory system.} A single top-level module wraps the compute die with
 a tier-agnostic banked read crossbar, a routed-expert cache (LRU with frequency
-and prefetch), an MLA latent-KV pager with storage overflow, weight and boot
-loaders, and multi-clock domain-crossing FIFOs. The fabric is
+and prefetch), an MLA latent-KV pager with storage overflow, and the weight
+loader; a two-clock wrapper adds the host/core domain-crossing FIFOs, and a
+standalone, formally proven boot-load sequencer feeds the same storage path. The fabric is
 \emph{byte-agnostic}---it moves addresses, slots, and IDs, never weight
 bytes---so the same RTL serves streaming, full-residency, and hybrid
 configurations selected by parameters. With residency enabled, expert refills
@@ -245,11 +246,16 @@ knob, the residency mode, the adaptive speculative depth, and every loopback
 and self-KV mode of Sections~\ref{sec:spec} and~\ref{sec:verif}) are designed
 to be \emph{result-invariant} or \emph{default-off}: enabling them must not
 change the emitted tokens, and leaving them off must not change the netlist.
-Both directions are verified: bit-exact gates with the knob on; and, with the
-knob off, a sequential-equivalence proof against the pre-feature commit where
-tractable (the weight-ECC path) or a structural cell-histogram equivalence with
-a built-in liveness self-test (residency, self-KV, the CDC protocol ports)
-elsewhere---so the knobs are optimizations, not risks.
+The on direction is verified for every knob by a bit-exact gate. The off
+direction carries a netlist-equivalence gate where one exists: a
+sequential-equivalence proof for the weight-ECC path (against an ECC-removed
+reference derived from the pre-feature commit) and for boot integrity (against
+the frozen pre-feature commit itself), and a structural cell-histogram
+equivalence for the residency, self-KV, and CDC-protocol knobs (the first two
+with a built-in liveness self-test). The loopback and adaptive-depth knobs are
+default-off with behavioral gates only (bit-exact drop-in and
+output-invariance); they carry no off-netlist proof. Within those stated
+scopes, the knobs are optimizations, not risks.
 
 \section{Speculative Decoding Proven in RTL}
 \label{sec:spec}
@@ -263,30 +269,33 @@ its committed stream provably equals what non-speculative decoding would have
 produced.
 
 \paragraph{The \code{spec==greedy} invariant.} The sequencer commits the
-longest accepted \emph{prefix of the model's own argmax}---never a raw draft
+longest accepted \emph{prefix of the model's own argmax stream}---never a raw draft
 token---so by construction the committed stream must be a bit-exact prefix of
 greedy decoding, for any draft quality and any depth schedule. We verify this
 end-to-end on the composed top (compute die, expert cache, KV pager, crossbars,
 weight loader, and the speculative sequencer in one netlist): for
 $K\in\{1,2,3\}$ under all-accept, all-reject, and mixed partial-accept
 schedules, every committed token and the full logit vector of its committed row
-equal a standalone non-speculative reference (31 checks). Two independent fault-injection builds must fail and do: one commits raw
+equal a standalone non-speculative reference (31 checks).
+Two independent fault-injection builds must fail and do: one commits raw
 drafts instead of model argmaxes; the other writes back the KV of a
 \emph{rejected} position (a phantom-KV hazard specific to partial accepts),
 which diverges the very next pass's attention set.
 
 \paragraph{Why a shared-context batch is not enough.} A naive batched verify
-runs $K{+}1$ rows over a \emph{shared, already-populated} KV cache; but the
-draft at position $p{+}j$ must attend keys at positions $p..p{+}j{-}1$, of
-which positions $p{+}1..p{+}j{-}1$ are the \emph{current-token keys of rows
+runs $K{+}1$ rows over a \emph{shared, already-populated} KV cache; but row
+$j$, verifying the draft at position $p{+}j$, must attend all keys at positions
+$0..p{+}j{-}1$, of which the last $j$ are the \emph{current-token keys of rows
 $0..j{-}1$ computed in the same pass}. We therefore add, behind a default-off
 parameter, an \emph{intra-batch causal attention} mode to the MLA core: each
 row's current-key latent is injected into the attendable key set at causal
-index $s{+}i$, flowing through the same RMSNorm, up-projections, RoPE, and DSA
-selection as cached keys, with the causal mask arising intrinsically from
-per-row key extents. The leaf oracle proves a batched pass over consecutive
-positions equals the serial single-row chain, full-logit bit-exact
-($K\in\{1,2,3\}$); dropping the causal mask (a row seeing its own key) fails.
+index $s{+}i$ (where $s$ is the cached-context length and $i$ the row index),
+flowing through the same RMSNorm, up-projections, RoPE, and DSA selection as
+cached keys, with the causal mask arising intrinsically from per-row key
+extents. The leaf oracle proves a batched attention pass over consecutive
+positions bit-exact to the serial single-row chain; the system-level batched
+verify then proves full-logit bit-exactness at $K\in\{1,2,3\}$; dropping the
+causal mask (a row seeing its own key) fails.
 
 \paragraph{Die-internal KV write-back.} Position accuracy across passes
 requires the die to \emph{consume KV latents it produced}. We expose the MLA
@@ -295,7 +304,7 @@ index, and close the loop: at \code{SELF\_KV=1} the die appends its computed
 latent per (layer, position) and re-reads it through the pager on subsequent
 steps, proven full-logit bit-exact against an independent (layer,
 position)-keyed reference at one and six layers; one-off soundness checks
-(documented edit-and-revert procedures in the testbench headers) confirmed the
+(documented edit-and-revert procedures in the testbench headers) confirm the
 reference catches layer aliasing and append corruption; with
 \code{SELF\_KV=0} the netlist matches the stub-fed base's cell histogram (the
 added latent-observation ports contribute zero cells).
@@ -337,19 +346,22 @@ Speculative loop (\code{spec==greedy}) & committed stream $\equiv$ greedy prefix
 $A_{\mathrm{eff}}$ amortization & hardware weight-load counter; all-accept $=K{+}1$/load & measured \\
 Intra-batch causal attention & batch $\equiv$ serial chain, full-logit & proven \\
 Die-internal KV write-back & bit-exact vs independent (layer,pos) reference & proven \\
-PHY-closure loopback (5 families) & fabric round-trip bit-exact + per-beat bindings & proven \\
+PHY-closure loopback (5 families) & fabric round-trip bit-exact; per-beat bindings on rw/lw/gn & proven \\
 Memory/control plane & BMC (7 ctrl + ECC ring) + $k$-induction (5) & proven (formal) \\
-Result-invariant knobs, default-off & structural (cell-histogram) or sequential equivalence vs pre-feature commit & proven \\
+Result-invariant knobs, off-direction & cell-histogram or sequential equivalence (residency, self-KV, CDC, ECC, boot) & proven \\
 Full 753B-shape hierarchy & type/width elaboration at true dimensions & elaborated \\
 FPGA fit (compact config) & routed on Kintex US+, hold met, $F_{\max}$ 46.5\,MHz & measured \\
-Cycle-accurate stall mechanism & per-token stall on real cycles; residency $73\times$ & measured \\
+Cycle-accurate stall mechanism & per-token stall on real cycles; residency $\sim$73$\times$ & measured \\
 Single-user throughput & roofline with measured $U(K)$, $r$, $A_{\mathrm{eff}}$ & estimated\est \\
 End-to-end 467\,GB run; silicon rate & --- & not done \\
 \bottomrule
 \end{tabular}
-\caption{The verification ledger. Every ``proven'' and ``measured'' row is
-reproducible from the repository; the load-bearing composition gates are
-paired with fault-injection builds that must fail.}
+\caption{The verification ledger. Statuses: \emph{proven} = a gated bit-exact
+simulation or a solver proof; \emph{measured} = real RTL cycles or a real
+place-and-route; \emph{elaborated} = structural only, no functional golden;
+\emph{estimated} = a roofline projection. Every ``proven'' and ``measured''
+row is reproducible from the repository; the load-bearing composition gates
+are paired with fault-injection builds that must fail.}
 \label{tab:ledger}
 \end{table}
 
@@ -361,16 +373,16 @@ SmolLM2-135M Q8\_0 distribution), extract every Q4\_K and Q6\_K tensor's raw
 super-blocks and every Q8\_0 tensor's blocks, and dequantize each block two
 ways: with our reference, and with llama.cpp's own
 \code{dequantize\_row\_q4\_K}/\code{\_q6\_K}/\code{\_q8\_0} compiled from the
-built \code{ggml} library. The dequantization is format-level and
-file-agnostic---a $k$-quant block's bytes decode identically whatever model
-they came from---so bitwise identity on these distributions' blocks transfers
-to any $k$-quant file, including the 467\,GB target checkpoint. The FP32 outputs are compared bitwise (as
-\code{uint32}, not within a tolerance). All 376{,}586{,}240 weights match. By
-transitivity with the RTL$\,\equiv\,$reference gates, the hardware
-dequantization equals the real file's \code{ggml} dequantization. The scope is
-deliberate: the GEMM's FP32 accumulation order is bit-exact to \emph{our}
-documented order, not to llama.cpp's runtime (whose accumulation order
-differs); whole-runtime equality is out of contract.
+built \code{ggml} library. The FP32 outputs are compared bitwise (as
+\code{uint32}, not within a tolerance). All 376{,}586{,}240 weights match.
+The dequantization is format-level and file-agnostic---a $k$-quant block's
+bytes decode identically whatever model they came from---so bitwise identity
+on these distributions' blocks transfers to any $k$-quant file, including the
+467\,GB target checkpoint. By transitivity with the
+RTL$\,\equiv\,$reference gates, the hardware dequantization equals the real
+files' \code{ggml} dequantization. The scope is deliberate: the GEMM's FP32
+accumulation follows \emph{our} documented order, not llama.cpp's runtime
+order (which differs); whole-runtime equality is out of contract.
 
 \paragraph{Injection pairing (non-vacuity).} A gate that cannot fail proves
 nothing. Every load-bearing composition gate---the speculative loop (two
@@ -455,9 +467,10 @@ is $\approx$11\,GB, read once per pass. We measure $U(K)$ directly by tracing
 exact expert selections on a same-family model (GLM-4.5-Air):
 $U(2){\approx}1.6$, $U(4){\approx}2.65$, $U(8){\approx}4.3$; concurrent
 systems work reports compatible union growth~\cite{cascade}. We also measure
-the MTP accept rate---first-position $r_1{\approx}0.87$ with steep per-position
-decay---which places the memory-bound optimum at shallow depth ($K{=}1$--$2$)
-and a production $A_{\mathrm{eff}}{\approx}1.9$ at $K{=}1$; the RTL-measured
+the MTP accept-rate profile $r$---first-position $r_1{\approx}0.87$ with steep
+per-position decay---which places the memory-bound optimum at shallow depth
+($K{=}1$--$2$) and yields a production $A_{\mathrm{eff}}{\approx}1.9$ at
+$K{=}1$; the RTL-measured
 mechanism of Section~\ref{sec:spec} guarantees the amortization is realized,
 and the adaptive depth controller is proven output-invariant under any depth
 schedule (its own gate) and designed to settle at the measured optimum.
@@ -474,15 +487,16 @@ cycles/token whereas residency exposes 35, a $\sim$73$\times$ reduction. This
 validates the residency pivot on real cycles even though the absolute product
 token rate remains a projection.
 
-\paragraph{FPGA fit.} The Q4\_K product top, in a compact configuration, places
-and routes on a Kintex UltraScale+ XCKU3P (with the wide memory-side ports
-terminated in an on-chip harness so the fit is not I/O-limited): 142{,}320 LUTs
-(87.5\% utilization), $\sim$100K flip-flops, 421 DSPs, zero BRAM, hold met, and
-a routed maximum frequency of 46.5\,MHz reached through
-bit-exactness-preserving repipelining rounds (a 4.6$\times$ campaign). This establishes that the
-datapath is physically realizable on commodity silicon; it is a compact slice,
-not the full model at product speed, and we do not extrapolate a token rate
-from it.
+\paragraph{FPGA fit.} The Q4\_K product top, in a compact configuration,
+synthesizes on a Kintex UltraScale+ XCKU3P at 142{,}320 LUTs (87.5\%
+utilization), $\sim$100K flip-flops, 421 DSPs, and zero BRAM; a bring-up
+harness of the same top (the wide memory-side ports terminated on-chip so the
+fit is not I/O-limited) then places and routes at $\sim$141.3K LUTs with hold
+met and a routed maximum frequency of 46.5\,MHz, reached through
+bit-exactness-preserving repipelining rounds (a campaign that raised routed
+$F_{\max}$ 4.6$\times$). This establishes that the datapath is physically
+realizable on commodity silicon; it is a compact slice, not the full model at
+product speed, and we do not extrapolate a token rate from it.
 
 \paragraph{Projected throughput.} Combining a resident LPDDR5X pool with the
 measured $U(K)$, $r$, and the RTL-measured $A_{\mathrm{eff}}$ mechanism, the
@@ -495,7 +509,7 @@ the full bandwidth in their own sequential phase). Three cautions make this an
 ($\sim$70--85\% is typical); measured lane scaling is sublinear
 (4$\times$ lanes yielded 2.40$\times$ on the slice), so an under-provisioned
 array, not memory, becomes the bound; and no board exists. For context, the
-literature reports roughly 1--13\,\tps\ for GPU/flash offloading of models of
+literature reports roughly 1.3--13\,\tps\ for GPU/flash offloading of models of
 this scale~\cite{llminaflash,moeinfinity}, and 512\,GB-class unified-memory
 workstations are community-reported around 15--25\,\tps; our figures are
 projections with measured inputs, not silicon measurements.
@@ -647,8 +661,8 @@ G.~Gerganov and the llama.cpp/ggml contributors.
 
 \bibitem{glmweights}
 Zhipu AI / THUDM.
-\newblock GLM-5.2 open weights, GGUF ($k$-quant) distribution.
-\newblock \url{https://huggingface.co/unsloth/GLM-5.2-GGUF}.
+\newblock GLM-5.2 open weights (GGUF $k$-quant distribution).
+\newblock Model weights, \url{https://huggingface.co/unsloth/GLM-5.2-GGUF}.
 
 \bibitem{secdallm}
 J.~Haris, R.~Saha, W.~Hu, and J.~Cano.
