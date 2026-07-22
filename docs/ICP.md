@@ -18,14 +18,15 @@ routed on XCKU3P at 46.5 MHz, [`../fpga/`](../fpga/README.md).)*
 ---
 
 > **Positioning update (2026-07, v3 full-residency spec [EST]):** the rung-③ box
-> targets a design point of **≈80 tok/s [measured-inputs EST]** (deterministic ~71 base × the
-> adaptive spec-chain on GLM-4.5-Air-measured U(K) **and** measured accept-rate r — job B's
+> targets a design point of **≈80 tok/s [measured-inputs EST]** (directly
+> `~1.1 TB/s ÷ 13.87 GB/token ≈ 80` — the canonical per-token constant already folds in the
+> spec-chain amortization from GLM-4.5-Air-measured U(K) **and** measured accept-rate r, job B's
 > vLLM MTP sweep; ~95 if GLM-5.2's deeper MTP hits its published accept depth —
-> [`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — Opus/Gemini-Pro-class
+> [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2, [`H_MEASUREMENT.md`](H_MEASUREMENT.md)) — Opus/Gemini-Pro-class
 > *per-user* output
 > speed, offline, no subscription, first-token latency without network/queue.
 > Same-bracket champion today is a $10k+ Mac Studio M3 Ultra 512GB at ~15–25
-> tok/s for this model class → ~3–6× the speed at roughly half the price.
+> tok/s for this model class → ~3–5× the speed (80 vs 15–25) at roughly half the price.
 > Groq/Cerebras-class 500+ tok/s is a **different bracket** (SRAM-resident,
 > racks, $M, thousands of users amortized; a 467GB model cannot fit their
 > single box). See [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §7.
@@ -80,7 +81,9 @@ below). The moat is the **combination**: **offline + full frontier (753B) + turn
 on purpose-built silicon** (70 B fails frontier quality; 8×H100 fails price/form-factor; a DIY big-RAM
 llama.cpp box fails turnkey / per-seat form-factor; secured cloud fails the unplugged test). The moat is
 **not** "bit-exact to the downloaded GGUF" — the RTL runs a *different* arithmetic contract (bf16
-activations + fp32 accumulate) and is **not** bit-validated against the GGUF file or llama.cpp.
+activations + fp32 accumulate); the dequant layer *is* proven bit-exact on the real GGUF bytes
+([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)), but **whole-runtime** llama.cpp numeric equality is
+out-of-contract and not claimed.
 
 **Don't confuse the market with the wedge.** The need is horizontal — legal, quant/finance, IP-heavy
 R&D, government/defense, healthcare, and **offline/disconnected environments** (SCIFs, isolated OT /
@@ -174,8 +177,8 @@ board bring-up is not).
 > prove-it rung, 64 GB DDR5 / HBM on the funded board; see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)).
 > That number is exactly what the **FPGA-fit measurement**
 > ([`../fpga/`](../fpga/README.md)) decides — it sets the FPGA class, which sets the BOM. (DONE — the
-> fit is measured: Vivado routed `glm_q4k_system_cdc` on XCKU3P, 142,320 LUT (87.5%), 421 DSP,
-> Fmax 46.5 MHz.) **The ICP is only real once that BOM lands in the low-$k's per seat.**
+> fit is measured: Vivado routed `glm_q4k_system_cdc` on XCKU3P, 141,298 LUT routed (142,320 / 87.5%
+> at the synth stage), 421 DSP, Fmax 46.5 MHz.) **The ICP is only real once that BOM lands in the low-$k's per seat.**
 
 ## The pilot (first engagement — aim for a signed design partner in ~90 days)
 
@@ -229,7 +232,8 @@ are the **expansion ladder** — sequence them after the beachhead proves out, d
 ## The two things that make this ICP investable (both in flight)
 
 1. **A measured FPGA fit → a real per-seat BOM** (the [`fpga/`](../fpga/README.md) track). (DONE — the
-   fit is measured: Vivado routed on XCKU3P, 142,320 LUT / 87.5%, 421 DSP, 46.5 MHz.) What's left for
+   fit is measured: Vivado routed on XCKU3P, 141,298 LUT routed (142,320 / 87.5% at the synth
+   stage), 421 DSP, 46.5 MHz.) What's left for
    the price is distributor/PCB quotes and board bring-up; without those, "low-$k's per seat" is still
    a target, not a price.
 2. **One signed design partner from a lead wedge** — a law firm innovation team, or a quant fund's

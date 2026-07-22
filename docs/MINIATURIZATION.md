@@ -7,7 +7,8 @@
 > ~12K-LUT4 saving, the yosys `stat` deltas) was measured on the **prior FP8 die** (preserved on branch
 > **`fp8`**). The **whole-die Q4_K fit is now MEASURED** on the vendor flow — **Vivado ML 2026.1**,
 > real synth + full place&route of `glm_q4k_system_cdc` on **XCKU3P** (compact config + ACT_HW=1):
-> **142,320 LUT (87.5 %), ~100K FF, 421 DSP, 0 BRAM**, hold met, routed Fmax **46.5 MHz** after a
+> **142,320 LUT (87.5 %) synth-stage** (routed **141,298 LUT**,
+> `fpga/results/util_routed_ku3p_acthw1.rpt`), **~100K FF, 421 DSP, 0 BRAM**, hold met, routed Fmax **46.5 MHz** after a
 > closed bit-exact repipelining campaign (see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md); the old
 > Gowin/nextpnr scaffold is removed). The **per-lever** Q4_K deltas are now *measurable* on that flow
 > but have not been re-run — the per-lever figures are still presented **as prior-FP8 measurements,
@@ -83,7 +84,7 @@ byte-identical re-check is part of E1/E2).
 
 | # | lever | mechanism | est saving | time cost | budget-safe? | effort | risk / status |
 |---|---|---|---|---|---|---|---|
-| **L0** ✅ | compact config | right-size PE_N/DDR_NCH/KV_RESIDENT/EFIFO/CACHE_SLOTS (result-invariant) | PE array halved + smaller fabric | more cycles | ✔ | done | **Q4_K compact fit MEASURED** — the routed Vivado XCKU3P fit *is* the compact config (+ ACT_HW=1): 142,320 LUT / 87.5 %, 421 DSP, 0 BRAM |
+| **L0** ✅ | compact config | right-size PE_N/DDR_NCH/KV_RESIDENT/EFIFO/CACHE_SLOTS (result-invariant) | PE array halved + smaller fabric | more cycles | ✔ | done | **Q4_K compact fit MEASURED** — the routed Vivado XCKU3P fit *is* the compact config (+ ACT_HW=1): 142,320 LUT / 87.5 % synth-stage (routed 141,298), 421 DSP, 0 BRAM |
 | **L1** ◑ | **cross-op matmul sharing** | *(structure present in Q4_K RTL)* swiglu gate/up GEMMs run at different times → one shared `u_mm` via a 1-bit `up_pass` arbiter + 2:1 weight mux (`swiglu_expert_q4k.v` carries exactly one `glm_matmul_q4k`) | **prior-FP8 measured ~12K LUT4** (2 swiglu × 6186 FP8 matmul core, 6→4 engines/block; −1519 generic cells/expert) — **Q4_K re-measure not yet run (now measurable on the Vivado flow)** | **≈ 0** (already sequential) | ✔ (free) | large refactor | **structure in Q4_K RTL, passes `make q4k` (swiglu 240/240 functional); area is prior-FP8 (branch `fp8`)** |
 | **L2** ❌ | tail vector-ALU sharing | *(assessed — NOT bounded-viable)* only `glm_softmax` instances the pipelined primitives, and its 4 pipes are **distinct ops** (exp/add/mul/rsqrt — nothing to merge); RMSNorm/RoPE/act use **inline `glm_fp.vh` fp32 macros**, not shareable module instances | small (fp32 tail ≪ Q4_K GEMM) | small | ✔ | high (cross-module scheduler) | **skip — reward≪risk** |
 | **L3** ◐ | intra-op serialization | swiglu gate/up → 1 **captured by L1**; the remaining piece is the **cross-module 3-way hoist** (mla+router+swiglu → one engine) | further PE-array cut | 2×+ that op | ✔ *within budget* | high | **deferred** (needs PE_N=8 + top-level ports + arbiter) |
@@ -96,7 +97,7 @@ byte-identical re-check is part of E1/E2).
 ## Phased roadmap
 
 - **Phase A — resource right-sizing (DONE on Q4_K).** L0 compact config is what the **measured
-  Vivado XCKU3P fit** built (`glm_q4k_system_cdc`, compact config + ACT_HW=1 — 142,320 LUT / 87.5 %),
+  Vivado XCKU3P fit** built (`glm_q4k_system_cdc`, compact config + ACT_HW=1 — 142,320 LUT / 87.5 % synth-stage, routed 141,298),
   and the bit-exact gate now exists: every Fmax-campaign round was **re-proven bit-exact on the
   1155-test assembled golden** (`make model-q4k`). (The prior-FP8 `synth-glm-compact` /
   `sim-glm-compact` build, byte-identical token `{0,11,11}`, was removed with the FP8 system top.)
@@ -111,7 +112,7 @@ byte-identical re-check is part of E1/E2).
   **only remaining lever is the cross-module 3-way hoist** (mla+router+swiglu → one engine) — invasive
   (PE_N=8 + top-level ports + arbiter), **deferred to after E1** so the LUT payoff can justify the risk.
 - **Phase D — validate & FPGA-fit (whole-die DONE).** E1's whole-die measurement is **DONE** —
-  Vivado ML 2026.1 routed `glm_q4k_system_cdc` on **XCKU3P**: 142,320 LUT (87.5 %), 421 DSP, 0 BRAM,
+  Vivado ML 2026.1 routed `glm_q4k_system_cdc` on **XCKU3P**: 142,320 LUT (87.5 %) synth-stage (routed 141,298 LUT), 421 DSP, 0 BRAM,
   hold met, routed Fmax 46.5 MHz (the Gowin/nextpnr scaffold is removed). Remaining: re-run the
   **per-lever** deltas on that flow, and E2 pin the exact serialization budget.
 - **Out of scope / caution.** L6 (bit-serial — overshoots the budget), L7 (precision trade — not
@@ -150,7 +151,7 @@ byte-identical re-check is part of E1/E2).
 
 ## Status
 - **Phase A: DONE on Q4_K.** The routed Vivado XCKU3P fit *is* the Q4_K compact config (+ ACT_HW=1 —
-  142,320 LUT / 87.5 %, 421 DSP, 0 BRAM), and the bit-exact gate exists: every Fmax-campaign round
+  142,320 LUT / 87.5 % synth-stage, routed 141,298, 421 DSP, 0 BRAM), and the bit-exact gate exists: every Fmax-campaign round
   was re-proven on the 1155-test assembled golden. (The prior-FP8 L0 build, token `{0,11,11}`, was
   removed with the FP8 system top.)
 - **Phase B: structure present in Q4_K; area is prior-FP8.** The L1 gate/up merge is **live in the Q4_K
@@ -174,6 +175,6 @@ byte-identical re-check is part of E1/E2).
   ports, and a 3-way arbiter — high byte-identical risk. **Deferred:** its payoff (4→3 engines/block)
   should be gated on a per-lever **E1 (Vivado)** measurement proving the Q4_K LUT delta justifies the
   risk, rather than done blind.
-- **Phase D: whole-die numbers MEASURED** — Vivado ML 2026.1 on **XCKU3P**: 142,320 LUT (87.5 %),
-  421 DSP, 0 BRAM, routed Fmax 46.5 MHz (campaign closed, bit-exact each round). Remaining: the
+- **Phase D: whole-die numbers MEASURED** — Vivado ML 2026.1 on **XCKU3P**: 142,320 LUT (87.5 %)
+  synth-stage (routed 141,298 LUT), 421 DSP, 0 BRAM, routed Fmax 46.5 MHz (campaign closed, bit-exact each round). Remaining: the
   per-lever delta re-run on that flow.

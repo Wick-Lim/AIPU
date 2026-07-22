@@ -7,8 +7,10 @@
 > ratios, the BFP-accumulator cell count, and the `FLASH_LAT` stall table — and are called out inline
 > as **prior-FP8, Q4_K re-run PENDING**. They are **not** relabelled as Q4_K results. See
 > [`Q4K_RETARGET.md`](Q4K_RETARGET.md) / [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md) and the honest
-> [`../README.md`](../README.md). RTL/test names of the form `*_q4k` are the current modules; a few
-> prior-FP8 modules (`weight_decomp`, the BFP accumulator) survive in-tree only as the FP8 track.
+> [`../README.md`](../README.md). RTL/test names of the form `*_q4k` are the current modules; the BFP
+> accumulator survives in-tree only as the FP8 track, while `weight_decomp` (order-0) is now **wired
+> on `main`** into `glm_q4k_system` behind the default-off `DECOMP` parameter and release-gated
+> (`make weight-decomp`, `decomp1-elab`) — only its measured *ratio* is FP8-era.
 
 **Requirement:** the accelerator must be low-power. **Decision (this project):** every power lever must
 be **output-preserving** — it must not move the decoded token relative to the un-restructured
@@ -31,7 +33,8 @@ lever ladder, and what is built vs. staged.
 > **(Updated 2026-07 — rung-③ design-point pivot, [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)**
 > The primary rung-③ design point is now **full residency**: 512 GB LPDDR5X (16×32 GB, 1024-bit
 > on-package, ~1.1 TB/s) holds the WHOLE ~467 GB checkpoint — **h=1 by construction**, cold storage is
-> one commodity M.2 NVMe used only for the ~70 s boot-load, box ~40–60 W. On that box the dominant
+> one commodity M.2 NVMe used only for the ~70 s boot-load, box **≥50–78 W [EST] floor** (R3 §4 —
+> the old ~40–60 W is retired, never derived). On that box the dominant
 > per-token energy term moves from the NVMe read to the (much cheaper/bit) LPDDR5X read. The
 > NVMe-streaming energy analysis below stays TRUE and ACTIVE for the **rung-① FPGA demo, the hybrid
 > upside SKU, and >512 GB checkpoints** — it is re-scoped, not deleted.
@@ -76,8 +79,8 @@ analysis but not this personal box, which runs B=1). Everything below is ranked 
 > ~TB/s move the ~14 GB expert bytes far cheaper/bit, for **lower $/seat + lower power once the NRE
 > amortizes over volume**. ASIC here is **not** a compute play (compute is already ~free, §4) — it is
 > the **volume power/cost win**, sequenced *after* the FPGA rungs prove PMF, not "out of scope."
-> *(2026-07 pivot: the rung-③ **primary** SKU is now the full-residency 512 GB LPDDR5X box (~40–60 W,
-> [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); the near-memory/HBM path stays the endgame for the
+> *(2026-07 pivot: the rung-③ **primary** SKU is now the full-residency 512 GB LPDDR5X box (≥50–78 W
+> [EST] floor, [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4); the near-memory/HBM path stays the endgame for the
 > hybrid/streaming SKU and >512 GB checkpoints.)*
 
 ## 2. The irreducible floor
@@ -101,11 +104,12 @@ touch the floor.
 
 > **What about lossless weight compression?** On the **prior FP8 track** the trained E4M3 weight *bytes*
 > had entropy well under 8 bits/symbol (~5–6.5), so a streaming lossless decompressor (`weight_decomp`)
-> bought **~1.34× fewer NVMe bytes** — a real "(c) fewer bytes per fetch" lever **[prior-FP8, branch
-> `fp8`]**. **Q4_K weights are already 4-bit k-quantized** (near entropy-dense super-blocks: 256 weights
+> bought **~1.34× fewer NVMe bytes** — a real "(c) fewer bytes per fetch" lever **[ratio measured on
+> the prior-FP8 track]**. **Q4_K weights are already 4-bit k-quantized** (near entropy-dense super-blocks: 256 weights
 > in 144 B — fp16 `d`/`dmin` + 6-bit scales + 4-bit codes), so the lossless headroom is largely **gone**
-> — the byte win is already banked in the quantization itself. The `weight_decomp`/`weight_decomp2`
-> RTL remains in-tree as the **FP8** decompressor; there is **no Q4_K re-run** and no claim that its
+> — the byte win is already banked in the quantization itself. The order-0 `weight_decomp` RTL is
+> **wired on `main`** (default-off `DECOMP`, release-gated); order-1 `weight_decomp2` is **DEAD / NOT
+> IN PRODUCT**. There is **no Q4_K re-run** and no claim that either
 > ratio carries. For Q4_K, treat "fewer bytes per fetch" as **already spent by the format**, and lever
 > (a) — spec-decode amortization — as the live one.
 
@@ -127,7 +131,7 @@ trick can touch.
 | **DVFS voltage** | lower supply at the reduced f | −~15 % total **energy** | vendor/physical (the J/token half) |
 | **spec high-K verify** (÷(K+1) weight-loads) | verify K+1 draft positions in ONE model weight-load (PE_M=K+1 batch) → **÷(K+1) weight-loads on the ~14 GB term** | scales with K_eff | ✅ **HW built + output-preserving** (`spec_batched_top` / `spec_chain_top`, spec==greedy via `make spec-slow`; PE_M weight-share on `glm_model_q4k`) |
 | ↳ raise K_eff 1.7 → **3–5** | resident ~1–3 B dense draft (vs the chained MTP self-draft) proposes K=4–8 with higher acceptance | approaches the floor | ⏳ **draft-quality, not RTL** — needs a real 1–3 B draft-model artifact ([`ULTRA_PERF.md`](ULTRA_PERF.md) #4) |
-| ~~`weight_decomp` lossless~~ | ~~1.34× fewer NVMe bytes~~ | **prior-FP8 only** | 🅵 FP8 track (branch `fp8`); Q4_K is already 4-bit → little lossless headroom (§2) |
+| `weight_decomp` lossless (order-0) | fewer NVMe bytes (lossless pack) | **ratio unmeasured on Q4_K** — the 1.34× is an FP8-era measurement, not transferable [EST at best] | ✅ RTL **wired on `main`** behind the default-off `DECOMP` parameter (`glm_q4k_system.v`), release-gated (`make weight-decomp`, `decomp1-elab`); Q4_K is already 4-bit → little lossless headroom expected (§2) |
 
 > **Measured U(K) cap on the ÷K rows ([`H_MEASUREMENT.md`](H_MEASUREMENT.md); OLMoE first-pass, now
 > superseded by the **GLM-4.5-Air measurement** — U(2)=1.60–1.64, U(4)=2.60–2.71, U(6)=3.46–3.62,
@@ -149,8 +153,10 @@ Be clear which inputs are which:
   (self-draft, α decays past K=2 because GLM ships **one** MTP layer); clock-gating **~73 %** of
   idle-dynamic gated (`clk_en_ctrl_tb`, a gated-*cycle* fraction); die storage-bound roofline
   ([`CYCLE_EMULATION.md`](CYCLE_EMULATION.md)).
-- **Prior-FP8 measured — NOT Q4_K (branch `fp8`, re-run PENDING):** `weight_decomp` **1.34×** fewer
-  NVMe bytes (5.97 bits/sym on FP8 *byte* entropy) + order-1 `weight_decomp2` ~1.4–1.5×; the BFP
+- **Prior-FP8 measured — NOT Q4_K (Q4_K re-run PENDING):** `weight_decomp` **1.34×** fewer
+  NVMe bytes (5.97 bits/sym on FP8 *byte* entropy — the order-0 RTL itself is on `main`, wired
+  default-off + release-gated; only the *ratio* is FP8-era) + order-1 `weight_decomp2` ~1.4–1.5×
+  (module **DEAD / NOT IN PRODUCT**); the BFP
   accumulator **−87.6 %** cells; the `FLASH_LAT` stall table and the **~4–5× compute-slowdown budget**
   (the FP8 `FLASH_LAT` table). The stall mechanism is **since re-characterized on Q4_K**
   (`make perf-q4k`, 2026-07-11 — see the box below and [`CYCLE_EMULATION.md`](CYCLE_EMULATION.md));
@@ -295,7 +301,7 @@ then revisited as a separate fidelity decision:
 - **Every J/token here is [EST]** — a `bytes × energy/bit` roofline, **not** a silicon/P&R wattmeter.
 - **No real watt number exists** — it needs the vendor power flow on the routed netlist plus a board
   with a real NVMe drive. (The FPGA fit + Fmax are now **MEASURED** — Vivado ML 2026.1 on XCKU3P,
-  142,320 LUT / 87.5 %, routed Fmax 46.5 MHz, campaign closed route-dominated — but board bring-up is
+  142,320 LUT / 87.5 % synth-stage (routed 141,298 LUT), routed Fmax 46.5 MHz, campaign closed route-dominated — but board bring-up is
   not done; [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) / README.)
 - **The ~73 % gating** is a measured *cycle* fraction, not a power meter.
 - **Assembled end-to-end Q4_K numeric golden: DONE** (`make model-q4k`, 1155 bit-exact vs our own
@@ -315,8 +321,10 @@ Every output-preserving lever is a *result-invariant restructuring*: the system 
 DVFS, die-shrink, gating, MTP and batching all pass it today; spec high-K passes it via `make
 spec-slow`. Crucially this invariant is **self-consistency** (DUT-vs-DUT — the "greedy golden" is
 itself a `glm_model_q4k`), **not** a check against a real GLM-5.2 golden — the assembled Q4_K numeric
-path is now golden-checked end-to-end vs our own numpy reimpl (`make model-q4k`, 1155 bit-exact), but
-the *whole model* is still not validated vs the real GGUF or llama.cpp. Power is optimized **without
+path is now golden-checked end-to-end vs our own numpy reimpl (`make model-q4k`, 1155 bit-exact), and
+the dequant layer is sealed against the **real GGUF bytes** (376,586,240 weights bitwise-equal vs
+llama.cpp's kernels — `docs/GGUF_CROSSCHECK.md`); llama.cpp *whole-runtime* numeric equality remains
+out-of-contract by design (op orders differ), and the 467 GB checkpoint has not been run end-to-end. Power is optimized **without
 ever moving the decoded token relative to the reference.**
 
 ## Status
@@ -327,9 +335,10 @@ ever moving the decoded token relative to the reference.**
   load hardware (`spec_batched_top` / `spec_chain_top`, spec==greedy via `make spec-slow`), **and the
   DVFS/eco frequency prescaler** (`clk_throttle` → `clk_en_ctrl.throttle`, f/div peak-power cap,
   byte-identical, BMC-proven, `clk_throttle_tb` in `make all`).
-- **Prior-FP8 (branch `fp8`), NOT carried to Q4_K:** the `weight_decomp` lossless compression
-  (1.34×/1.4–1.5×; Q4_K is already 4-bit), the BFP accumulator (−87.6 % cells), FP8 E4M3 MAC, and the
-  `FLASH_LAT` stall table. Q4_K re-characterization [PENDING].
+- **Prior-FP8 measurements, NOT carried to Q4_K:** the `weight_decomp` lossless-compression ratio
+  (1.34×; the order-0 RTL itself is on `main`, default-off + release-gated) and the ~1.4–1.5× of the
+  **DEAD / NOT IN PRODUCT** `weight_decomp2` (Q4_K is already 4-bit), the BFP accumulator (−87.6 %
+  cells), FP8 E4M3 MAC, and the `FLASH_LAT` stall table. Q4_K re-characterization [PENDING].
 - **Near ceiling / gated:** higher spec K_eff needs a **resident ~1–3 B draft model** (artifact, not
   RTL); DDR5 self-refresh is a **PHY/vendor** feature; the DVFS **voltage** (J/token) half and the real
   watt number are **vendor flow** + a board.

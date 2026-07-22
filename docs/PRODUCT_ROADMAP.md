@@ -97,7 +97,7 @@ scale, robustly, and ship it.*
 | Memory | DDR5/NVMe/USB-C **PHYs stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (7 controllers + 1 ECC-ring) + 5 lifted to unbounded k-induction (`make formal`/`formal-ind`); directed TBs at slice; verilator line/toggle/branch coverage (`make coverage`) | coverage *closure*, constrained-random regression, gate-level sim, production-width formal |
 | Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`); the die already carries the inline `die_clk` ICG (`glm_q4k_system.v:1307-1311`); `mbist_ctrl` is the verified single-port March **reference** (per-macro BIST collars are the physical-flow insertion, [`P2_MEMORY_MAP.md`](P2_MEMORY_MAP.md) §4 — not a hand-wire-in-top task) | full ECC/recovery, CDC sign-off, reset/init hardening, dual-port BIST collars + DFT/scan closed |
-| Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 142,320 LUT (87.5%), ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over bit-exact repipeline rounds, **campaign CLOSED at 4.6×** — the worst path is now route-dominated (wide-bus wiring at 87% utilization), physical work not arithmetic (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | **bitstream** on a board — the Fmax campaign is closed at 46.5 MHz (in the bring-up demo's target band; 200 MHz-class is rung-②/③ work) (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
+| Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 142,320 LUT (87.5%) synth-stage (routed 141,298 LUT, `fpga/results/util_routed_ku3p_acthw1.rpt`), ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over bit-exact repipeline rounds, **campaign CLOSED at 4.6×** — the worst path is now route-dominated (wide-bus wiring at 87% utilization), physical work not arithmetic (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | **bitstream** on a board — the Fmax campaign is closed at 46.5 MHz (in the bring-up demo's target band; 200 MHz-class is rung-②/③ work) (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
 | Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend targets the on-`main` `glm_model_q4k` slice via `vvp` and returns real RTL argmax tokens — parse/protocol covered by `make host-test`, 32 tests) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
@@ -249,7 +249,8 @@ thing the slice and the spec==greedy self-consistency cannot.
   vendor flow. This is a **staged ladder**: rung ① (low-end FPGA, Kintex US+ KU3P-class + DDR4, ~5–8 tok/s
   [EST]) proves it cheap, rung ② (custom mid-FPGA board, DDR5/HBM, ~15–40 tok/s [EST]) is the funded
   interactive product. **The routed FPGA fit is MEASURED** — Vivado ML 2026.1 real synth + full
-  place&route of `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): 142,320 LUT (87.5%),
+  place&route of `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): 142,320 LUT (87.5%)
+  synth-stage (routed 141,298 LUT),
   ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz through BIT-EXACT fmax
   repipeline rounds, every round re-proven on the 1155-test assembled golden (`rope_interleave_unit`
   10-stage; `glm_act` 20-stage + rmsnorm reduce/rsqrt; `glm_matmul_q4k` dequant+MAC 5-stage) —
@@ -325,7 +326,7 @@ thing the slice and the spec==greedy self-consistency cannot.
    (both now done).
 4. **FPGA fit** (P3.2 / [`FPGA_DEMO_PLAN.md`](FPGA_DEMO_PLAN.md)) — the routed LUT/DSP/Fmax that sets
    device size / thermal / BOM / price. **(MEASURED / DONE — Vivado ML 2026.1 full P&R of
-   `glm_q4k_system_cdc` on XCKU3P: 142,320 LUT (87.5%), 421 DSP, 0 BRAM, routed Fmax 46.5 MHz after
+   `glm_q4k_system_cdc` on XCKU3P: 142,320 LUT (87.5%) synth-stage (routed 141,298 LUT), 421 DSP, 0 BRAM, routed Fmax 46.5 MHz after
    bit-exact repipeline rounds; the Fmax campaign is CLOSED at 4.6× — the worst path is now
    route-dominated, physical not arithmetic; see [`fpga/`](../fpga/README.md).)**
 

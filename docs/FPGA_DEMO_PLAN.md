@@ -45,7 +45,7 @@ is in. What remains open is the *board* (bring-up + the L3 token demo), not the 
 **MEASURED — the gate that actually sizes the box (DONE, 2026-07):**
 
 > The **Q4_K routed fit + Fmax on Vivado (XCKU3P)** is **MEASURED**: Vivado ML 2026.1, real synth +
-> full place & route of `glm_q4k_system_cdc` (compact config + `ACT_HW=1`) — **142,320 LUT (87.5 %)**,
+> full place & route of `glm_q4k_system_cdc` (compact config + `ACT_HW=1`) — **141,298 LUT routed** (142,320 / 87.5 % at the synth stage),
 > ~100 K FF, **421 DSP**, 0 BRAM, hold met. Routed **Fmax 10.2 → 17.2 → 46.5 MHz** through a
 > repipelining campaign, every round re-proven bit-exact on the 1155-test assembled golden
 > (round 4 baseline rope cone 98.4 ns/382 levels; round 5 rope 10-stage; round 6 `glm_act` 20-stage +
@@ -153,7 +153,7 @@ where the **~15–40 tok/s [EST]** interactive product lands, and rung-③ (SoC/
 
 An investor discounts every `[EST]`. The demo ladder converts three of them to fact, cheaply:
 1. **Fit/BOM** (L0′ routed Vivado fit on XCKU3P): "it fits a $X FPGA" → the per-seat price the
-   [`ICP.md`](ICP.md) economics need. *(**DONE — MEASURED**: 142,320 LUT (87.5 %) / 421 DSP / 0 BRAM,
+   [`ICP.md`](ICP.md) economics need. *(**DONE — MEASURED**: 141,298 LUT routed (142,320 / 87.5 % synth-stage) / 421 DSP / 0 BRAM,
    routed Fmax 46.5 MHz.)*
 2. **Single-user tok/s** (L1/L2 Fmax × measured `cyc_per_tok`): the rung-① proof speed (**~5–8 tok/s
    [EST]**, DDR4 + NVMe), measured not modeled — the funded rung-② board is where **~15–40 tok/s [EST]**

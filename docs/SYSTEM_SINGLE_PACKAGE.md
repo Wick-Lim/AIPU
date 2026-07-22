@@ -10,7 +10,8 @@
 > with FP8 shown only as the **prior comparison**. Per-bit **energy ratios are format-agnostic** and
 > carry over unchanged, as does the **memory-hierarchy / streaming / expert-cache thesis**. The
 > **FPGA fit is now MEASURED** (Vivado ML 2026.1 routed fit of `glm_q4k_system_cdc` on **XCKU3P**,
-> compact config + ACT_HW=1: 142,320 LUT / 87.5 %, 421 DSP, 0 BRAM, routed Fmax **46.5 MHz** after a
+> compact config + ACT_HW=1: 142,320 LUT / 87.5 % synth-stage (routed 141,298 LUT,
+> `fpga/results/util_routed_ku3p_acthw1.rpt`), 421 DSP, 0 BRAM, routed Fmax **46.5 MHz** after a
 > closed bit-exact repipelining campaign — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); **board
 > bring-up is not done**, so system-level perf/BOM numbers stay **[EST]**. **Not bit-exact to the
 > published GGUF:** the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype`),
@@ -368,9 +369,10 @@ weights from a host over USB/PCIe. Among the fast-tier options DDR5 is the **low
 choice (mainstream, not the high-speed/high-power GDDR6; its per-bit energy is above an
 in-package HBM stack but it uses far fewer, slower devices than GDDR6). On the compute side
 Q4_K's dequant→fp32 MAC (the weights arrive as 4-bit codes; the prior-track FP8 `glm_matmul_fp8`
-measured 18× 7-bit multipliers vs fp32's 24×24) keeps the die's dynamic power and DSP/area down. Net: a few tens of W (the v3-volume residency box is **~40–60 W**; canonical config-labeled
-envelope in [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4) — needs a
-heatsink/fan (a small box, not a thin USB stick), powered over its own DC/USB-C PD input (R3 recommends a ~100–140 W adapter for headroom; PD 100 W covers v3-volume).
+measured 18× 7-bit multipliers vs fp32's 24×24) keeps the die's dynamic power and DSP/area down. Net: tens of W (the v3-volume residency box floor is **≥50–78 W [EST]** — a floor, not a budget,
+the SoC term is UNVERIFIED; the old ~40–60 W is retired, never derived — canonical
+in [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4) — needs a
+heatsink/fan (a small box, not a thin USB stick), powered over its own DC/USB-C PD input (R3 recommends a ~100–140 W adapter; whether PD 100 W suffices depends on the UNVERIFIED SoC term — R3 §4).
 
 > **Honest energy caveat (research-backed).** Prefetch + caching hide NVMe *latency* but **cannot
 > remove its energy-per-bit penalty** — an NVMe SSD is still a NAND array behind a PCIe controller, so

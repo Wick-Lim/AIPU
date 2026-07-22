@@ -56,8 +56,9 @@ silicon fit), **ELABORATED** (structural, no functional golden), or **NOT-YET** 
 is a separate, out-of-contract question (last two rows).
 
 Every gate prints `ALL <N> TESTS PASSED` on success and `$fatal`s on the first mismatch. The full gate is
-`make release-gate-strict`: **68 gates green with their exact per-gate test counts pinned** (a manifest
-check that catches a testbench silently running fewer tests than intended).
+`make release-gate-strict`: **every release gate green with its exact per-gate test count pinned** (a manifest
+check that catches a testbench silently running fewer tests than intended). The spec-greedy / intra-batch /
+SELF_KV / loopback proofs below are release-gate members, no longer opt-in-only.
 
 | What | Status | Evidence |
 |---|---|---|
@@ -73,7 +74,7 @@ check that catches a testbench silently running fewer tests than intended).
 | **Memory-system controllers** — routing/FIFO/token-accounting/ECC/done-gates | **FORMAL — BMC** (7 controllers + 1 ECC-ring), + **unbounded k-induction** on 5 | `make formal` / `formal-ind` |
 | **Whole 2-clock product top** (`glm_q4k_system_cdc`) | **ELABORATED** — yosys `hierarchy -check` + `check -assert` exit 0 (no unresolved hierarchy / comb loop / multiple driver / inferred latch); structural sign-off, not a sim | `make synth-glm` |
 | **Full 753B UD-Q4_K_XL-shape** (`glm_model_q4k` at DIM 6144 / L=78 / 256-expert / VOCAB 154880) | **ELABORATED** — type/width check only, no stimulus | `test/full_config_elab_wrap.v` |
-| **FPGA fit** — real Vivado synth + place & route on Kintex UltraScale+ **XCKU3P** | **MEASURED** — compact config + `ACT_HW=1`: **142,320 LUT (87.5%)**, ~100K FF, **421 DSP, 0 BRAM**, hold met, routed Fmax **46.5 MHz** (bit-exact repipeline campaign closed at 4.6×) | `bash fpga/run_fit.sh` |
+| **FPGA fit** — real Vivado synth + place & route on Kintex UltraScale+ **XCKU3P** | **MEASURED** — compact config + `ACT_HW=1`: **141,298 LUT routed** (142,320 / 87.5% at the synth stage), ~100K FF, **421 DSP, 0 BRAM**, hold met, routed Fmax **46.5 MHz** (bit-exact repipeline campaign closed at 4.6×) | `bash fpga/run_fit.sh` · `fpga/results/util_routed_ku3p_acthw1.rpt` |
 | **Cycle-accurate stall harness** | **MEASURED** (tokens held bit-exact): the residency pivot on real cycles — RESIDENT=1 exposes 35 stall cyc/token vs 2,567 at RESIDENT=0/FLASH_LAT=1024 | `make perf-q4k` |
 | **DFT / power** | 2-port BIST **reference** (`mbist_ctrl_2p`, dual-port March + concurrent-coupling, 11/11); inline glitch-free `die_clk` ICG in the top; SECDED weight/KV ECC (`make weight-ecc`) | see `docs/P2_MEMORY_MAP.md`, `docs/LOW_POWER.md` |
 | **llama.cpp full-runtime numeric equality** | **NOT-YET / out-of-contract** — attention/accumulation orders differ by design; the 467 GB file has not been run end-to-end | — |
@@ -174,11 +175,11 @@ brew install icarus-verilog verilator yosys     # iverilog 13.0, verilator 5.048
 python3 -m pip install numpy                    # required by the golden-reference generators (make all / q4k / model-q4k)
 
 make all                 # the rung-① FPGA prove-it gate: unittests + synth-glm + formal + more
-make release-gate-strict # the full 68-gate release gate + exact per-gate test-count manifest check
+make release-gate-strict # the full release gate + exact per-gate test-count manifest check
 make q4k                 # the Q4_K sub-gate (q4k_prim / glm_matmul_q4k / swiglu_expert_q4k / moe_router_q4k)
 make model-q4k           # assembled full-forward numeric golden (1155 tests)
 make mixedtype           # Q6_K / Q8_0 / F16 mixed-type path
-make spec-greedy         # composed speculating top: spec==greedy + A_eff measured (opt-in)
+make spec-greedy         # composed speculating top: spec==greedy + A_eff measured (in release-gate)
 make loopback            # PHY-closure loopback (aw); loopback-fw / loopback-rest for the other families
 make formal / formal-ind # BMC / unbounded k-induction of the memory controllers
 make synth-glm           # yosys whole-chip structural gate on glm_q4k_system_cdc
@@ -230,3 +231,11 @@ tag **`fp8-verified-baseline`** (every `*_fp8.v`, TB, and evidence doc), referen
 exhaustive FP8 E4M3 arithmetic (66069 cases), real sky130 place-and-route of `glm_matmul_fp8`, and
 compute-side PPA wins — all FP8-specific. To inspect: `git checkout fp8`. The memory-system controllers,
 CDC, ECC/BIST, and clock-gating blocks are shared byte-agnostic logic on both branches.
+
+---
+
+## License
+
+**Apache-2.0** — the repo-level [`LICENSE`](LICENSE) governs every file in this repository. Per-file
+SPDX / Apache headers are deliberately omitted by policy; if you copy a file out individually, it carries
+the repository's Apache-2.0 terms.

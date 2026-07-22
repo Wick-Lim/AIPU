@@ -16,7 +16,8 @@ bytes_moved** (which helps both tok/s and J/token). The compute die is *not* the
 cost/thermals/correctness but does **not** move tok/s or J/token until the NVMe/storage tier is
 unblocked. This plan targets the real bottleneck. **All tok/s figures below are [EST]** (roofline-
 modeled) until a running board exists — board bring-up is still open, but the **Vivado routed fit +
-Fmax are now MEASURED** (Vivado ML 2026.1 on XCKU3P, compact config + ACT_HW=1: 142,320 LUT / 87.5 %,
+Fmax are now MEASURED** (Vivado ML 2026.1 on XCKU3P, compact config + ACT_HW=1: 141,298 LUT routed (142,320 / 87.5 % synth-stage)
+post-synthesis, 141,298 LUT routed — `fpga/results/util_routed_ku3p_acthw1.rpt`;
 421 DSP, 0 BRAM; routed Fmax **46.5 MHz** after a 4.6× repipeline campaign, every round re-proven
 bit-exact on the 1155-test assembled golden; campaign CLOSED — the worst path is route-dominated,
 physical work not arithmetic).
@@ -26,9 +27,13 @@ physical work not arithmetic).
 > `tools/glm_model_q4k_ref.py`, plus `make model-q4k-acthw` through the ACT_HW=1 serialized-activation
 > datapath); **mixed-type Q6_K/Q8_0/F16 consumers are DONE** (`make mixedtype`), so a real UD-Q4_K_XL
 > checkpoint's dynamic type mix can be consumed; and the MLA `1/√qk_head_dim` softmax scale is now
-> **applied**. Still OPEN: bit-exactness vs the *real* published GGUF / llama.cpp is unvalidated (our
-> goldens are our **own** ggml/numpy reimpls, never the downloaded bytes) — tracked in `README.md` /
-> `NEXT_STEPS_PLAN.md`.
+> **applied**. **CLOSED (2026-07-10/11): bit-exactness vs the *real* published GGUF bytes** —
+> `tools/gguf_crosscheck.py` fed two real published GGUFs' raw block bytes to `q4k_ref` and to
+> llama.cpp's own `dequantize_row_q4_K/_q6_K/_q8_0` (built libggml, direct-linked):
+> **376,586,240 weights (Q4_K + Q6_K + Q8_0), all bitwise-equal** — so by transitivity the RTL
+> dequant ≡ the real files' ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)). Still out-of-contract:
+> llama.cpp *whole-runtime* numeric equality (attention/accumulation orders differ by design), and
+> the 467 GB checkpoint has not been run end-to-end — tracked in `README.md`.
 
 **The memory-stall mechanism this plan rests on is emulatable on real RTL cycles.** `glm_q4k_system`
 carries an `EXPERT_STALL` parameter (default 0 = byte-identical to the committed system) that
@@ -75,7 +80,7 @@ Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendo
 
 | # | Item | Type | Plan | Est. impact |
 |---|---|---|---|---|
-| 1.1 | **`flash_xbar`** — N-channel banked storage-read fabric | 🟢 | Same pattern as `ddr5_xbar`: stripe expert fetches across N back-end channels → ~N× aggregate NVMe_BW. `flash_xbar` is a committed RTL identifier: the medium-agnostic storage-read fabric (address → weight bytes); in the product its NAND back-end is a labeled placeholder swapped for an **NVMe/PCIe host controller**, so the N channels map to **PCIe lanes / multiple NVMe drives**, not NAND dies. A 1–4 TB NVMe store reaches "10s of GB/s" [EST] by striping reads across lanes/drives (one Gen4 x4 NVMe ~7 GB/s; scale with lanes/drives). **Built + BMC-proven** (flash_xbar is in the formal controller set — see [`FORMAL.md`](FORMAL.md)): the standalone fabric adds a deep per-channel outstanding queue (QDEPTH) that hides storage read latency (Little's law, BW = outstanding/latency; ~8× on the fabric in isolation at QDEPTH≈FLASH_LAT [EST]) + N_CH banking. **⚠️ OPEN / honest caveat:** in the *integrated* top the memory fabric is currently **single-lane** (1 beat/cyc, ~32 GB/s @1 GHz) and **observation-only** — the die pulls weights combinationally from a TB stub — i.e. **12–18× short** of a real 400–600 GB/s fast tier. Wiring the banked fabric into the real die datapath (and Vivado-fitting it) is the actual P1 work. | **~N× tok/s** [EST] (linear) **once integrated** — not yet realized in the integrated die path |
+| 1.1 | **`flash_xbar`** — N-channel banked storage-read fabric | 🟢 | Same pattern as `ddr5_xbar`: stripe expert fetches across N back-end channels → ~N× aggregate NVMe_BW. `flash_xbar` is a committed RTL identifier: the medium-agnostic storage-read fabric (address → weight bytes); in the product its NAND back-end is a labeled placeholder swapped for an **NVMe/PCIe host controller**, so the N channels map to **PCIe lanes / multiple NVMe drives**, not NAND dies. A 1–4 TB NVMe store reaches "10s of GB/s" [EST] by striping reads across lanes/drives (one Gen4 x4 NVMe ~7 GB/s; scale with lanes/drives). **Built + BMC-proven** (flash_xbar is in the formal controller set — see [`FORMAL.md`](FORMAL.md)): the standalone fabric adds a deep per-channel outstanding queue (QDEPTH) that hides storage read latency (Little's law, BW = outstanding/latency; ~8× on the fabric in isolation at QDEPTH≈FLASH_LAT [EST]) + N_CH banking. **⚠️ RESCOPED (2026-07-22) — the die-feedback half is DONE and gated:** all **five die weight-input families (aw / fw / rw / lw / gn)** are loopback-proven through the banked `ddr5_xbar` — the die's weight bytes routed OUT as fabric reads and back IN, committed stream bit-exact, each with a corruption-injection build that must FAIL (`make loopback` / `loopback-fw` / `loopback-rest`, all in `release-gate`) — and the weight-loader's PE_N≤16 lane cap is root-caused and fixed (loader→GEMM bit-exact through PE_N=64; `make weight-loader-lanes` gates PE_N=32 — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)'s weight-path note). **Still open:** integrating the FLASH/storage tier (`flash_xbar`) into that proven path, and the Vivado fit of the banked fabric. | **~N× tok/s** [EST] (linear) — DDR-side die feedback loopback-proven; flash-tier integration + fabric Vivado fit still open |
 | 1.2 | **NVMe expert layout** — co-activated experts on different channels | 🟢 | Offline placement so a token's top-8 experts spread across channels/drives (avoid channel hotspots), mirroring the DDR5 stripe. **Built: `tools/flash_layout.py` (balanced greedy least-conflict packer).** Measured N_CH=8 (format-agnostic — depends only on routing, not on the weight format): optimized 55 % of 8× peak BW vs naive round-robin 39 % (~+40 %) — kills the 4/5/6-on-one-channel collision tail (99.5 % of fetches ≤2/ch). Honest: 8× is unreachable (top-8 ≥ 8ch pigeonhole + popularity skew); the win is removing hotspots, not reaching peak. 8ch is the top-8 sweet spot. The pigeonhole cap and the sub-expert-striping (RAID-0) option that removes it are in [`FLASH_STRIPING.md`](FLASH_STRIPING.md). | **~+40 %** [EST] of flash_xbar's realizable BW (sustains 1.1) |
 | 1.3 | **Deeper NVMe read pipeline** — more outstanding requests | 🟢 | Raise the fetch queue depth so the NVMe/storage tier stays saturated despite per-read latency (BW = outstanding / latency). Wire into `expert_cache_pf` + `flash_xbar`. | recovers the latency-bound gap to peak BW |
 | 1.4 | Faster NVMe medium (PCIe5 NVMe / more drives / more lanes) | 🟡 | Vendor/board choice; the NVMe host controller / PCIe root is vendor IP. The bandwidth a board can actually feed is **rung-dependent** — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md): the near-term prove-it rung is a low-end FPGA dev board + DDR4 + one NVMe; the funded product is a custom board (mid FPGA + DDR5-multi-channel **or** HBM + multi-NVMe over more PCIe lanes). DDR5 is the **rung-2** memory, not a hard-asserted single spec. Document the BW target the RTL fabric must feed. | linear, but $ + board |
@@ -84,7 +89,7 @@ Legend: 🟢 RTL-doable in this repo · 🟡 system/architecture (design + vendo
 
 | # | Item | Type | Plan | Est. impact |
 |---|---|---|---|---|
-| 2.1 | **Expert decompressor** in the NVMe→DDR5 path | 🟢 | Store expert weights losslessly-compressed on the NVMe SSD and decompress on-chip during fetch → cut NVMe bytes/expert → effective NVMe_BW ↑ and NVMe read energy ↓ by the same factor. A `weight_decomp` unit (canonical-Huffman, bit-exact lossless) exists. **⚠️ FP8-specific — Q4_K re-run [PENDING]:** the built `weight_decomp.v` is an **FP8 E4M3 byte** decompressor; its **1.34× (5.97 bits/sym; 8 tests)** is a **prior FP8-track measurement (branch `fp8`)**, where raw FP8 weight *bytes* have entropy well under 8 bits. **Q4_K does not inherit that number**: a Q4_K super-block is *already* ~4.5 bpw block-entropy-packed (fp16 `d`/`dmin` + 6-bit scales + 4-bit codes), so the lossless headroom left for a second Huffman pass is **much smaller and unmeasured**. Re-target the decompressor to Q4_K blocks (or drop it) and **measure the real Q4_K ratio** before claiming any win. Do **not** relabel the FP8 1.34× as a Q4_K result. | **[PENDING]** for Q4_K (prior FP8 track: ~1.34×) |
+| 2.1 | **Expert decompressor** in the NVMe→DDR5 path | 🟢 | Store expert weights losslessly-compressed on the NVMe SSD and decompress on-chip during fetch → cut NVMe bytes/expert → effective NVMe_BW ↑ and NVMe read energy ↓ by the same factor. A `weight_decomp` unit (order-0 canonical-Huffman, bit-exact lossless) is **wired into the production `glm_q4k_system` on main** behind the default-off `DECOMP` parameter (DECOMP=0 byte-identical to the pre-DECOMP module — `src/glm_q4k_system.v` §DECOMP) and **release-gated** (`make weight-decomp` round-trip golden + `decomp1-elab`). **⚠️ Ratio [PENDING] for Q4_K:** the **1.34× (5.97 bits/sym; 8 tests)** is an **FP8-era measurement (branch `fp8`, E4M3 byte stream)**, where raw FP8 weight *bytes* have entropy well under 8 bits. **Q4_K does not inherit that number**: a Q4_K super-block is *already* ~4.5 bpw block-entropy-packed (fp16 `d`/`dmin` + 6-bit scales + 4-bit codes), so the lossless headroom left for a second Huffman pass is **much smaller and unmeasured** — [EST] at best until re-measured on real Q4_K blocks. **Measure the real Q4_K ratio** before claiming any win. Do **not** relabel the FP8 1.34× as a Q4_K result. | **[PENDING]** for Q4_K (prior FP8 track: ~1.34×) |
 | 2.2 | **MTP K>1 / better draft** — verify more tokens per weight-load | 🟢 | Extend `spec_decode_seq` to a K>1 multi-token draft (longest-accepted-prefix). **Built + gated: `DRAFT_K>1` (g_kn batch verifier), spec==greedy** on the Q4_K model (`spec_decode_top` 18/18; K=1 byte-identical; `spec_batched_top` / `spec_chain_top` via `make spec-slow`). Eff tok/pass under a chained-decay acceptance model [EST] (the shipped 1-MTP-layer reality) at α=0.7: K=1→1.69, K=2→2.08, K=3→2.17. HONEST: the shipped model has 1 MTP layer, so K>1 must chain the head autoregressively (acceptance decays) → **K=2 is the sweet spot**; K=3+ is marginal unless a deeper MTP stack lands. Realized in RTL by `spec_chain_top`: the MTP head runs recurrently on chain hidden-state `h_mtp` to mint K drafts, then a `PE_M=K+1` batched-verify in one weight-load commits the accepted prefix (spec==greedy; self-draft K_eff ~1.7–2.2 [EST]). **Measured U(K) correction ([`H_MEASUREMENT.md`](H_MEASUREMENT.md)):** the K positions' expert *union* grows with K (proxy-measured U(2)=1.51–1.65, U(4)=2.25–2.64), so the realized NVMe-byte amortization is **A/U(K) ≈ 1.1–1.3× at K=4 (A≈3)** — read the spec multiplier through that cap, not as ×K_eff. *(Updated 2026-07: U(K) is now GLM-family measured — GLM-4.5-Air: U(2)=1.60–1.64, U(4)=2.60–2.71, U(8)=4.19–4.41 — superseding the OLMoE proxy values; and **adaptive spec-chain is ADOPTED + RTL-landed** (commit 6c5332f): the GLM-U K-sweep shows the r=0.9 optimum plateaus at **K=4–5** (K>5 adds nothing) and r=0.8 at K=2–3 → adaptive range **K∈[1..5]** via `spec_decode_seq` `ADAPT` param (default 0 — yosys sequential-equivalence proven unchanged) + `k_cur`/`pass_*` taps + new `src/spec_depth_adapt.v` saturating-streak policy; output-invariant (spec==greedy for ANY depth schedule); gates incl. `spec_depth_adapt` 31,522, `spec_decode_seq`(K>1) 3,702 (K 1/2/3/4/6/8), `spec_chain_top` 4/4 incl. a new DRAFT_K=4 engine, `spec_decode_top` 18/18, and the new `make spec-adapt` gate. Accept rate r has since been **measured** (job B vLLM MTP sweep, GLM-4.5-Air: r₁=0.87 with per-position decay 0.87/0.60/0.32/0.13/0.04, A_eff plateau ~2.9 → memory-bound optimum **K=1–2**, residency-box design point ≈80 tok/s [measured-inputs EST] — [`H_MEASUREMENT.md`](H_MEASUREMENT.md) 3rd measurement; the adaptive controller settles at that optimum on its own).)* | **K=2 ≈ +23 %** [EST] over K=1 (chained, fixed-K model); adaptive K∈[1..5] landed; NVMe-byte win capped by measured U(K) |
 | 2.3 | **Higher cache hit-rate h** — bigger cache + predictor-driven prefetch | 🟢 | Wire `expert_predictor` into `expert_cache_pf` prefetch. **❌ MEASURED NO-OP at GLM cache size (`expert_prefetch_top`, format-agnostic):** at SLOTS=900 (> reuse distance) the predictor hints the most-popular expert, which LRU **already keeps resident** → 0 prefetches issued, hit-rate byte-identical to baseline; deep LOOKAHEAD 1/2/3 identical. Only helps in the narrow regime just *below* the reuse-distance knee (SLOTS=550: 0 %→4.6 %). **Conclusion: hit-rate is capped by fine-grained-routing entropy, not prefetch cleverness — this lever does not move the real config.** (Matches the ledger: predictor-prefetch is a measured no-op.) | **~0 %** at real cache size (honest) |
 | 2.4 | **Union-skip grouped MoE** (batch axis) — fetch only the union of selected experts | 🟢 | The PE_M>1 grouped MoE in `glm_decoder_block_q4k` scans the expert axis (`T_ESCAN`) and fetches **only** the union of experts any of the B rows selected (combinational `any_has` membership), not all N_EXPERT. **Union-skip is folded INLINE** into `glm_decoder_block_q4k` (the `T_ESCAN` scan + `any_has` cursor mirror the now-removed standalone `batched_moe.v` reference pattern). The PE_M batch-widen enabler is DONE across swiglu/router/mla/mtp (`_q4k`). *(The full B-coverage cross-check `make bcov` — B∈{1,2,3,5,8} × routing {same,distinct,random,overlap}, batched(PE_M=B) == B per-row runs bit-exact, union fetched once — was a **prior FP8-track** gate, removed from `main`; see branch `fp8`.)* On the single-user box the batch axis is exercised only by speculative decode's small `PE_M=K+1` self-verify batch (`spec_chain_top`, B=1 per user); the large-batch B≈256 case is the **non-target datacenter-serving** regime (kept as analysis, not this product). | up to **~32×** fewer NVMe expert fetches at small batch (the single-user spec-decode verify batch) [EST]; ~0 at B≈256 (union≈all — the non-target datacenter-batch regime) |
@@ -117,14 +122,16 @@ energy lever — it directly cuts NVMe bytes. P3.2 (clock gating) trims idle. Be
 Stacking the 🟢 RTL items on the baseline (~2–3 tok/s, ~8–10 J/token). **Every row is [EST]** — the
 built RTL items are verified *as RTL* here (and the Vivado routed fit + 46.5 MHz Fmax are now
 MEASURED — see above), but the absolute tok/s awaits a running board; the assembled Q4_K numeric path
-now has its 1155-test end-to-end golden (`make model-q4k`, vs our own numpy reimpl — still not the
-real GGUF/llama.cpp):
+now has its 1155-test end-to-end golden (`make model-q4k`, vs our own numpy reimpl; the dequant layer
+beneath it is since **PROVEN bit-exact on real published GGUF bytes** —
+[`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md) — while llama.cpp *whole-runtime* equality stays
+out-of-contract):
 
 | Step | Lever | tok/s | J/token | status |
 |---|---|---|---|---|
 | baseline | — | ~2–3 | ~9 | — |
-| + flash_xbar Nch (1.1) | NVMe_BW ×N | ~×N | ~9 | built + BMC-proven as standalone fabric; **not yet integrated** (top is single-lane observation-only) |
-| ~~+ expert decompress (2.1)~~ | ~~bytes ÷~~ | — | — | **Q4_K [PENDING]** (prior FP8 track measured 1.34×; Q4_K already block-packed → headroom unknown) |
+| + flash_xbar Nch (1.1) | NVMe_BW ×N | ~×N | ~9 | built + BMC-proven; DDR-side die feedback loopback-proven through the banked `ddr5_xbar` (all five weight families, in `release-gate` 2026-07-22); **flash-tier integration + fabric Vivado fit still open** |
+| ~~+ expert decompress (2.1)~~ | ~~bytes ÷~~ | — | — | wired on main (default-off `DECOMP`, release-gated); **Q4_K ratio [PENDING]** (prior FP8 track measured 1.34×; Q4_K already block-packed → headroom unknown) |
 | + MTP K_eff ~1.7–2.1 (2.2) | ÷ traffic | +~20–25 % | ↓ | built + spec==greedy (1 MTP layer → K=2 sweet spot) |
 | ~~+ hit-rate (2.3)~~ | ~~(1−h)↓~~ | — | — | ❌ measured NO-OP at real cache |
 | + clock gating (3.2) | idle ↓ | (tok/s ~flat) | ↓ | built, enable-side RTL (ICG vendor); ~74 % idle-power gated [EST] |
@@ -133,8 +140,9 @@ real GGUF/llama.cpp):
 (P1)** plus **fewer verified weight-loads (MTP K>1, P2.2)** — *not* from cache cleverness (2.3 is a
 measured no-op) and *not*, on Q4_K, from a further expert decompressor (2.1's 1.34× was FP8-specific;
 Q4_K is already ~4.5 bpw block-packed, so its headroom is unmeasured/PENDING). The dominant P1 win is
-also **not yet realized in the integrated die path** — the memory fabric there is still single-lane
-observation-only. All numbers [EST].
+**partly realized** (2026-07-22): the banked `ddr5_xbar` feeds the die's five weight-input families in
+proven, release-gated loopback; the flash/storage tier and the banked fabric's Vivado fit remain open.
+All numbers [EST].
 
 > **These are RTL-lever multipliers on the storage roofline — not a hardware headline.** The absolute
 > tok/s each multiplier lands on is set by the board's **memory bandwidth**, which is **rung-dependent**
@@ -146,7 +154,9 @@ observation-only. All numbers [EST].
 > hardware. (The assembled Q4_K numeric path now **has** its end-to-end golden — `make model-q4k`,
 > 1155 bit-exact vs our own numpy reimpl.) The same
 > Q4_K RTL runs on every rung; only the bandwidth it is fed changes. (Q4_K's GEMM core is bit-exact to
-> `tools/q4k_ref.py`, our own ggml reimpl — **not** the downloaded GGUF or llama.cpp.) Clock↔area at
+> `tools/q4k_ref.py` — and `q4k_ref` itself is since **PROVEN bit-identical to llama.cpp's own dequant
+> on real published GGUF bytes**, 376,586,240 weights, [`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md);
+> llama.cpp *whole-runtime* equality stays out-of-contract.) Clock↔area at
 > the measured fit: compute-side stream consumption = dequant lanes × clock — at the measured
 > 46.5 MHz, 7 GB/s (1 NVMe) needs ~300 lanes and 100 GB/s ~4,300 (infeasible on KU3P); ~1,000 at
 > 200 MHz-class; ~200 at ASIC 1 GHz+. A higher clock buys a smaller/cheaper die, **not** more tok/s
@@ -154,9 +164,10 @@ observation-only. All numbers [EST].
 
 ## Execution order (RTL, by impact-per-effort)
 
-1. **`flash_xbar` integration** (P1.1) — biggest single win; the fabric is built + BMC-proven, so the
-   work is wiring the banked/queued fabric into the real die datapath (today single-lane
-   observation-only) and Vivado-fitting it.
+1. **`flash_xbar` integration** (P1.1) — biggest single win; the fabric is built + BMC-proven, and
+   the DDR-side die feedback is now loopback-proven through the banked `ddr5_xbar` (all five weight
+   families + the PE_N lane-cap fix, in `release-gate` as of 2026-07-22); the remaining work is the
+   flash/storage-tier integration into that proven path and Vivado-fitting the banked fabric.
 2. **MTP K>1** (P2.2) — extend the speculative loop, keep spec==greedy exact; K=2 sweet spot on the
    shipped 1-MTP-layer model. *(2026-07: DONE one better — adaptive depth K∈[1..5] landed
    (`spec_depth_adapt` + `spec_decode_seq` `ADAPT`, `make spec-adapt`); the measured accept sweep
@@ -167,6 +178,6 @@ observation-only. All numbers [EST].
    hit-rate: 2.3 is a measured no-op at the real cache size), measure NVMe occupancy.
 4. **idle clock-gating** (P3.2) — power, low-risk (built; re-measure fraction under the Q4_K config).
 5. **Q4_K expert decompressor** (P2.1) — *only if* a real Q4_K-block compressibility measurement shows
-   headroom; the built `weight_decomp` is FP8-byte-specific and its 1.34× does **not** transfer to
-   already-packed Q4_K. Measure first.
+   headroom; `weight_decomp` is already wired on main (default-off `DECOMP`, release-gated) but its
+   1.34× is an FP8-era measurement that does **not** transfer to already-packed Q4_K. Measure first.
 6. Document the 🟡 system items (NVMe layout, faster medium, HBM option) as build/board choices.

@@ -40,7 +40,7 @@ So "make the box cheaper" ≈ "need less memory bandwidth" ≈ "accept lower tok
 Low-end **Kintex UltraScale+ (KU3P-class)** dev board + DDR4 + one NVMe. **Reduced-config demo** (a dev
 board's DDR/storage can't hold the 467 GB Q4_K model); goal is *"real 753B-family RTL runs on real FPGA
 silicon, offline, bit-exact to the ggml-Q4_K reference (`tools/q4k_ref.py`)"*. The FPGA fit / Fmax is
-**MEASURED — DONE** (Vivado routed `glm_q4k_system_cdc` on XCKU3P: 142,320 LUT / 87.5%, 421 DSP, 0 BRAM,
+**MEASURED — DONE** (Vivado routed `glm_q4k_system_cdc` on XCKU3P: 142,320 LUT / 87.5% synth-stage (routed 141,298 LUT), 421 DSP, 0 BRAM,
 46.5 MHz; [`../fpga/`](../fpga/README.md)); at 46.5 MHz the demo slice computes ~4,200–5,800 slice tok/s
 (the correctness-demo speed of the reduced config, **not** a GLM-5.2 product number), while GLM-scale
 NVMe-only streaming sits at ~0.5–1 tok/s [EST, measured-proxy — [`H_MEASUREMENT.md`](H_MEASUREMENT.md)].
@@ -89,7 +89,7 @@ board revisions. Amortized over units, negligible per-seat at any real volume.
 
 > **(updated 2026-07: the rung-③ primary design point pivoted to FULL RESIDENCY** — 512 GB LPDDR5X
 > (16×32 GB, 1024-bit on-package, ~1.1 TB/s) holds the whole ~467 GB checkpoint; cold storage = one
-> commodity M.2 NVMe (boot-load ~70 s); design point **≈80 tok/s [measured-inputs EST]**; box ~40–60 W; board
+> commodity M.2 NVMe (boot-load ~70 s); design point **≈80 tok/s [measured-inputs EST]**; box **≥50–78 W [EST] floor** (R3 §4 — old ~40–60 W retired, never derived); board
 > 120×80 mm; **BOM ~$1.8–2.4 k** — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md). The
 > HBM/streaming shape below survives as the **hybrid upside SKU** (if GLM h≥0.75) and the
 > >512 GB-checkpoint fallback.)

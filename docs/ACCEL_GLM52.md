@@ -466,7 +466,7 @@ VOCAB 154880) elaborates clean (`test/full_config_elab_wrap.v`, `iverilog -tnull
 **Verification gates:** (1) iverilog functional vs golden (`make q4k` / `make unittests` /
 `make mixedtype` / `make model-q4k`); (2) yosys structural synth (`make synth-glm`); (3) routed
 PnR / Fmax / LUT-DSP fit — **MEASURED**: Vivado ML 2026.1 real synth + full place&route of
-`glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): **142,320 LUT (87.5%)**, ~100K FF,
+`glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1): **141,298 LUT routed** (142,320 / 87.5% at the synth stage — `fpga/results/util_routed_ku3p_acthw1.rpt`), ~100K FF,
 **421 DSP**, 0 BRAM, hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through bit-exact
 repipeline rounds (each round re-proven on the 1155-test assembled golden). **Campaign CLOSED at
 4.6×**: the worst path is now route-dominated (wide-bus wiring at 87% utilization) — physical
@@ -630,7 +630,7 @@ measured, ~95 if GLM-5.2's deeper MTP hits its published accept depth)
 with **~9 → ~3 J/token**, all **[EST]** until a running board —
 see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md), [`ULTRA_PERF.md`](ULTRA_PERF.md). A routed PPA
 result **is now in-repo**: Vivado ML 2026.1 real synth + full place&route of `glm_q4k_system_cdc`
-on XCKU3P (compact config + ACT_HW=1) — **142,320 LUT (87.5%)**, ~100K FF, **421 DSP**, 0 BRAM,
+on XCKU3P (compact config + ACT_HW=1) — **141,298 LUT routed** (142,320 / 87.5% synth-stage), ~100K FF, **421 DSP**, 0 BRAM,
 hold met; routed Fmax **10.2 → 17.2 → 46.5 MHz** through bit-exact fmax repipeline rounds
 (`rope_interleave_unit` 10-stage; `glm_act` 20-stage + rmsnorm reduce/rsqrt; `glm_matmul_q4k`
 dequant+MAC 5-stage — each re-proven on the 1155-test assembled golden). **Campaign CLOSED at

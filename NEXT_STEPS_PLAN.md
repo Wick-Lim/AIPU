@@ -2,11 +2,12 @@
 
 > **마이그레이션 노트 (FP8 → GGML Q4_K):** 이 저장소는 FP8 트랙에서 **GGML Q4_K 트랙으로 이전**됐다.
 > 활성 데이터패스는 이제 `glm_model_q4k` / `glm_matmul_q4k` / `mla_attn_q4k` / `moe_router_q4k` /
-> `swiglu_expert_q4k` / `mtp_head_q4k`, 시스템 top은 `glm_q4k_soc` → `glm_q4k_system` →
-> `glm_q4k_system_cdc`다. **이전 FP8 트랙은 브랜치 `fp8` + 태그 `fp8-verified-baseline`에 보존**되며
+> `swiglu_expert_q4k` / `mtp_head_q4k`, 시스템 top은 **`glm_q4k_system` → `glm_q4k_system_cdc`**다
+> (`glm_q4k_soc`는 **DEAD / NOT IN PRODUCT** — `glm_q4k_system`으로 대체, 어디에도 미인스턴스·게이트/TB
+> 없음, `src/glm_q4k_soc.v` 헤더 참조). **이전 FP8 트랙은 브랜치 `fp8` + 태그 `fp8-verified-baseline`에 보존**되며
 > 여기서는 *과거 베이스라인*으로만 참조한다(현재 main이 개발하는 코드가 아님). `docs/Q4K_RETARGET.md` 참조.
 > **아래 file:line 참조는 FP8 감사 시점 기록**이라 Q4_K 이전 후 줄 번호가 달라졌을 수 있다 — 모듈명을
-> 기준으로 읽고, 검증한 줄만 갱신했다(`make all`=Makefile:26, `synth-glm`=Makefile:357).
+> 기준으로 읽고, 검증한 줄만 갱신했다(`make all`=Makefile:34, `synth-glm`=Makefile:1073).
 
 > **범위 결정:** 실제 753B 모델을 GPU로 돌려 대조하는 **실체크포인트 검증(P1.1)은 이 no-GPU 계획의
 > 범위 밖**이지만 *제외되어 사라진 것이 아니라* 여전히 **열린(OPEN) #1 정합성 게이트**다(아래 "여전히
@@ -25,7 +26,7 @@
 > **해자의 정직한 범위 (반드시 좁게 읽을 것 — 2026-07 갱신):** Q4_K **GEMM 코어**는 **독립 ggml-Q4_K
 > 레퍼런스(`tools/q4k_ref.py`, 팀 자체 `dequantize_row_q4_K` Python 재구현)에 대해 bit-exact**하고,
 > 그 재구현은 이제 **실제 공개 GGUF 바이트의 dequant 계층에 대해 비트 단위로 증명**됐다
-> (376,586,096 가중치 — Q4_K/Q6_K/**Q8_0**, 실공개 GGUF 2개 — llama.cpp 자체 dequant와 전부 비트 동일 — `docs/GGUF_CROSSCHECK.md`, 커밋
+> (376,586,240 가중치 — Q4_K/Q6_K/**Q8_0**, 실공개 GGUF 2개 — llama.cpp 자체 dequant와 전부 비트 동일 — `docs/GGUF_CROSSCHECK.md`, 커밋
 > 05639bf). *동적* UD-Q4_K_XL 믹스의 **Q6_K/Q8_0/F16 텐서도 RTL 소비자가 랜딩**됐다(`make
 > mixedtype`, 커밋 a730b37), 조립 forward의 **수치 golden**도 랜딩됐다(`make model-q4k` 1155/1155,
 > 커밋 b058f6f). 정직하게 남은 것: **llama.cpp 런타임 전체**(어텐션/누산 순서)와의 수치 동일성은
@@ -95,9 +96,9 @@
 > 아래 번호 갭들은 FP8 감사 시점 기록이다. **대부분 이후 커밋에서 폐쇄됨**(B1·B2·B3·C1·C2·C3·C9 등).
 > 모듈명은 Q4_K 등가물로 갱신했고 FP8-era 줄 번호는 신뢰하지 말 것.
 
-1. **전체칩 synth 게이트가 없었다** → **C1로 폐쇄**: `make synth-glm`(Makefile:357)이 `glm_q4k_system_cdc`
+1. **전체칩 synth 게이트가 없었다** → **C1로 폐쇄**: `make synth-glm`(Makefile:1073)이 `glm_q4k_system_cdc`
    전체를 `hierarchy -top glm_q4k_system_cdc -check; proc; opt; check -assert; stat`로 게이트하고 `make all`
-   (Makefile:26)에 편입. **이는 구조 elaboration + 어서션 사인오프이지 sim이 아니다.**
+   (Makefile:34)에 편입. **이는 구조 elaboration + 어서션 사인오프이지 sim이 아니다.**
 2. **sparse-DSA 마스킹 버그** → **B1+B6로 폐쇄**: `mla_attn_q4k`가 선택 슬롯이 아니라 실제 키 인덱스로
    마스크; sparse per-row **union** 데이터패스 완결(dense TB 전부 byte-identical, line-81 caveat 제거).
 3. **P2 신뢰성 유닛 + weight_decomp 미인스턴스** → **부분 폐쇄**: `reset_sync` CDC top 배선(C3),
@@ -105,7 +106,8 @@
    2026-07):** ICG는 이미 탑 인라인(`die_clk`); MBIST는 2-port BIST collar(메모리 컴파일러 생성)가
    실질 잔여 — 단일포트 `mbist_ctrl` 손배선은 theatre(C7, 계약 `docs/P2_MEMORY_MAP.md` §4).
 4. **`weight_decomp`이 tok/s를 움직이는 유일한 die-side 레버인데 미배선** → **C9로 배선**(order-0, quant
-   바이트를 불투명 심볼로 처리; 실 NVMe 바이트 1.34×→~1.42× 절감 **[EST]**, 토큰 출력 불변).
+   바이트를 불투명 심볼로 처리; 압축비 주의 — 1.34×는 FP8-era 실측이고 ~1.42×는 **DEAD / NOT IN PRODUCT**인
+   `weight_decomp2`(order-1)의 수치라 **둘 다 Q4_K 재실측 전까지 이전 불가**(잘해야 [EST]); 토큰 출력 불변).
 5. **`spec_chain_top` 미완성** → **B8로 완전 승격**(pull 포트 승격, seed 규약 헤더 문서화,
    `test/spec_chain_top_tb.v`, `make spec-slow` 편입; committed==greedy).
 6. **CI 전무** → **폐쇄**: `.github/` 존재.
@@ -135,7 +137,7 @@
 
 | # | 작업 | 수락 기준 | 노력 |
 |---|------|-----------|------|
-| **C1** (완료) | `make synth-glm` — `glm_q4k_system_cdc` set을 `hierarchy -top glm_q4k_system_cdc -check; proc; opt; check -assert; stat`; `make all`(Makefile:26) 편입 | **최초 전체칩 구조 게이트**; exit 0, `check -assert` clean, leaf 전부 resolved. **구조 elaboration이지 sim 아님** | S |
+| **C1** (완료) | `make synth-glm` — `glm_q4k_system_cdc` set을 `hierarchy -top glm_q4k_system_cdc -check; proc; opt; check -assert; stat`; `make all`(Makefile:34) 편입 | **최초 전체칩 구조 게이트**; exit 0, `check -assert` clean, leaf 전부 resolved. **구조 elaboration이지 sim 아님** | S |
 | **C2** (완료) | `docs/P2_MEMORY_MAP.md` — 모든 비-TB `reg [] arr[]`(kv_cache_pager ring, ddr5/flash_xbar 응답 FIFO, cdc_async_fifo mem, boot/weight 버퍼 vs `expert_cache_pf` directory)를 SECDED / parity-MBIST / off-die로 분류 | grep된 reg array 100% 커버 + 근거 | S |
 | **C3** (완료) | `reset_sync`를 `glm_q4k_system_cdc` host_clk/core_clk 양 경계 배선(glm_q4k_system_cdc.v:337/342) | `glm_q4k_system_cdc` TB 통과 유지; 도메인별 STAGES-edge 동기 deassert directed case | S |
 | **C4** (완료) | `ecc_mem_wrap` scrub-write-back + sticky `serr`/`derr` + ack | `ecc_mem_wrap_tb`: `bd_we` 주입 → read(serr=1, 정정) → 재read ⇒ serr=0(scrub) | M |
@@ -143,19 +145,19 @@
 | **C6** (부분: `kv_ecc_ring`+`kv_cache_pager_ecc_fv` 완료·DDR5/NVMe payload ECC 잔여) | DDR5/NVMe payload(가중치 바이트) + `kv_cache_pager` ring에 ECC; 위젠 워드에 대해 committed BMC 증명 재파라미터/재검증 | fault-injection TB: single-bit 정정 / double-bit `derr`; 기존 유닛+formal green. ROW_BITS=768(/64 아님) lane 분할 주의 | L |
 | **C7** (정정 2026-07: ICG 탑 인라인 완료·MBIST collar 잔여) | ICG는 이미 탑에 realized (`die_clk`, `glm_q4k_system.v:1307-1311`, 다이 전체 게이트); `mbist_ctrl`은 검증된 단일포트 March **레퍼런스**; 2-port 저장소 `ring`/`vstore_mem`용 **2-port collar은 `src/mbist_ctrl_2p.v`로 빌드됨**(`[mbist_ctrl_2p] ALL 11 PASSED`; 프로덕션 per-macro collar은 컴파일러 생성) → 잔여는 top `scan_enable` stitch. 계약 `docs/P2_MEMORY_MAP.md` §4 | `mbist_ctrl_2p`: good→pass, stuck-at→fail kind=0, 동시 coupling→fail kind=1; gated-clock는 `die_clk` off서 bit-identical·runt 없음(`make cdc`) | L/XL |
 | **C8** (완료: LOOPBACK + `make cdc` + `make loopback`) | CDC 사인오프 — async crossing에 SDC + `make cdc` 구조 체커; "returned bytes fed into die" loopback을 `make loopback`으로 증명(LOOPBACK=1 커밋 == 독립 reference bit-exact) | `make cdc` unguarded crossing 0; **`make loopback` ALL 5 PASSED** — LOOPBACK=1 커밋 스트림이 standalone `glm_model_q4k`와 bit-exact(7168 왕복), `-DLBINJECT` 오염은 FAIL; `synth-glm check -assert` clean | M/XL |
-| **C9** (완료) | `weight_decomp`(order-0)를 `glm_q4k_system` NVMe→DDR5 refill 경로 배선(`DECOMP=1` 빌드옵션, quant 바이트를 불투명 심볼로) + raw-vs-decompressed byte-identical 증명 | **tok/s를 움직이는 유일한 die-side 레버**(실 NVMe 1.34×→~1.42× [EST]); 토큰 출력 불변, `make unittests` green | L |
+| **C9** (완료) | `weight_decomp`(order-0)를 `glm_q4k_system` NVMe→DDR5 refill 경로 배선(`DECOMP=1` 빌드옵션, quant 바이트를 불투명 심볼로) + raw-vs-decompressed byte-identical 증명 | **tok/s를 움직이는 유일한 die-side 레버**(압축비: 1.34×는 FP8-era 실측, ~1.42×는 DEAD `weight_decomp2` 수치 — Q4_K 재실측 전까지 이전 불가, 잘해야 [EST]); 토큰 출력 불변, `make unittests` green | L |
 | **C10** (부분: `synth-glm`은 `make all` 편입·MBIST system TB 잔여) | P2 클로저 — `make all`에 ECC/MBIST/gated-clock system TB; PRODUCT_ROADMAP P2 항목을 증명 TB에 링크; unit-proven vs system-proven 문서화 | `make all`이 P2 system TB green; 각 `ALL N TESTS PASSED` | S |
 
 ## Track D — GPU/상용툴 필요 (no-GPU 범위 밖 · OPEN 게이트)
 
 | # | 작업 | 수락 기준 | 비고 |
 |---|------|-----------|------|
-| **D1** (🔴 OPEN·#1 정합성 게이트) | **실체크포인트 검증** — 실 753B GLM(llama.cpp/실 GGUF)의 next-token argmax를 우리 데이터패스에 대조. 전제 B9·B10은 **완료**; dequant 계층은 실 GGUF 바이트로 봉인(`docs/GGUF_CROSSCHECK.md` — Q4_K/Q6_K/Q8_0 총 376,586,096 가중치 비트 동일). 남은 것: whole-runtime 대조 자체 | 코퍼스에서 argmax 일치. **저장소에 whole-runtime 대조 도구 없음 — 신규 필요** | GPU/대용량 호스트 |
+| **D1** (🔴 OPEN·#1 정합성 게이트) | **실체크포인트 검증** — 실 753B GLM(llama.cpp/실 GGUF)의 next-token argmax를 우리 데이터패스에 대조. 전제 B9·B10은 **완료**; dequant 계층은 실 GGUF 바이트로 봉인(`docs/GGUF_CROSSCHECK.md` — Q4_K/Q6_K/Q8_0 총 376,586,240 가중치 비트 동일). 남은 것: whole-runtime 대조 자체 | 코퍼스에서 argmax 일치. **저장소에 whole-runtime 대조 도구 없음 — 신규 필요** | GPU/대용량 호스트 |
 | **D2** (✅ **완료 — MEASURED**, 커밋 bc8176d→c1c622d→69a32f7) | **FPGA fit / Vivado 사인오프** — XCKU3P에서 실 Vivado synth + full PnR: **142.3K LUT (87.5%)**, ~100K FF, 421 DSP, hold met, routed Fmax **10.2→17.2→46.5 MHz** (bit-exact 재파이프라인 3라운드, 캠페인 4.6×로 종료 — 잔여 worst path는 라우팅 지배) | **닫힘**: `bash fpga/run_fit.sh` · 리포트 `fpga/results/` · `fpga/README.md` (비트스트림/보드 브링업은 rung-① 데모 잔여 — 보드+핀 XDC 필요) | Vivado/벤더IP |
 
 ## Quick wins — no GPU
 
-- [x] **전체칩 게이트:** `make synth-glm`(Makefile:357, `make all` 편입) → *Makefile*, *src/glm_q4k_system_cdc.v* (**C1**)
+- [x] **전체칩 게이트:** `make synth-glm`(Makefile:1073, `make all` 편입) → *Makefile*, *src/glm_q4k_system_cdc.v* (**C1**)
 - [x] **sparse 갭 고정:** 마스크 수정 + union 데이터패스 → *src/mla_attn_q4k.v* (sparse per-row 오라클 TB는 Q4_K 트리에 부재 — 재확인 필요) (**B1+B6**)
 - [x] **spec_chain 완전 승격:** 커서 전진 + DRAIN + seed 헤더 + pull 포트 + TB → *src/spec_chain_top.v*, *test/spec_chain_top_tb.v* (`make spec-slow`) (**B3→B8**)
 - [x] **reset 하드닝:** `reset_sync`를 CDC top 배선(glm_q4k_system_cdc.v:337/342) → *src/glm_q4k_system_cdc.v* (**C3**)
@@ -165,8 +167,8 @@
 - [x] **조립-Q4_K 수치 golden(B9):** GAP #1 폐쇄 — `make model-q4k` 1155/1155 (`tools/glm_model_q4k_ref.py`, 커밋 b058f6f)
 - [x] **혼합타입 소비자(B10):** GAP #3 폐쇄 — `make mixedtype` 32/32 + 192/192 (`q4k_mixed.vh` + `w_type`, 커밋 a730b37)
 - [x] **FPGA fit(D2):** XCKU3P 실측 — 142.3K LUT/87.5%, routed Fmax 46.5 MHz (`fpga/results/`, 커밋 69a32f7)
-- [x] **GGUF 교차검증:** dequant 계층을 실 GGUF 바이트로 봉인 — Q4_K/Q6_K/Q8_0 총 376,586,096 가중치 비트 동일, 실파일 2개 (`docs/GGUF_CROSSCHECK.md`)
-- 문서 정합화: `make all` = **`unittests synth-glm formal`**(Makefile:26) — GLM 동작증명 게이트. `q_lora/kv_lora` = **2048/512**(q_lora safetensors-CONFIRMED, kv_lora **[PENDING]**).
+- [x] **GGUF 교차검증:** dequant 계층을 실 GGUF 바이트로 봉인 — Q4_K/Q6_K/Q8_0 총 376,586,240 가중치 비트 동일, 실파일 2개 (`docs/GGUF_CROSSCHECK.md`)
+- 문서 정합화: `make all` = **`unittests synth-glm formal model-q4k-smoke resident resident-equiv full-elab full-elab-lanes mla-sparse decomp1-elab`**(Makefile:34) — GLM 동작증명 게이트. `q_lora/kv_lora` = **2048/512**(q_lora safetensors-CONFIRMED, kv_lora **[PENDING]**).
 
 ## 재조준 타임라인 (no-GPU 트랙)
 
@@ -224,9 +226,10 @@ B6는 B7보다 먼저 · C1+C2가 C6/C7 게이트.
 ## 브리핑 정정 (RTL/시스템 — Q4_K 코드로 검증됨)
 
 1. **활성 데이터패스는 Q4_K다.** FP8 모듈(`glm_model_fp8` 등)은 삭제됨 — 브랜치 `fp8`+태그
-   `fp8-verified-baseline`에 보존. 현재 top은 `glm_q4k_system_cdc` → `glm_q4k_system` → `glm_q4k_soc`.
+   `fp8-verified-baseline`에 보존. 현재 top은 `glm_q4k_system_cdc` → `glm_q4k_system`이다 —
+   `glm_q4k_soc`는 **DEAD / NOT IN PRODUCT**(`glm_q4k_system`으로 대체, 미인스턴스·게이트/TB 없음).
 2. **`make synth`(레거시 `-top TPU`)는 제거됨.** 현재 게이트는 `make synth-glm`(`glm_q4k_system_cdc`
-   전체칩 elaborate + `check -assert`, Makefile:357)이고 `make all`(Makefile:26)에 편입.
+   전체칩 elaborate + `check -assert`, Makefile:1073)이고 `make all`(Makefile:34)에 편입.
 3. **bit-exact 범위는 좁다.** `glm_matmul_q4k`(160)·`q4k_prim`(18)이 ggml-Q4_K 레퍼런스에
    **bit-exact**(+ 혼합타입 `make mixedtype`, 조립 forward `make model-q4k` 1155);
    `swiglu_expert_q4k`(240)은 **functional**; `moe_router_q4k`(40)은 **structural 불변식**. 골든은

@@ -18,7 +18,8 @@ set by **how much money is in the build**. So the plan is: **prove it works chea
 > there; h-curves stay relevant only for the hybrid upside SKU. See the pivot section below +
 > [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 > The **FPGA fit + routed Fmax are MEASURED**: Vivado ML 2026.1 full place&route of
-> `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1) — 142,320 LUT (87.5%), 421 DSP, routed
+> `glm_q4k_system_cdc` on XCKU3P (compact config + ACT_HW=1) — **141,298 LUT routed**
+> (`fpga/results/util_routed_ku3p_acthw1.rpt`; 142,320 / 87.5% at the synth stage), 421 DSP, routed
 > Fmax **46.5 MHz** after a closed 4.6× repipelining campaign, every round re-proven bit-exact on the
 > 1155-test assembled golden. But there is still **no running board**, so every tok/s below stays
 > **[EST]** until bring-up measures a real Fmax ÷ cyc_per_tok on hardware. Only rung ① is a
@@ -154,12 +155,16 @@ the DRAM tier, so the hybrid's honest numbers are ~42 tok/s at 512-bit and
 to ~45). The new primary design point:
 
 - **LPDDR5X 512 GB (16×32 GB, 1024-bit, ~1.1 TB/s), whole checkpoint resident**
-  → design point **≈80 tok/s [measured-inputs EST]** (base ~71 × the adopted adaptive spec-chain,
-  K∈[1..5]; U(K) **and** the accept rate r both GLM-family measured — job B's vLLM MTP sweep put
-  the memory-bound optimum at K=1–2; ~95 if GLM-5.2's deeper MTP hits its published accept depth),
-  **deterministic — no h dependence at all.**
+  → design point **≈80 tok/s [measured-inputs EST]** (directly `~1.1 TB/s ÷ 13.87 GB/token ≈ 80` —
+  the canonical per-token constant already folds in the measured spec-chain amortization
+  A_eff=1.87 at K=1; the old "~71 base × spec-chain" derivation is retired with the 15.4 GB/tok
+  constant, [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §2. U(K) **and** the accept rate r both
+  GLM-family measured — job B's vLLM MTP sweep put the memory-bound optimum at K=1–2; ~95 if
+  GLM-5.2's deeper MTP hits its published accept depth), **deterministic — no h dependence at all.**
 - **Deletes** the ONFI 64ch controller RTL (LDPC/bad-block) from the critical
-  path and the 40–90 W NAND-read power (box → ~40–60 W). Cold storage = one
+  path and the 40–90 W NAND-read power (box power: honest floor **≥50–78 W [EST]**
+  v3-volume / **≥64–99 W [EST]** v3-proto — the old "~40–60 W" figure is retired,
+  never derived; [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4). Cold storage = one
   commodity M.2 NVMe (boot-loads 467 GB in ~70 s; no streaming RTL).
 - Costs: +$800–1,700 memory vs the hybrid; 1024-bit = Apple-M-Ultra-class
   packaging (16 packages double-sided, on-substrate routing — proven practice,
@@ -295,8 +300,10 @@ the DDR-tier removal + re-tiering and the **vendor HBF/HBM PHY + controllers** (
   no-op) *or* non-bit-exact pruning — state which one when quoting it.
 - Rung ① is **reduced-config** (dev-board DDR/storage can't hold 467 GB); the full model needs the custom
   board (②). The demo proves the *mechanism on real silicon*, not the full box.
-- Compute-side levers (e.g. the prior FP8 track's `weight_decomp` 1.34× lossless pack — **FP8-specific,
-  branch `fp8`; no Q4_K re-run**) improve area/power/timing but **do not move an NVMe-bound roofline** —
+- Compute-side levers (e.g. the order-0 `weight_decomp` lossless pack — **wired on `main` behind a
+  default-off parameter and release-gated** (`make weight-decomp`, `decomp1-elab`); its **1.34× ratio is
+  an FP8-era measurement, not transferable to Q4_K until re-measured** [EST at best]) improve
+  area/power/timing but **do not move an NVMe-bound roofline** —
   only more streaming bandwidth (drives / channels / HBM) moves tok/s.
 - Chip/board prices are order-of-magnitude; exact FPGA quotes need a distributor, exact board cost needs
   the PCB-house quote. BOM is memory/storage-dominated, not FPGA-dominated. All economics **[EST]/[PENDING]**.

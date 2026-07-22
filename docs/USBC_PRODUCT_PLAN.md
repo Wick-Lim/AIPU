@@ -26,7 +26,8 @@ computer over a single USB-C cable.
 
 > **All power/cost/size figures here are [EST]** — modeled, not measured on silicon or a board.
 > The **FPGA fit is now MEASURED** (D0.2 DONE — Vivado ML 2026.1 routed fit of `glm_q4k_system_cdc`
-> on **XCKU3P**, compact config + ACT_HW=1: 142,320 LUT / 87.5 %, ~100K FF, 421 DSP, 0 BRAM, hold
+> on **XCKU3P**, compact config + ACT_HW=1: 142,320 LUT / 87.5 % (synth-stage; routed 141,298 LUT,
+> `fpga/results/util_routed_ku3p_acthw1.rpt`), ~100K FF, 421 DSP, 0 BRAM, hold
 > met, routed Fmax **46.5 MHz** after a closed bit-exact repipelining campaign — see
 > [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)); that pins the FPGA class (KU3P-class) and unblocks
 > size, thermal, BOM and power. **Board bring-up (D1) is still open**; the remaining D0 de-risk is
@@ -45,7 +46,7 @@ subscription-free come as the *result*.
 | | |
 |---|---|
 | **Form factor** | small active-cooled external box (external-SSD → mini-PC sized), self-powered, **USB-C data link** to host |
-| **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** (our own reimpl), **not** to the real downloaded GGUF bytes / llama.cpp; the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype` — see §2) |
+| **What it runs** | the full GLM-5.2 (753B MoE) from its published Q4_K GGUF (`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, ~467 GB) — the format local inference (llama.cpp) actually runs. Q4_K GEMM core is **bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`**, and that reference is itself **proven bitwise-equal to the real downloaded GGUF bytes at the dequant layer** (376,586,240 weights vs llama.cpp's own kernels — `docs/GGUF_CROSSCHECK.md`, closed 2026-07-10/11); llama.cpp *whole-runtime* numeric equality stays out-of-contract (op orders differ); the mixed-type (Q6_K/Q8_0/F16) RTL consumers are now **DONE** (`make mixedtype` — see §2) |
 | **Throughput** | **rung-dependent** [EST] — ~5–8 tok/s on the near-term **prove-it** FPGA, ~15–40 on the **funded custom board** (the old flat ~25–40 was this rung-② number); staged by memory bandwidth per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md). *(Update — measured-proxy design points, [`H_MEASUREMENT.md`](H_MEASUREMENT.md): NVMe-only ~0.5–1; 90 GB DRAM + 100 GB/s ~13–24; 90 GB + 200 GB/s ~25–47; 225 GB + 200 GB/s ~54–127 tok/s [EST] — updated 2026-07: these **streaming** points now apply to rung ① / the hybrid upside SKU / >512 GB checkpoints; the rung-③ primary is **full residency, design point ≈80 tok/s [measured-inputs EST]** ([`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md)); spec multiplier = A/U(K), U now GLM-4.5-Air measured — U(4)=2.60–2.71, superseding the OLMoE proxy)* |
 | **Power** | **≥50–78 W** (v3-volume residency SKU, self-powered) · **≥64–99 W** v3-proto · eco/throttle ~30 W and 15 W travel mode **[UNVERIFIED — no static/self-refresh model for 480 GB exists]** — all **[EST, 재도출 2026-07]**, all **floors with an UNVERIFIED SoC term on top**, not budgets. See §7 / [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md) §4. *(Old published: ~40–60 / ~50–80 W — retired, never derived. The old ~80–110 W was the pre-pivot streaming SKU: the new floor overlaps it by coincidence of arithmetic, NOT because the pivot came undone — see §7.)* |
 | **Interface** | USB-C (USB 3.2 Gen 2 is ample — only token IDs cross; heavy traffic stays internal) |
@@ -155,7 +156,7 @@ so this is real warming-up UX, not a spinner flash. (Phase D2.)
   (`glm_matmul_q4k`) is bit-exact to the ggml-Q4_K reference `tools/q4k_ref.py`** at a
   small-but-faithful slice (`glm_matmul_q4k` **160/160**; `q4k_prim` **18/18**;
   `swiglu_expert_q4k` **240/240** functional; `moe_router_q4k` **40/40** invariants — `make q4k`).
-  **Honest scope:** bit-exact is vs our **own** ggml reimpl, **not** the real GGUF bytes / llama.cpp;
+  **Honest scope:** bit-exact is vs `tools/q4k_ref.py`, which is itself sealed against the **real GGUF bytes at the dequant layer** (`docs/GGUF_CROSSCHECK.md`); llama.cpp *whole-runtime* equality stays out-of-contract;
   the **assembled** `glm_model_q4k` now has an **end-to-end golden** (`make model-q4k` **1155** +
   `model-q4k-acthw` **1155**), plus **spec==greedy** self-consistency (`spec_decode_top` **18/18**,
   DUT-vs-DUT).
@@ -219,7 +220,7 @@ so this is real warming-up UX, not a spinner flash. (Phase D2.)
 |---|---|---|
 | Model | GLM-5.2 `UD-Q4_K_XL` (Q4_K GGUF, ~467 GB) | the differentiator is **full 753B frontier locally**, not a smaller local model; Q4_K GEMM core bit-exact to `tools/q4k_ref.py` (our ggml reimpl), **not** the real GGUF / llama.cpp |
 | Throughput | **rung-②** funded board ≥ 25 tok/s (goal 30–40) single-user; **rung-①** prove-it FPGA ~5–8 [EST] | comfortable interactive on the product rung; staged per [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) |
-| Power (peak) | **~40–60 W v3-volume** (~50–80 W v3-proto), self-powered; adapter ~100–140 W USB-PD/DC | config-labeled envelope in §7 / R3 §4 (the ≤110 W target was the pre-pivot streaming SKU) |
+| Power (peak) | **≥50–78 W [EST] v3-volume** (≥64–99 W [EST] v3-proto) — **floors, not budgets** (SoC term UNVERIFIED), self-powered; adapter ~100–140 W USB-PD/DC | floors per §7 / R3 §4 (old ~40–60 / ~50–80 W retired — never derived; the ≤110 W target was the pre-pivot streaming SKU) |
 | Idle power | ≤ 10 W target [EST] | clock-gating + DVFS *(inherited from the smaller streaming box; the 512 GB residency box's idle is not yet separately analyzed — see §7)* |
 | Size | ≤ ~1 L enclosure | external-SSD → small-mini-PC |
 | Noise | quiet (≤ ~35 dBA) | desktop appliance |
@@ -235,10 +236,10 @@ so this is real warming-up UX, not a spinner flash. (Phase D2.)
 The RTL track (PRODUCT_ROADMAP P1–P4) makes the accelerator correct & synthesizable. The **device**
 adds these workstreams, which that roadmap only touches lightly:
 
-1. **Power architecture** — even the v3-volume ~40–60 W (up to ~50–80 W v3-proto) is above the 15 W
+1. **Power architecture** — even the v3-volume ≥50–78 W [EST] floor (≥64–99 W v3-proto; R3 §4) is above the 15 W
    USB-C default, so it can't be bus-powered; needs a self-powered design (own DC/PD input, ~100–140 W
    adapter). (§7) *(The ~80–110 W in older drafts was the pre-pivot streaming SKU.)*
-2. **Thermal / acoustics** — dissipate the ~40–60 W v3 draw quietly in ~1 L. (§7)
+2. **Thermal / acoustics** — dissipate the ≥50–78 W [EST] v3 floor quietly in ~1 L. (§7)
 3. **Host software & UX** — driver + local OpenAI-compatible server + onboarding; the difference
    between "a board" and "a product people use." (Phase D2)
 4. **Industrial design & enclosure** — the physical box, connectors, LEDs, mounting.
@@ -258,11 +259,11 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
   *(Partly DONE: the assembled end-to-end golden (`make model-q4k` 1155) and the mixed-type
   consumers (`make mixedtype`) are in; the real-checkpoint / llama.cpp bit-exactness remains open.)*
 - **D0.2 FPGA fit** — **(DONE — Vivado ML 2026.1 routed fit of `glm_q4k_system_cdc` on XCKU3P,
-  compact config + ACT_HW=1: 142,320 LUT / 87.5 %, 421 DSP, 0 BRAM, routed Fmax 46.5 MHz, campaign
+  compact config + ACT_HW=1: 142,320 LUT / 87.5 % synth-stage (routed 141,298 LUT), 421 DSP, 0 BRAM, routed Fmax 46.5 MHz, campaign
   closed bit-exact on the 1155-test golden; the old Gowin/nextpnr scaffold is removed. FPGA class =
   KU3P-class.)* ~~take the design through a vendor flow to get real utilization → pick the FPGA
   class~~ — was the project's #1 unknown; now measured.
-- **D0.3 Power point** — decide the operating point (§7): the v3-volume ~40–60 W self-powered "fast"
+- **D0.3 Power point** — decide the operating point (§7): the v3-volume ≥50–78 W [EST] self-powered "fast"
   point vs the eco/throttle "quiet/small" point (down to ~30 W). Drives thermal + PSU + enclosure.
 - **D0.4 Bring-up feasibility** — confirm the target FPGA dev-kit has the DDR5 + NVMe (M.2/PCIe) +
   USB-C IO the design needs. *(Update: the measured fit landed on **XCKU3P** via Vivado, so the
@@ -318,7 +319,7 @@ Each phase has a **GATE**: a go/no-go you must pass before spending on the next.
 
 | Decision | Options | Recommendation |
 |---|---|---|
-| **Power point** | ~40–60 W v3-volume "fast" (self-powered) · down to ~30 W eco/throttle (slower) | ship **self-powered at the v3-volume ~40–60 W** point (interactive tok/s); offer a quiet/eco mode — **the RTL knob exists** (`clk_throttle` runs the die f/div, byte-identical, [`LOW_POWER.md`](LOW_POWER.md) §4). *(Envelope is R3 §4 / §7; the old ~90–100 W was the pre-pivot streaming SKU.)* |
+| **Power point** | ≥50–78 W [EST] v3-volume "fast" floor (self-powered) · down to ~30 W eco/throttle (slower) | ship **self-powered at the v3-volume ≥50–78 W [EST] floor** (interactive tok/s); offer a quiet/eco mode — **the RTL knob exists** (`clk_throttle` runs the die f/div, byte-identical, [`LOW_POWER.md`](LOW_POWER.md) §4). *(Floor per R3 §4 / §7 — the old ~40–60 W is retired, never derived; the old ~90–100 W was the pre-pivot streaming SKU.)* |
 | **Power delivery** | own PSU/barrel · USB-PD (~100–140 W per R3 §4) · bundled PD brick | **own DC input** (a ~100–140 W adapter covers v3-volume/proto with headroom; EPR host+cable support is still rare); USB-C = data |
 | **FPGA class** | mid FPGA (~$0.5–2 k) · data-center card (~$3–8 k) | **decided — D0.2 measured**: fits **XCKU3P** (KU3P-class, low-end UltraScale+) at 87.5 % LUT |
 | **Model updates** | NVMe model-store rewrite tool · sealed | **field-updatable** (GLM ships point releases) |
@@ -372,7 +373,7 @@ an adapter for the v3 draw:
 **Conclusion: a self-powered box (own DC/PD input, ~100–140 W adapter per R3 §4) with USB-C as the data
 link** — the eGPU / NAS model. A laptop port cannot both source the box's draw **and** have the host
 consume data, which is the other reason power is separated from the USB-C data cable. Thermal: the
-~40–60 W v3 draw dissipated quietly in ~1 L needs a heatsink + a tuned fan; the eco/throttle mode
+≥50–78 W [EST] v3 floor dissipated quietly in ~1 L needs a heatsink + a tuned fan; the eco/throttle mode
 (down to ~30 W) enables smaller/quieter builds at lower tok/s. Power breakdown is **memory-dominated**
 (LPDDR5X the dominant rail on v3); the compute die is ~20–30 % and mostly gated.
 
@@ -400,7 +401,7 @@ once the multi-million NRE amortizes over volume. Not now (no volume, no capital
 FPGA rungs prove product-market fit — the same verified RTL on every rung. *(Updated 2026-07: the
 rung-③ **primary** design point is now **full residency** — 512 GB LPDDR5X (16×32 GB, 1024-bit
 on-package substrate, ~1.1 TB/s) holding the whole ~467 GB checkpoint, cold store = one commodity
-M.2 NVMe (boot-load ~70 s), box ~40–60 W, board 120×80 mm, BOM ~$1.8–2.4 k, design point **≈80 tok/s [measured-inputs EST]**;
+M.2 NVMe (boot-load ~70 s), box ≥50–78 W [EST] floor (R3 §4 — old ~40–60 W retired), board 120×80 mm, BOM ~$1.8–2.4 k, design point **≈80 tok/s [measured-inputs EST]**;
 the ONFI streaming tier is deleted from the primary SKU (pads stay on-die for the hybrid upside
 SKU); HBM stays the long-range ceiling — see [`R3_APPLIANCE_SPEC.md`](R3_APPLIANCE_SPEC.md).)*
 
@@ -419,7 +420,7 @@ zero-retention / TEE) needs connectivity and fails the unplugged test.
 
 | # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| 1 | **FPGA fit** — **CLOSED**: D0.2 measured — fits **XCKU3P** (142,320 LUT / 87.5 %, 421 DSP, routed 46.5 MHz), no data-center card needed | closed | headroom is tight (87.5 % LUT) — die-shrink levers ([`MINIATURIZATION.md`](MINIATURIZATION.md)) + compact config stay relevant |
+| 1 | **FPGA fit** — **CLOSED**: D0.2 measured — fits **XCKU3P** (142,320 LUT / 87.5 % synth-stage, routed 141,298 LUT, 421 DSP, routed 46.5 MHz), no data-center card needed | closed | headroom is tight (87.5 % LUT) — die-shrink levers ([`MINIATURIZATION.md`](MINIATURIZATION.md)) + compact config stay relevant |
 | 2 | **Real-model fidelity not fully closed** — assembled-model golden now **DONE** (`make model-q4k` 1155) and the mixed-type consumers landed (`make mixedtype`); still **not bit-verified vs the real GGUF / llama.cpp** | high | D0.1 (PRODUCT_ROADMAP P1.1) — the remaining piece is the real-GGUF / llama.cpp bit-exactness |
 | 3 | **Power > USB-PD** | med | self-powered design (§7); accept it's not a bus stick |
 | 4 | **Host software effort** — driver + server + cross-OS is real work | med | OpenAI-compatible API to reuse the existing client ecosystem |
@@ -450,7 +451,7 @@ RTL. D0 is cheap and decisive — **do it before committing to the rest.**
 
 1. **D0.1** — run the real-checkpoint full-model fidelity check on a GPU host (PRODUCT_ROADMAP P1.1).
 2. **D0.2** — **(DONE — Vivado routed fit + closed Fmax campaign on XCKU3P; see §5 D0.2.)**
-3. **D0.3** — pick the power point (v3-volume ~40–60 W self-powered recommended; §7) and draft the thermal envelope.
+3. **D0.3** — pick the power point (v3-volume ≥50–78 W [EST] floor, self-powered, recommended; §7) and draft the thermal envelope.
 4. Wire the **host-side local OpenAI-compatible server** ([`host/`](../host/README.md), already
    scaffolded against a mock backend) to a simulator-backed backend now (no hardware needed) so the
    software is ready when D1 tokens flow.
