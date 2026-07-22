@@ -208,8 +208,8 @@
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
       <div class="eyebrow kicker">Hardware ladder · tok/s <span class="tag">[EST]</span></div>
       <h1>AIPU hardware roadmap</h1>
-      <p class="lede">Performance is set by memory bandwidth, which is set by the silicon's IO/PHY budget, which is set by the rung and its funding. Only rung ① is near-term buildable; <b>rungs ② and ③ are funding-gated projections.</b> Every tok/s figure is an estimate <span class="k">[EST]</span>.</p>
-      <div class="proof">The RTL is the <b>same across all three rungs</b> — only the bandwidth changes. The FPGA fit and routed Fmax are measured (see <a href="board.html">Board</a>); there is no running board yet, so every tok/s is modeled until bring-up.</div>
+      <p class="lede">Performance is set by memory bandwidth, which is set by the silicon's IO/PHY budget, which is set by the rung and its funding. Only rung ① is near-term buildable; <b>rungs ② and ③ are funding-gated projections, and rung ④ is a further, memory-tech-gated step.</b> Every tok/s figure is an estimate <span class="k">[EST]</span>.</p>
+      <div class="proof">The RTL is the <b>same across the ladder</b> — only the memory bandwidth changes (rung ④ re-parameterizes the storage tier, not the compute graph). The FPGA fit and routed Fmax are measured (see <a href="board.html">Board</a>); there is no running board yet, so every tok/s is modeled until bring-up.</div>
     </div>
   </div>
 </header>
@@ -261,8 +261,18 @@
             <td>~$1.8–2.4k</td>
             <td>Series B+ / volume</td>
           </tr>
+          <tr>
+            <td class="rungcell">④ HBF + HBM<br><span style="color:var(--ink-dim);font-weight:400">future</span></td>
+            <td>Two-store box: 512 GB HBF (weights, non-volatile, resident) + 96 GB HBM (KV)</td>
+            <td>HBF ~1.6 TB/s <b>per stack</b>; 2-stack base ~3.2 TB/s against weights (1-stack entry ~100–115)</td>
+            <td class="toks">~200+ tok/s <span class="tag">[EST]</span></td>
+            <td>bit-exact (same RTL)</td>
+            <td>chiplet / kW bracket <span class="tag">not quoted</span></td>
+            <td>next-gen · memory-tech-gated</td>
+          </tr>
         </tbody>
       </table>
+      <p class="note" style="margin-top:.6rem">Rung ④ is a forward-looking architecture note, not designed or verified — its <span class="k">~200+</span> is the softest <span class="k">[EST]</span> here (HBF is announced, not shipping); detail in <b>Beyond rung ③</b> below. Higher stack counts push the binding constraint from bandwidth to the die (~26K MAC lanes, sublinear 4×→~2.40×) and power.</p>
     </div>
   </section>
 
@@ -361,7 +371,7 @@
 
 <footer>
   <div class="wrap">
-    <p class="disc">The RTL is the same across all three rungs; only the memory bandwidth changes. The FPGA fit and routed Fmax are measured; there is <b>no running board yet</b>, so every tok/s figure is a modeled estimate <span class="k">[EST]</span> or <span class="k">[measured-inputs EST]</span> until bring-up measures a real Fmax ÷ cyc_per_tok on hardware.</p>
+    <p class="disc">The RTL is the same across the ladder; only the memory bandwidth changes. The FPGA fit and routed Fmax are measured; there is <b>no running board yet</b>, so every tok/s figure is a modeled estimate <span class="k">[EST]</span> or <span class="k">[measured-inputs EST]</span> until bring-up measures a real Fmax ÷ cyc_per_tok on hardware.</p>
     <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/AIPU">github.com/Wick-Lim/AIPU</a> &nbsp;·&nbsp; source: docs/HARDWARE_LADDER.md</p>
   </div>
 </footer>
