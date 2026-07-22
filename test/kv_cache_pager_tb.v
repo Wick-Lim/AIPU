@@ -19,7 +19,13 @@
 module kv_cache_pager_tb;
 
     localparam integer ROW_BITS  = 64;
-    localparam integer RESIDENT  = 8;     // power of two
+    // RESIDENT is an overridable parameter so the unittest runs it TWICE:
+    //   default 8  -> the spill/evict regression below, unchanged;
+    //   64 (=S_MAX=2^POSW) -> the FULL-RESIDENCY sizing, where the pager's old
+    //   POSW-bit RESIDENT slice truncated to 0 and silently declared every row
+    //   cold.  The software model computes rlo at full precision, so that build
+    //   fails loudly on the pre-fix RTL and pins the fixed behaviour.
+    parameter  integer RESIDENT  = 8;     // power of two
     localparam integer S_MAX     = 64;
     localparam integer POSW      = 6;     // clog2(64)
     localparam integer FLASH_LAT = 5;
@@ -188,6 +194,25 @@ module kv_cache_pager_tb;
         for (p = 0; p < 5; p = p + 1)
             do_gather(p[POSW-1:0], 1'b0);      // all resident (fast)
 
+        if (RESIDENT >= S_MAX) begin
+            //==============================================================
+            // FULL-RESIDENCY CONFIG (RESIDENT == S_MAX == 2^POSW): the ring
+            // covers the whole context, so NOTHING may ever spill: `over`
+            // must never rise and every gather is a fast resident read.
+            // Pre-fix RTL truncated RESIDENT to 0 in its POSW-bit slice here,
+            // declared every row cold from the first append, and served rows
+            // that were never spilled from the Flash path.
+            //==============================================================
+            for (p = 5; p < 40; p = p + 1) do_append(p[POSW-1:0]);
+            check_obs(40, 0, 1'b0);            // over must NEVER rise
+            for (k = 0; k < 30; k = k + 1) begin
+                ridx = $unsigned($random) % 40;
+                do_gather(ridx[POSW-1:0], 1'b0);   // EVERY row resident-fast
+                do_gather(ridx[POSW-1:0], 1'b0);   // repeat-gather stability
+            end
+            check_obs(40, 0, 1'b0);
+        end else begin
+
         //==================================================================
         // PHASE 2: fill exactly to RESIDENT -> ring full, still no eviction.
         //==================================================================
@@ -258,6 +283,8 @@ module kv_cache_pager_tb;
                 do_gather(ridx[POSW-1:0], (ridx < rlo) ? 1'b1 : 1'b0);
             end
         end
+
+        end  // RESIDENT < S_MAX (phases 2..6)
 
         //------------------------------------------------------------ tally
         if (errors != 0) begin

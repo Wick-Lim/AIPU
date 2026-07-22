@@ -532,7 +532,7 @@ def main():
     for t in tests:
         t()
         print(f"  PASS {t.__name__}")
-    print(f"AIPU host scaffold: ALL {len(tests)} TESTS PASSED")
+    print(f"ALL {len(tests)} TESTS PASSED  (AIPU host scaffold)")
     return 0
 
 

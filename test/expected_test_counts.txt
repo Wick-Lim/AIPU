@@ -21,20 +21,27 @@
 #   friction: a test count is a contract, and a silent change to it is a regression.
 #
 # Captured from a GREEN `make release-gate` (2026-07, exit 0, "release-gate: ALL gates
-#   passed") after the mla_attn_q4k INTRA_CAUSAL negative-repeat fix restored spec-slow.
-#   Regenerated with the checker's own banner parser so the manifest and checker agree by
-#   construction (distinct parenthetical config-variant names kept separate).  Non-"ALL N
-#   TESTS PASSED" gates (synth-glm cell counts, formal unsat, cdc, host-test) are
-#   intentionally absent -- they do not emit this banner and are checked by their own recipes.
+#   passed").  Regenerated with the checker's own banner parser so the manifest and checker
+#   agree by construction (distinct parenthetical config-variant names kept separate).
+#   Non-"ALL N TESTS PASSED" gates (synth-glm cell counts, formal unsat, cdc, the
+#   structural-equiv gates and the must-FAIL injection steps) are intentionally absent --
+#   they do not emit this banner and are checked by their own recipes.  Every gate that
+#   DOES emit the banner must be pinned here: the checker now FAILS on any countable
+#   banner without a manifest line (2026-07-22 -- dsa-sparse-correct, boot_loader_manifest
+#   and host-test had banner formats the parser could not see, and ran count-unchecked;
+#   their banners are normalized and pinned below).
 
 axi_master_dma 7
 boot_loader 9240
+boot_loader_manifest 3712
 cdc_async_fifo 309
-cdc_protocol_ctx 8
+cdc_protocol_ctx 11
 clk_en_ctrl 12
 clk_gate_cluster 16
 clk_throttle 4
 ddr5_xbar 3073
+dsa-sparse-correct(DSA_REAL_IDX=0) 4
+dsa-sparse-correct(DSA_REAL_IDX=1) 4
 dsa_indexer 200
 ecc_mem_wrap 22290
 ecc_secded 233920
@@ -55,13 +62,21 @@ glm_model_q4k_full 1155
 glm_model_q4k_full(ACT_HW=1) 1155
 glm_model_q4k_full(spec) 99
 glm_model_q4k_pem(PE_M=2) 4233
+glm_q4k_intra_batch_verify 9
+glm_q4k_spec_system(spec==greedy,K=1-3) 31
+glm_q4k_system(LOOPBACK=1==ref) 5
+glm_q4k_system(LOOPBACK_FW=1==ref) 5
+glm_q4k_system(LOOPBACK_REST=1==ref) 10
 glm_q4k_system(RESIDENT) 19
+glm_q4k_system(SELF_KV=1,kv-roundtrip) 4
 glm_softmax 1152
 glm_softmax(LEN=2048) 32896
+host-test 32
 icg_cell 6
 kv_cache_pager 73
 kv_cache_pager(ECC) 42
 kv_cache_pager(NSEQ>1) 84
+kv_cache_pager(RESIDENT=S_MAX) 69
 kv_ecc_ring 8
 mbist_ctrl 12
 mbist_ctrl_2p 11

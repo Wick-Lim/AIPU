@@ -72,7 +72,19 @@ awk '
                 }
             }
         }
+        # any countable banner NOT in the manifest is a gate running UNCHECKED --
+        # exactly how dsa-sparse-correct / boot_loader_manifest / host-test went
+        # invisible for weeks (their banner format broke "] ALL " adjacency; once
+        # normalized they must be pinned).  Unknown names are an error, not noise:
+        # a newly added gate must come with its manifest line in the same commit.
+        for (nm in seen) {
+            if (!(nm in mseen)) {
+                el=""; for (k in vals) { split(k,p,SUBSEP); if(p[1]==nm) el=el " " p[2] }
+                print "UNPINNED: [" nm "] printed a countable banner but has no manifest line (add: " nm el ")"
+                fail=1
+            }
+        }
         if (fail) { print "FAILED: test-count manifest check (" checked " gates checked)"; exit 1 }
-        print "ALL " checked " GATE COUNTS MATCH  (exact per-gate test-count multisets pinned vs test/expected_test_counts.txt)"
+        print "ALL " checked " GATE COUNTS MATCH  (exact per-gate test-count multisets pinned vs test/expected_test_counts.txt; no unpinned banners)"
     }
 ' "$MANIFEST" "$LOG"

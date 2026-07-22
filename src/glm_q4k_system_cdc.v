@@ -494,7 +494,27 @@ module glm_q4k_system_cdc #(
     reg  [POSW-1:0]   sys_start_pos;
     reg  [IDXW:0]     sys_s_len;
 
-    assign req_rd_en = ~req_rd_empty & ~req_rd_d;
+    // ---- launch queueing (2026-07-22) ------------------------------------
+    // The box (glm_q4k_system) samples `start` ONLY in H_IDLE and consumes
+    // prompt_tok/start_pos/s_len LIVE for the whole run.  Two consequences:
+    //   (a) a launch popped while a run is in flight must be HELD, not pulsed
+    //       (the pulse lands outside H_IDLE and the request silently vanishes
+    //       -- no token, no done; the depth-4 request FIFO invited exactly
+    //       that pipelining), and
+    //   (b) the holding regs must NOT be rewritten by later pops mid-run (an
+    //       OP_TELEM pop rewriting prompt_tok would corrupt the live run).
+    // run_inflight tracks fire..done.  launch_pend holds ONE queued launch and
+    // blocks further pops until it fires; the FIFO buffers the rest, so no
+    // request is ever dropped.  Mid-run OP_TELEM pops still flow freely while
+    // no launch is queued (the common poll case).
+    reg               run_inflight;
+    reg               launch_pend;
+    reg  [REQ_W-1:0]  pend_req;    // held launch's fields -- staged SEPARATELY so the
+                                   // live run's sys_* regs are never rewritten mid-run
+    wire              sys_busy;
+    wire              sys_done;
+
+    assign req_rd_en = ~req_rd_empty & ~req_rd_d & ~launch_pend;
 
     // Decode of the popped request word (core_clk domain).  When PROTO_CTX=0
     // these fold to constants (req_launch==1, req_is_telem==0) so the unpack
@@ -521,14 +541,32 @@ module glm_q4k_system_cdc #(
             sys_prompt_tok <= {TOKW{1'b0}};
             sys_start_pos  <= {POSW{1'b0}};
             sys_s_len      <= {(IDXW+1){1'b0}};
+            run_inflight   <= 1'b0;
+            launch_pend    <= 1'b0;
+            pend_req       <= {REQ_W{1'b0}};
         end else begin
             sys_start <= 1'b0;
             req_rd_d  <= req_rd_en;
-            if (req_rd_d) begin
-                // LHS is REQ_W bits wide -> keeps the LOW REQ_W bits of the
-                // (possibly wider) word == {prompt_tok,start_pos,s_len}.
-                {sys_prompt_tok, sys_start_pos, sys_s_len} <= req_rd_data;
-                sys_start <= req_launch;   // OP_TELEM requests do NOT launch a run
+            if (sys_done) run_inflight <= 1'b0;
+            if (req_rd_d & req_launch) begin
+                if (~run_inflight) begin
+                    // LHS is REQ_W bits wide -> keeps the LOW REQ_W bits of the
+                    // (possibly wider) word == {prompt_tok,start_pos,s_len}.
+                    // Written ONLY when the launch fires: the box reads these
+                    // live all run, so neither an OP_TELEM pop nor a QUEUED
+                    // launch pop may touch them while a run is in flight.
+                    {sys_prompt_tok, sys_start_pos, sys_s_len} <= req_rd_data;
+                    sys_start    <= 1'b1;              // box idle -> fire now
+                    run_inflight <= 1'b1;
+                end else begin
+                    pend_req    <= req_rd_data[REQ_W-1:0]; // box busy -> hold (was: silently lost)
+                    launch_pend <= 1'b1;
+                end
+            end else if (launch_pend & ~run_inflight) begin
+                {sys_prompt_tok, sys_start_pos, sys_s_len} <= pend_req;
+                sys_start    <= 1'b1;                  // fire the held launch
+                run_inflight <= 1'b1;
+                launch_pend  <= 1'b0;
             end
         end
     end
@@ -536,9 +574,7 @@ module glm_q4k_system_cdc #(
     // ----------------------------------------------------------------------
     // THE VERIFIED COMPUTE BOX -- instantiated UNCHANGED, entirely on core_clk.
     // ----------------------------------------------------------------------
-    wire             sys_busy;
-    wire             sys_done;
-    wire [TOKW-1:0]  sys_next_tok;
+    wire [TOKW-1:0]  sys_next_tok;      // (sys_busy/sys_done declared above, at the pop logic)
     wire             sys_tok_valid;
 
     glm_q4k_system #(
@@ -625,6 +661,7 @@ module glm_q4k_system_cdc #(
             reg [TELEM_W-1:0] ctr_run;    // token-gen runs started (sys_start)
             reg [TELEM_W-1:0] ctr_done;   // runs completed (sys_done)
             reg [CTX_W-1:0]   cur_ctx;    // ctx of the in-flight run (attached to tokens)
+            reg [CTX_W-1:0]   pend_ctx;   // ctx of the held (queued) launch
             reg               telem_pend; // an OP_TELEM snapshot is waiting to push
             reg [CTX_W-1:0]   telem_ctx;  // ctx of the pending telemetry response
 
@@ -636,17 +673,34 @@ module glm_q4k_system_cdc #(
                     ctr_run    <= {TELEM_W{1'b0}};
                     ctr_done   <= {TELEM_W{1'b0}};
                     cur_ctx    <= {CTX_W{1'b0}};
+                    pend_ctx   <= {CTX_W{1'b0}};
                     telem_pend <= 1'b0;
                     telem_ctx  <= {CTX_W{1'b0}};
                 end else begin
                     if (req_rd_d) begin
-                        cur_ctx <= req_ctx_popped;          // remember ctx for this run's tokens
-                        if (req_launch)   ctr_run <= ctr_run + 1'b1;
+`ifdef INJECT_CTXTAG
+                        // INJECTION (must-FAIL build): the pre-fix behaviour --
+                        // cur_ctx follows EVERY pop, OP_TELEM included, so a
+                        // mid-run telemetry poll (ctx=B) retags the in-flight
+                        // ctx=A run's token as B.  The mid-run-telemetry test
+                        // must catch this; if it passes, the ctx binding is not
+                        // load-bearing.
+                        cur_ctx <= req_ctx_popped;
+`endif
+                        if (req_launch) begin
+                            // ctx follows the RUN, not the pop: a launch that
+                            // fires now owns cur_ctx; a held launch parks its
+                            // ctx in pend_ctx until it actually fires below.
+                            if (~run_inflight) cur_ctx  <= req_ctx_popped;
+                            else               pend_ctx <= req_ctx_popped;
+                            ctr_run <= ctr_run + 1'b1;
+                        end
                         if (req_is_telem) begin
                             telem_pend <= 1'b1;
                             telem_ctx  <= req_ctx_popped;
                         end
-                    end
+                    end else if (launch_pend & ~run_inflight)
+                        cur_ctx <= pend_ctx;                // held launch fires this cycle
                     if (sys_tok_valid) ctr_tok  <= ctr_tok  + 1'b1;
                     if (sys_done)      ctr_done <= ctr_done + 1'b1;
                     if (telem_push)    telem_pend <= 1'b0;  // cleared once its snapshot is pushed

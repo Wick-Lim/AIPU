@@ -8,7 +8,9 @@
 #   make expert-cache -> expert-cache prefetch + replacement-policy TBs on the
 #                      real GLM decode routing trace (minutes-long; standalone)
 #   make full-elab  -> 753B-shape elaboration of glm_model_q4k (iverilog -tnull)
-#   make release-gate -> every gate in the repo (unittests..formal-ind; HOURS)
+#   make release-gate -> the full pre-release battery (HOURS).  NOT literally every
+#                      target: the deliberate exclusions and their reasons are the
+#                      NOTE block above the release-gate rule (~line 36).
 #   make lint       -> verilator --lint-only on the GLM top (diagnostic; not yet
 #                      -Wall clean -- informational, NOT part of `all`)
 #   make coverage   -> verilator --coverage-line/-toggle structural coverage of
@@ -52,7 +54,21 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # but -Wall yields 116 warnings and verilator exits 2 on them.  That predates any of this
 # (bisected against 43de204~1); triaging the 116 is its own job, and wiring it in before
 # that would just re-create the unrunnable-gate problem this NOTE exists to record.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test
+#
+# ALSO DELIBERATELY NOT HERE (each was previously an UNDOCUMENTED exclusion -- the
+# README advertised these proofs as PROVEN while no release-gate member could see a
+# regression in them; spec-greedy/intra-batch-verify/self-kv-roundtrip/self-kv-equiv/
+# loopback/loopback-fw/loopback-rest are therefore folded IN above as of 2026-07-22):
+#   - self-kv-l6-roundtrip : the L=6 deep-config variant of self-kv-roundtrip.  Same
+#     mechanism, ~L(x) longer sim; the L=1 roundtrip + the SELF_KV structural equiv
+#     already bind the write-back path in-gate.  Run it when touching kv_cache_pager.
+#   - provision-selftest : needs two EXTERNAL inputs (a real .gguf file and a
+#     llama.cpp gguf-py checkout) that a clean clone does not have -- see the
+#     fail-fast check in its recipe for how to point PROVISION_GGUF/PROVISION_GGUF_PY.
+#   - dsa-thread-equiv / lint : documented above.
+#   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
+#     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -138,6 +154,13 @@ unittests:
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/kv_cache_pager_sim test/kv_cache_pager_tb.v src/kv_cache_pager.v
 	@printf '[%s] ' "kv_cache_pager"; $(VVP) $(BUILD_DIR)/kv_cache_pager_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: kv_cache_pager"; exit 1; }
+	@# kv_cache_pager at FULL RESIDENCY (RESIDENT == S_MAX == 2^POSW): the natural
+	@#   "no row ever spills" sizing.  The old POSW-bit RESIDENT slice truncated
+	@#   2^POSW to 0 and silently declared every row cold; this config pins the fix.
+	@$(IVERILOG) $(IFLAGS) -Pkv_cache_pager_tb.RESIDENT=64 \
+	    -o $(BUILD_DIR)/kv_cache_pager_full_sim test/kv_cache_pager_tb.v src/kv_cache_pager.v
+	@printf '[%s] ' "kv_cache_pager(RESIDENT=S_MAX)"; $(VVP) $(BUILD_DIR)/kv_cache_pager_full_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: kv_cache_pager(RESIDENT=S_MAX) -- full-residency ring declared rows cold"; exit 1; }
 	@# kv_cache_pager(ECC=1) (task C6-full): lane-partitioned SECDED on the real ring --
 	@# single-bit corrected, double-bit detected, across the ragged 768-bit / 100-bit rows.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/kv_cache_pager_ecc_sim test/kv_cache_pager_ecc_tb.v src/kv_cache_pager.v src/ecc_secded.v
@@ -558,7 +581,7 @@ lint:
 
 # Host software scaffold (D2): OpenAI-compatible server + device protocol (stdlib).
 host-test:
-	@printf '[host] '; python3 host/test_aipu.py | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	@printf '[host-test] '; python3 host/test_aipu.py | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: host-test (a self-test raised; banner absent)"; exit 1; }
 
 GLM_Q4K_CDC_SRCS := src/glm_q4k_system_cdc.v src/glm_q4k_system.v src/cdc_async_fifo.v \
@@ -673,7 +696,7 @@ self-kv-roundtrip:
 	@mkdir -p $(BUILD_DIR)
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_self_kv_roundtrip_sim \
 	    test/glm_q4k_self_kv_roundtrip_tb.v $(GLM_Q4K_SYS_SRCS)
-	@printf '[%s] ' "glm_q4k_system(SELF_KV=1 KV write-back round-trip)"; \
+	@printf '[%s] ' "glm_q4k_system(SELF_KV=1,kv-roundtrip)"; \
 	    $(VVP) $(BUILD_DIR)/glm_q4k_self_kv_roundtrip_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: self-kv-roundtrip"; exit 1; }
 
@@ -989,7 +1012,7 @@ dsa-sparse-correct:
 	  $(IVERILOG) -g2012 -I src -o $(BUILD_DIR)/dsacorr_$$d $(DSA_CORR_CFG) \
 	    -Pglm_q4k_system_perf_tb.DSA_REAL_IDX_CFG=$$d $(LANE_SCALE_SRCS) 2>/dev/null \
 	    || { echo "FAILED: dsa-sparse-correct compile (DSA_REAL_IDX=$$d)"; exit 1; }; \
-	  printf '[dsa-sparse-correct] DSA_REAL_IDX=%s ' "$$d"; \
+	  printf '[dsa-sparse-correct(DSA_REAL_IDX=%s)] ' "$$d"; \
 	  vvp $(BUILD_DIR)/dsacorr_$$d 2>/dev/null | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    | sed 's/  (.*//' \
 	    || { echo "FAILED: system != standalone ref at DSA_REAL_IDX=$$d"; exit 1; }; \
@@ -1225,7 +1248,7 @@ spec-greedy:
 	@$(IVERILOG) $(IFLAGS) -DSPEC_FULL -o $(BUILD_DIR)/glm_q4k_spec_greedy_sim $(SPEC_GREEDY_SRCS)
 	@# EXACT count (31) -- pins BOTH that -DSPEC_FULL ran (default subset prints a different
 	@#   number) AND that no config was silently dropped.  A wildcard [0-9]+ would pass either.
-	@printf '[%s] ' "glm_q4k_spec_system(spec==greedy K=1,2,3)"; $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_sim | grep -E 'ALL 31 TESTS PASSED' \
+	@printf '[%s] ' "glm_q4k_spec_system(spec==greedy,K=1-3)"; $(VVP) $(BUILD_DIR)/glm_q4k_spec_greedy_sim | grep -E 'ALL 31 TESTS PASSED' \
 	    || { echo "FAILED: spec-greedy (committed stream != greedy, OR test count != 31 -- a config was dropped)"; exit 1; }
 	@# (2) INJECTION -- commit RAW DRAFTS instead of the model's argmaxes : the gate MUST FAIL.
 	@#     (K=2 subset -- the ALL-REJECT wrong drafts diverge; enough to bind the mechanism.)
@@ -1271,7 +1294,7 @@ loopback:
 	@mkdir -p $(BUILD_DIR)
 	@# (1) CLEAN : LOOPBACK=1 committed stream == standalone glm_model_q4k reference.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_loopback_sim $(LOOPBACK_SRCS)
-	@printf '[%s] ' "glm_q4k_system(LOOPBACK=1 == reference)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_sim | grep -E 'ALL 5 TESTS PASSED' \
+	@printf '[%s] ' "glm_q4k_system(LOOPBACK=1==ref)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_sim | grep -E 'ALL 5 TESTS PASSED' \
 	    || { echo "FAILED: loopback (LOOPBACK=1 committed stream != reference, OR test count != 5)"; exit 1; }
 	@# (2) INJECTION -- corrupt the fed-back attention-weight lanes : the gate MUST FAIL.
 	@$(IVERILOG) $(IFLAGS) -DLBINJECT -o $(BUILD_DIR)/glm_q4k_loopback_inject $(LOOPBACK_SRCS)
@@ -1310,7 +1333,7 @@ loopback-fw:
 	@mkdir -p $(BUILD_DIR)
 	@# (1) CLEAN : LOOPBACK_FW=1 committed stream == standalone glm_model_q4k reference.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_loopback_fw_sim $(LOOPBACK_FW_SRCS)
-	@printf '[%s] ' "glm_q4k_system(LOOPBACK_FW=1 == reference)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_fw_sim | grep -E 'ALL 5 TESTS PASSED' \
+	@printf '[%s] ' "glm_q4k_system(LOOPBACK_FW=1==ref)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_fw_sim | grep -E 'ALL 5 TESTS PASSED' \
 	    || { echo "FAILED: loopback-fw (LOOPBACK_FW=1 committed stream != reference, OR test count != 5)"; exit 1; }
 	@# (2) INJECTION -- corrupt the fed-back FFN-expert lanes : the gate MUST FAIL.
 	@$(IVERILOG) $(IFLAGS) -DLBFWINJECT -o $(BUILD_DIR)/glm_q4k_loopback_fw_inject $(LOOPBACK_FW_SRCS)
@@ -1356,7 +1379,7 @@ loopback-rest:
 	@mkdir -p $(BUILD_DIR)
 	@# (1) CLEAN : LOOPBACK_REST=1 committed stream == standalone glm_model_q4k reference.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_q4k_loopback_rest_sim $(LOOPBACK_REST_SRCS)
-	@printf '[%s] ' "glm_q4k_system(LOOPBACK_REST=1 == reference)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_rest_sim | grep -E 'ALL 10 TESTS PASSED' \
+	@printf '[%s] ' "glm_q4k_system(LOOPBACK_REST=1==ref)"; $(VVP) $(BUILD_DIR)/glm_q4k_loopback_rest_sim | grep -E 'ALL 10 TESTS PASSED' \
 	    || { echo "FAILED: loopback-rest (LOOPBACK_REST=1 committed stream != reference OR direct byte binding mismatched, OR test count != 10)"; exit 1; }
 	@# (2) INJECTION -- flip the fed-back gn value's mantissa LSB : the DIRECT gn byte
 	@#     binding MUST catch it and the gate MUST FAIL (gn is output-insensitive, so this
@@ -1506,11 +1529,16 @@ batched-q4k:
 #   make provision-selftest PROVISION_GGUF=/path/to.gguf PROVISION_GGUF_PY=/path/to/gguf-py
 # ============================================================================
 .PHONY: provision-selftest
-PROVISION_GGUF    ?= /Users/wicklim/.claude/jobs/01dbb3de/tmp/smollm2-135m-q8_0.gguf
-PROVISION_GGUF_PY ?= /Users/wicklim/.claude/jobs/01dbb3de/tmp/llamacpp/gguf-py
+PROVISION_GGUF    ?= $(HOME)/.cache/aipu/smollm2-135m-q8_0.gguf
+PROVISION_GGUF_PY ?= $(HOME)/.cache/aipu/gguf-py
 
 provision-selftest:
 	@mkdir -p $(BUILD_DIR)
+	@[ -f "$(PROVISION_GGUF)" ] || { echo "provision-selftest needs a real GGUF file:"; \
+	    echo "  make provision-selftest PROVISION_GGUF=/path/to/model.gguf PROVISION_GGUF_PY=/path/to/llama.cpp/gguf-py"; \
+	    echo "  (any small GGUF works, e.g. SmolLM2-135M Q8_0; gguf-py = the package dir inside a llama.cpp checkout)"; exit 1; }
+	@[ -d "$(PROVISION_GGUF_PY)" ] || { echo "provision-selftest: gguf-py dir not found: $(PROVISION_GGUF_PY)"; \
+	    echo "  pass PROVISION_GGUF_PY=/path/to/llama.cpp/gguf-py"; exit 1; }
 	@python3 tools/provision_image.py --gguf-py $(PROVISION_GGUF_PY) \
 	    selftest $(PROVISION_GGUF) 2>&1 | tee $(BUILD_DIR)/provision_selftest.log
 	@grep -q 'provision_image ALL [0-9]\+ TESTS PASSED' $(BUILD_DIR)/provision_selftest.log \
@@ -1685,6 +1713,14 @@ cdc-protocol:
 	    test/cdc_protocol_ctx_tb.v $(GLM_Q4K_CDC_SRCS)
 	@printf '[%s] ' "cdc_protocol_ctx"; $(VVP) $(BUILD_DIR)/cdc_protocol_ctx_sim | grep -E '\[cdc_protocol_ctx\] ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: cdc-protocol"; exit 1; }
+	@# INJECTION -- pre-fix ctx tagging (cur_ctx follows EVERY pop, OP_TELEM included):
+	@#   the mid-run-telemetry test must catch the retagged token -> MUST FAIL.
+	@$(IVERILOG) $(IFLAGS) -DINJECT_CTXTAG -o $(BUILD_DIR)/cdc_protocol_ctx_inject \
+	    test/cdc_protocol_ctx_tb.v $(GLM_Q4K_CDC_SRCS)
+	@printf '[%s] ' "cdc_protocol_ctx_INJECT_ctxtag"; \
+	    if $(VVP) $(BUILD_DIR)/cdc_protocol_ctx_inject 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: CTXTAG injection NOT caught (a mid-run OP_TELEM pop retagged the run's token and no test noticed)"; exit 1; \
+	    else echo "injection correctly FAILED (cur_ctx follows the RUN, not the pop -- the mid-run-telemetry test is load-bearing)"; fi
 
 # ---- default-unchanged proof: PROTO_CTX=0 netlist == the pre-change top -------
 # Synthesizes the wrapper (compute/CDC submodules blackboxed via -lib, so the
@@ -1710,6 +1746,11 @@ cdc-protocol-equiv:
 	    synth -top glm_q4k_system_cdc -flatten; tee -o $(BUILD_DIR)/cdc_proto_stat_new.txt stat"
 	@sed -n '/[0-9] cells$$/,$$p' $(BUILD_DIR)/cdc_proto_stat_base.txt > $(BUILD_DIR)/cdc_proto_cells_base.txt
 	@sed -n '/[0-9] cells$$/,$$p' $(BUILD_DIR)/cdc_proto_stat_new.txt  > $(BUILD_DIR)/cdc_proto_cells_new.txt
+	@# LIVENESS: if a yosys upgrade changes `stat`'s table format the sed above matches
+	@#   nothing and empty==empty would pass VACUOUSLY (its equiv siblings assert the
+	@#   =1 variant differs; here the cheap direct guard is: extraction must be non-empty).
+	@[ -s $(BUILD_DIR)/cdc_proto_cells_base.txt ] && [ -s $(BUILD_DIR)/cdc_proto_cells_new.txt ] \
+	    || { echo "FAILED: cdc-protocol-equiv (stat extraction EMPTY -- yosys stat format changed; the diff below would be vacuous)"; exit 1; }
 	@diff $(BUILD_DIR)/cdc_proto_cells_base.txt $(BUILD_DIR)/cdc_proto_cells_new.txt \
 	    && echo "[cdc-protocol-equiv] PROVEN: glm_q4k_system_cdc(PROTO_CTX=0) cell netlist == $(CDC_PROTO_BASE) (byte-identical default; PROTO_CTX adds only dead ports)" \
 	    || { echo "FAILED: cdc-protocol-equiv (default netlist changed)"; exit 1; }

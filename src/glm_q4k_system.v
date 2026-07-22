@@ -1393,14 +1393,25 @@ module glm_q4k_system #(
         /* verilator lint_on UNUSEDSIGNAL */
     end else begin : g_lb
         // ---- encode the die's current aw pull key -> a banked-read address ----
+        //   Key fields are packed END-TO-END from their widths.  The old FIXED
+        //   offsets (k@4, grp@12, layer@20) silently overlap once A_KCW > 8
+        //   (e.g. real-shape MODEL_DIM -> A_KCW=13): distinct keys then alias to
+        //   one address and the staged-beat compare + TB responder serve wrong
+        //   weights with no error.  If the key outgrows the 24 bits under the
+        //   marker byte, elaboration fails loudly instead.
+        localparam integer AWA_K_LO  = 4;
+        localparam integer AWA_G_LO  = AWA_K_LO + A_KCW;
+        localparam integer AWA_LY_LO = AWA_G_LO + A_GRPW;
+        if (AWA_LY_LO + LAYW > 24)
+            $error("glm_q4k_system LOOPBACK: aw key {sel,k,grp,layer} needs more than the 24 bits under the 8'hA5 marker at this geometry -- widen DDR_ADDR_W / relocate the marker before enabling the aw loopback");
         reg [DDR_ADDR_W-1:0] cur_addr;
         always @* begin
-            cur_addr               = {DDR_ADDR_W{1'b0}};
-            cur_addr[3:0]          = aw_sel;
-            cur_addr[4  +: A_KCW]  = aw_k;
-            cur_addr[12 +: A_GRPW] = aw_grp;
-            cur_addr[20 +: LAYW]   = db_layer;
-            cur_addr[24 +: 8]      = 8'hA5;        // TAG_LBAW address marker
+            cur_addr                      = {DDR_ADDR_W{1'b0}};
+            cur_addr[3:0]                 = aw_sel;
+            cur_addr[AWA_K_LO  +: A_KCW]  = aw_k;
+            cur_addr[AWA_G_LO  +: A_GRPW] = aw_grp;
+            cur_addr[AWA_LY_LO +: LAYW]   = db_layer;
+            cur_addr[24 +: 8]             = 8'hA5;   // TAG_LBAW address marker
         end
 
         // ---- staging + fetch state ----
@@ -1413,8 +1424,15 @@ module glm_q4k_system #(
 
         // staged lanes are for the exact key the die wants right now?
         wire lb_have = lb_col_valid && (lb_key_q == cur_addr);
-        // die may advance iff it is not mid-aw-pull, or the beat is ready
-        wire die_ce  = ~aw_req | lb_have;
+        // die may advance iff it is not mid-aw-pull (or the beat is ready) AND --
+        // when the faithful expert-miss stall is composed in (EXPERT_STALL=1) --
+        // no demand miss is being serviced.  Previously EXPERT_STALL was silently
+        // ignored under LOOPBACK=1: the combo elaborated cleanly but cyc_per_tok
+        // excluded ec_demand_stall_cycles, so a "fully faithful" composed
+        // measurement would have been quietly optimistic.  EXPERT_STALL==0 folds
+        // the new term to 1'b1 -- netlist unchanged.  (die_clk_awfw / die_clk
+        // derive from die_clk_aw, so the stall composes through §9b/§9c too.)
+        wire die_ce  = (~aw_req | lb_have) & ((EXPERT_STALL == 0) ? 1'b1 : ~ec_busy);
         // need a fresh fetch: mid-aw-pull, nothing staged for this key, none in flight
         wire lb_want = aw_req & ~lb_have & ~lb_busy;
 
@@ -1497,16 +1515,28 @@ module glm_q4k_system #(
         // ---- encode the die's current fw pull key -> a banked-read address ----
         //   marker 8'hB6 (distinct from §9's 8'hA5 and TAG_LOAD/SLOT/HOT/EFILL, which
         //   all leave addr[31:24]=0) so the responder decode is unambiguous.
+        //   Key fields packed END-TO-END from their widths (the old fixed offsets
+        //   k@2/grp@10/shared@16/eidx@17/layer@20 overlap as soon as FF_KWD > 8 --
+        //   e.g. the shipped default MODEL_DIM=128/INTER_DENSE=256 gives FF_KWD=9,
+        //   fw_k spilling into fw_grp's bit -- and distinct keys then alias with
+        //   no error).  Guarded: the key must fit under the [24+:8] marker byte.
+        localparam integer FWA_K_LO  = 2;
+        localparam integer FWA_G_LO  = FWA_K_LO  + FF_KWD;
+        localparam integer FWA_SH_LO = FWA_G_LO  + FF_GWD;
+        localparam integer FWA_EI_LO = FWA_SH_LO + 1;
+        localparam integer FWA_LY_LO = FWA_EI_LO + EIDXW;
+        if (FWA_LY_LO + LAYW > 24)
+            $error("glm_q4k_system LOOPBACK_FW: fw key {sel,k,grp,shared,eidx,layer} needs more than the 24 bits under the 8'hB6 marker at this geometry -- widen DDR_ADDR_W / relocate the marker before enabling the fw loopback");
         reg [DDR_ADDR_W-1:0] cur_fw_addr;
         always @* begin
-            cur_fw_addr                = {DDR_ADDR_W{1'b0}};
-            cur_fw_addr[0  +: 2]       = fw_sel;
-            cur_fw_addr[2  +: FF_KWD]  = fw_k;
-            cur_fw_addr[10 +: FF_GWD]  = fw_grp;
-            cur_fw_addr[16 +: 1]       = fw_shared;
-            cur_fw_addr[17 +: EIDXW]   = fw_eidx;
-            cur_fw_addr[20 +: LAYW]    = db_layer;
-            cur_fw_addr[24 +: 8]       = 8'hB6;       // TAG_LBFW address marker
+            cur_fw_addr                     = {DDR_ADDR_W{1'b0}};
+            cur_fw_addr[0  +: 2]            = fw_sel;
+            cur_fw_addr[FWA_K_LO  +: FF_KWD]= fw_k;
+            cur_fw_addr[FWA_G_LO  +: FF_GWD]= fw_grp;
+            cur_fw_addr[FWA_SH_LO +: 1]     = fw_shared;
+            cur_fw_addr[FWA_EI_LO +: EIDXW] = fw_eidx;
+            cur_fw_addr[FWA_LY_LO +: LAYW]  = db_layer;
+            cur_fw_addr[24 +: 8]            = 8'hB6;  // TAG_LBFW address marker
         end
 
         // ---- staging + fetch state (two code buses staged from ONE beat) ----
@@ -1616,25 +1646,39 @@ module glm_q4k_system #(
                                     : ((4*N_EXPERT > 16) ? 4*N_EXPERT : 16);
 
         // ---- encode each family's current pull key -> a banked-read address ----
+        //   Key fields packed END-TO-END from their widths (same rationale as the
+        //   aw/fw blocks: fixed offsets alias distinct keys once a width crosses
+        //   its gap -- e.g. R_KW > 20 or DIMW > 12).  Guarded: every key must fit
+        //   under its [24+:8] marker byte.
+        localparam integer RWA_LY_LO = R_KW;
+        localparam integer LWA_VT_LO = DIMW;
+        localparam integer GNA_WH_LO = DIMW;
+        localparam integer GNA_LY_LO = GNA_WH_LO + 1;
+        if (RWA_LY_LO + LAYW > 24)
+            $error("glm_q4k_system LOOPBACK_REST: rw key {k,layer} exceeds the 24 bits under the 8'hC7 marker at this geometry");
+        if (LWA_VT_LO + VTW > 24)
+            $error("glm_q4k_system LOOPBACK_REST: lw key {k,vtile} exceeds the 24 bits under the 8'hD8 marker at this geometry");
+        if (GNA_LY_LO + LAYW > 24)
+            $error("glm_q4k_system LOOPBACK_REST: gn key {idx,which,layer} exceeds the 24 bits under the 8'hE9 marker at this geometry");
         reg [DDR_ADDR_W-1:0] cur_rw_addr, cur_lw_addr, cur_gn_addr;
         always @* begin
-            cur_rw_addr             = {DDR_ADDR_W{1'b0}};
-            cur_rw_addr[0  +: R_KW] = rw_k;
-            cur_rw_addr[20 +: LAYW] = db_layer;
-            cur_rw_addr[24 +: 8]    = 8'hC7;         // TAG_LBRW address marker
+            cur_rw_addr                    = {DDR_ADDR_W{1'b0}};
+            cur_rw_addr[0 +: R_KW]         = rw_k;
+            cur_rw_addr[RWA_LY_LO +: LAYW] = db_layer;
+            cur_rw_addr[24 +: 8]           = 8'hC7;  // TAG_LBRW address marker
         end
         always @* begin
-            cur_lw_addr             = {DDR_ADDR_W{1'b0}};
-            cur_lw_addr[0  +: DIMW] = lw_k;
-            cur_lw_addr[12 +: VTW]  = lw_vtile;
-            cur_lw_addr[24 +: 8]    = 8'hD8;         // TAG_LBLW address marker
+            cur_lw_addr                    = {DDR_ADDR_W{1'b0}};
+            cur_lw_addr[0 +: DIMW]         = lw_k;
+            cur_lw_addr[LWA_VT_LO +: VTW]  = lw_vtile;
+            cur_lw_addr[24 +: 8]           = 8'hD8;  // TAG_LBLW address marker
         end
         always @* begin
-            cur_gn_addr             = {DDR_ADDR_W{1'b0}};
-            cur_gn_addr[0  +: DIMW] = gn_idx;
-            cur_gn_addr[16 +: 1]    = gn_which;
-            cur_gn_addr[20 +: LAYW] = db_layer;
-            cur_gn_addr[24 +: 8]    = 8'hE9;         // TAG_LBGN address marker
+            cur_gn_addr                    = {DDR_ADDR_W{1'b0}};
+            cur_gn_addr[0 +: DIMW]         = gn_idx;
+            cur_gn_addr[GNA_WH_LO +: 1]    = gn_which;
+            cur_gn_addr[GNA_LY_LO +: LAYW] = db_layer;
+            cur_gn_addr[24 +: 8]           = 8'hE9;  // TAG_LBGN address marker
         end
 
         // ---- staging + fetch state (one per family) ----

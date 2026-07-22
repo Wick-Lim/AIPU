@@ -263,9 +263,21 @@ module kv_cache_pager #(
     endgenerate
 
     // resident window low bound for the GATHER sequence (comb from its counter).
-    wire over = (g_count > RESIDENT[POSW-1:0]);
+    //   Compared at POSW+1 bits: RESIDENT == 2^POSW (ring sized to the FULL
+    //   context -- the natural "no row ever spills" sizing) used to truncate to
+    //   0 in the POSW-bit slice, flipping `over` true from the first append and
+    //   silently declaring EVERY row cold (the Flash path then returns rows that
+    //   were never spilled).  At POSW+1 bits 2^POSW survives, `over` is
+    //   permanently false there, and every legal RESIDENT < 2^POSW compares
+    //   identically to before (netlist-neutral for all previously-working
+    //   configs).  When `over` is true RESIDENT < 2^POSW necessarily, so the
+    //   POSW-bit subtract below loses nothing.
+    localparam [POSW:0] RESIDENT_CAP = RESIDENT[POSW:0];
+    wire over = ({1'b0, g_count} > RESIDENT_CAP);
     assign overflowed  = over;
-    assign resident_lo = over ? (g_count - RESIDENT[POSW-1:0]) : {POSW{1'b0}};
+    assign resident_lo = over ? (g_count - RESIDENT_CAP[POSW-1:0]) : {POSW{1'b0}};
+    if (RESIDENT > (1 << POSW))
+        $error("kv_cache_pager: RESIDENT (%0d) exceeds the 2^POSW (%0d) position space -- a window larger than the addressable context is meaningless; size RESIDENT <= 2^POSW", RESIDENT, (1 << POSW));
 
     // residency decode for the incoming gather index (within its sequence).
     wire g_resident = (gather_idx < g_count) && (gather_idx >= resident_lo);

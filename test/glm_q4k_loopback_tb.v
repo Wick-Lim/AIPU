@@ -19,11 +19,11 @@
 // HOW THE LOOPBACK RESPONDER WORKS (the ONLY change vs the perf TB harness)
 //   At LOOPBACK=1 each attention-weight beat, the die encodes its current pull
 //   key {db_layer,aw_sel,aw_grp,aw_k} into a DDR read address `cur_addr`:
-//       cur_addr[3:0]         = aw_sel
-//       cur_addr[4  +: A_KCW] = aw_k
-//       cur_addr[12 +: A_GRPW]= aw_grp
-//       cur_addr[20 +: LAYW]  = db_layer
-//       cur_addr[24 +: 8]     = 8'hA5   (TAG_LBAW address marker)
+//       cur_addr[3:0]                = aw_sel
+//       cur_addr[AWA_K_LO  +: A_KCW]  = aw_k          (offsets packed end-to-end
+//       cur_addr[AWA_G_LO  +: A_GRPW] = aw_grp         from the widths -- must
+//       cur_addr[AWA_LY_LO +: LAYW]   = db_layer       mirror g_lb's localparams)
+//       cur_addr[24 +: 8]             = 8'hA5   (TAG_LBAW address marker)
 //   ddr5_xbar carries the FULL address to the per-channel memory unchanged and
 //   returns the response paired with its tag.  This TB's DDR5 memory model, on
 //   any outstanding read whose addr[24 +: 8]==8'hA5, decodes {layer,sel,grp,k}
@@ -134,6 +134,10 @@ module glm_q4k_loopback_tb;
     localparam integer DIMW   = (MODEL_DIM<=1)?1:$clog2(MODEL_DIM);
     localparam integer NVTILE = VOCAB/LM_TN;
     localparam integer VTW    = (NVTILE<=1)?1:$clog2(NVTILE);
+    // aw loopback key offsets -- MUST mirror glm_q4k_system g_lb (packed end-to-end)
+    localparam integer AWA_K_LO  = 4;
+    localparam integer AWA_G_LO  = AWA_K_LO + A_KCW;
+    localparam integer AWA_LY_LO = AWA_G_LO + A_GRPW;
     localparam integer ROW_BITS = (KV_LORA+ROPE)*16;
     localparam integer KVPOSW   = (KV_CTX<=1)?1:$clog2(KV_CTX);
     localparam integer CSLOTW   = (CACHE_SLOTS<=1)?1:$clog2(CACHE_SLOTS);
@@ -597,9 +601,9 @@ module glm_q4k_loopback_tb;
         reg [DDR_DATA_W-1:0] b; begin
         b   = gen_beat(tg, ad);              // X-clean base for the unused high bits
         sel = ad[3:0];
-        kk  = ad[4  +: A_KCW];
-        grp = ad[12 +: A_GRPW];
-        ly  = ad[20 +: LAYW];
+        kk  = ad[AWA_K_LO  +: A_KCW];
+        grp = ad[AWA_G_LO  +: A_GRPW];
+        ly  = ad[AWA_LY_LO +: LAYW];
         for (ln=0; ln<PE_N; ln=ln+1)
             b[4*ln +: 4] = f_awq(ly, sel, grp*PE_N + ln, kk);
 `ifdef LBINJECT

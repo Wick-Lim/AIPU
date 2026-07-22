@@ -791,6 +791,74 @@ module cdc_protocol_ctx_tb;
         // ---- (3) protocol still alive after a readback: one more ctx round-trip ----
         run_token(cap_tok,  20'd1, 1, 8'h9F); test_count=test_count+1;
 
+        // ---- (4) MID-RUN TELEMETRY: poll while a token run is IN FLIGHT --------
+        //   The OP_TELEM pop must (a) answer with ITS OWN ctx and (b) leave the
+        //   in-flight run untouched: the run's token must still carry the RUN's
+        //   ctx (pre-fix: cur_ctx followed every pop -> token retagged 8'hB7) and
+        //   its VALUE must still match the standalone reference (pre-fix the pop
+        //   also rewrote prompt_tok/start_pos/s_len live under the run).
+        begin : midrun_telem
+            integer dbefore;
+            reg [TOKW-1:0] tk_sav;
+            dbefore = host_done_cnt;
+            tk_sav  = cap_tok;
+            issue(tk_sav, 20'd2, 2, 8'hA7, OP_TOKEN);
+            // poll IMMEDIATELY: the run is thousands of core cycles, the pop a few.
+            // Same field values on purpose -- the TB-level regs also feed run_ref.
+            issue(tk_sav, 20'd2, 2, 8'hB7, OP_TELEM);
+            get_response;                       // telemetry snapshot, mid-run
+            if (cap_is_telem !== 1'b1) begin
+                $display("FAIL[midrun]: first response not telemetry (is_telem=%0b)", cap_is_telem); errors=errors+1; end
+            if (cap_ctx !== 8'hB7) begin
+                $display("FAIL[midrun]: telemetry ctx=%0h != 8'hB7", cap_ctx); errors=errors+1; end
+            get_response;                       // the run's token
+            if (cap_is_telem !== 1'b0) begin
+                $display("FAIL[midrun]: second response not a token"); errors=errors+1; end
+            if (cap_ctx !== 8'hA7) begin
+                $display("FAIL[midrun]: token ctx=%0h != run ctx 8'hA7 (mid-run poll retagged the run)", cap_ctx); errors=errors+1; end
+            run_ref;
+            if (cap_tok !== r_tok_lat) begin
+                $display("FAIL[midrun]: token %0d != ref %0d (mid-run poll corrupted the live run)", cap_tok, r_tok_lat); errors=errors+1; end
+            wait_done_ge(dbefore + 1);
+            repeat (40) @(negedge host_clk);
+            $display("PASS[midrun-telem] ctx-B poll answered mid-run; ctx-A run kept its tag and ref-exact value");
+        end
+        test_count = test_count + 1;
+
+        // ---- (5) QUEUED LAUNCH: a second run issued while the first is in flight
+        //   must NOT be lost (pre-fix: its start pulse landed outside H_IDLE and
+        //   the request silently vanished -- no token, no done).  Both tokens must
+        //   arrive, in order, each with its OWN ctx and a reference-exact value.
+        begin : queued_launch
+            integer dbefore;
+            reg [TOKW-1:0] tkA;
+            dbefore = host_done_cnt;
+            tkA     = cap_tok;
+            issue(tkA,  20'd3, 3, 8'h31, OP_TOKEN);
+            issue(4'd5, 20'd4, 4, 8'h42, OP_TOKEN);   // queued while 8'h31 runs
+            get_response;                       // first token
+            if (cap_is_telem !== 1'b0 || cap_ctx !== 8'h31) begin
+                $display("FAIL[queued]: first token ctx=%0h != 8'h31", cap_ctx); errors=errors+1; end
+            prompt_tok = tkA; start_pos = 20'd3; s_len = 3;   // restore A's inputs for the ref
+            run_ref;
+            if (cap_tok !== r_tok_lat) begin
+                $display("FAIL[queued]: token A %0d != ref %0d", cap_tok, r_tok_lat); errors=errors+1; end
+            get_response;                       // second token -- was LOST pre-fix
+            if (cap_is_telem !== 1'b0 || cap_ctx !== 8'h42) begin
+                $display("FAIL[queued]: second token ctx=%0h != 8'h42 (queued launch lost or retagged)", cap_ctx); errors=errors+1; end
+            prompt_tok = 4'd5; start_pos = 20'd4; s_len = 4;  // restore B's inputs for the ref
+            run_ref;
+            if (cap_tok !== r_tok_lat) begin
+                $display("FAIL[queued]: token B %0d != ref %0d", cap_tok, r_tok_lat); errors=errors+1; end
+            wait_done_ge(dbefore + 2);
+            repeat (40) @(negedge host_clk);
+            $display("PASS[queued-launch] back-to-back runs both delivered, ordered, ctx-correct, ref-exact");
+        end
+        test_count = test_count + 1;
+
+        // ---- (6) COUNTERS EXACT after the mid-run + queued traffic -------------
+        telem_read(8'h66, host_tok_cnt, host_req_cnt, host_done_cnt); test_count=test_count+1;
+
         if (errors!=0) begin
             $display("FAILED: %0d error(s) across %0d tests", errors, test_count);
             $fatal;

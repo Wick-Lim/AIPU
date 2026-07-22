@@ -442,7 +442,7 @@ module boot_loader_manifest_tb;
         run_scenario("g: EMPTY image -> released", 1'b0, ERR_NONE);
 
         if (errors == 0)
-            $display("boot_loader_manifest ALL %0d TESTS PASSED", pass_count);
+            $display("ALL %0d TESTS PASSED", pass_count);
         else
             $fatal(1, "%0d ERRORS", errors);
         $finish;

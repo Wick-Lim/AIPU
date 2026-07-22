@@ -468,9 +468,17 @@ module glm_q4k_spec_system #(
     //   on every kv_lat_valid_all[0] pulse (once per layer, db_layer stable) --
     //   the SAME (layer,valid) the internal SELF_KV append would use.
     //========================================================================
-    integer cb;
+    //   SINGLE driver: reset AND capture live in this one clocked block.  The
+    //   reset loop used to sit in the loop-FSM block below -- two processes
+    //   writing buf_lat is a multi-driven memory (unspecified NBA order if both
+    //   fire in one cycle; rejected outright by synthesis).
+    integer cb, cbl;
     always @(posedge clk) begin
-        if (sys_kv_lat_valid_all[0]) begin
+        if (rst) begin
+            for (cbl = 0; cbl < L; cbl = cbl + 1)
+                for (cb = 0; cb < PE_M; cb = cb + 1)
+                    buf_lat[cbl][cb] <= {KVR{1'b0}};
+        end else if (sys_kv_lat_valid_all[0]) begin
             for (cb = 0; cb < PE_M; cb = cb + 1)
                 buf_lat[db_layer][cb] <= sys_kv_lat_row_all[cb*KVR +: KVR];
         end
@@ -491,7 +499,6 @@ module glm_q4k_spec_system #(
     reg [2:0] state;
     reg [7:0] drain_cnt;
 
-    integer bi, bj;
     always @(posedge clk) begin
         if (rst) begin
             state        <= S_IDLE;
@@ -514,9 +521,7 @@ module glm_q4k_spec_system #(
             wb_r         <= {PW{1'b0}};
             drain_cnt    <= 8'd0;
             weight_loads <= 32'd0;
-            for (bi = 0; bi < L; bi = bi + 1)
-                for (bj = 0; bj < PE_M; bj = bj + 1)
-                    buf_lat[bi][bj] <= {KVR{1'b0}};
+            // buf_lat reset lives in its capture block above (single driver).
         end else begin
             // pulse defaults
             done      <= 1'b0;

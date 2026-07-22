@@ -26,13 +26,13 @@
 //   At LOOPBACK_FW=1 each fw beat, the die encodes its current pull key
 //   {db_layer,fw_eidx,fw_sel,fw_shared,fw_grp,fw_k} into a DDR read address
 //   `cur_fw_addr`:
-//       cur_fw_addr[0  +: 2]      = fw_sel
-//       cur_fw_addr[2  +: FF_KWD] = fw_k
-//       cur_fw_addr[10 +: FF_GWD] = fw_grp
-//       cur_fw_addr[16 +: 1]      = fw_shared
-//       cur_fw_addr[17 +: EIDXW]  = fw_eidx
-//       cur_fw_addr[20 +: LAYW]   = db_layer
-//       cur_fw_addr[24 +: 8]      = 8'hB6   (TAG_LBFW address marker)
+//       cur_fw_addr[0  +: 2]             = fw_sel
+//       cur_fw_addr[FWA_K_LO  +: FF_KWD] = fw_k        (offsets packed end-to-end
+//       cur_fw_addr[FWA_G_LO  +: FF_GWD] = fw_grp       from the widths -- must
+//       cur_fw_addr[FWA_SH_LO +: 1]      = fw_shared    mirror g_lbfw's
+//       cur_fw_addr[FWA_EI_LO +: EIDXW]  = fw_eidx      localparams)
+//       cur_fw_addr[FWA_LY_LO +: LAYW]   = db_layer
+//       cur_fw_addr[24 +: 8]             = 8'hB6   (TAG_LBFW address marker)
 //   ddr5_xbar carries the FULL address to the per-channel memory unchanged and
 //   returns the response paired with its tag.  This TB's DDR5 memory model, on
 //   any outstanding read whose addr[24 +: 8]==8'hB6, decodes the key and packs
@@ -145,6 +145,12 @@ module glm_q4k_loopback_fw_tb;
     localparam integer DIMW   = (MODEL_DIM<=1)?1:$clog2(MODEL_DIM);
     localparam integer NVTILE = VOCAB/LM_TN;
     localparam integer VTW    = (NVTILE<=1)?1:$clog2(NVTILE);
+    // fw loopback key offsets -- MUST mirror glm_q4k_system g_lbfw (packed end-to-end)
+    localparam integer FWA_K_LO  = 2;
+    localparam integer FWA_G_LO  = FWA_K_LO  + FF_KWD;
+    localparam integer FWA_SH_LO = FWA_G_LO  + FF_GWD;
+    localparam integer FWA_EI_LO = FWA_SH_LO + 1;
+    localparam integer FWA_LY_LO = FWA_EI_LO + EIDXW;
     localparam integer ROW_BITS = (KV_LORA+ROPE)*16;
     localparam integer KVPOSW   = (KV_CTX<=1)?1:$clog2(KV_CTX);
     localparam integer CSLOTW   = (CACHE_SLOTS<=1)?1:$clog2(CACHE_SLOTS);
@@ -612,11 +618,11 @@ module glm_q4k_loopback_fw_tb;
         reg [DDR_DATA_W-1:0] b; begin
         b    = gen_beat(tg, ad);             // X-clean base for the unused high bits
         sel  = ad[1:0];
-        kk   = ad[2  +: FF_KWD];
-        grp  = ad[10 +: FF_GWD];
-        shr  = ad[16];
-        eidx = ad[17 +: EIDXW];
-        ly   = ad[20 +: LAYW];
+        kk   = ad[FWA_K_LO  +: FF_KWD];
+        grp  = ad[FWA_G_LO  +: FF_GWD];
+        shr  = ad[FWA_SH_LO];
+        eidx = ad[FWA_EI_LO +: EIDXW];
+        ly   = ad[FWA_LY_LO +: LAYW];
         for (ln=0; ln<TN; ln=ln+1) begin
             b[4*ln        +: 4] = f_fwq(ly, sel, shr, eidx, grp*TN + ln, kk); // GATE/DOWN
             b[4*TN + 4*ln +: 4] = f_fwq(ly, 3,   shr, eidx, grp*TN + ln, kk); // UP

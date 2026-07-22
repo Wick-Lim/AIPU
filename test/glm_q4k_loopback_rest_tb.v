@@ -19,9 +19,10 @@
 //
 // HOW THE LOOPBACK-REST RESPONDER WORKS (the ONLY change vs the perf TB harness)
 //   At LOOPBACK_REST=1 each die pull encodes its exact key into a DDR read address:
-//       rw:  cur_rw_addr[0 +: R_KW]=rw_k;  [20 +: LAYW]=db_layer;  [24+:8]=8'hC7
-//       lw:  cur_lw_addr[0 +: DIMW]=lw_k;  [12 +: VTW]=lw_vtile;   [24+:8]=8'hD8
-//       gn:  cur_gn_addr[0 +: DIMW]=gn_idx;[16+:1]=gn_which;[20+:LAYW]=db_layer;
+//       rw:  cur_rw_addr[0+:R_KW]=rw_k;  [RWA_LY_LO+:LAYW]=db_layer; [24+:8]=8'hC7
+//       lw:  cur_lw_addr[0+:DIMW]=lw_k;  [LWA_VT_LO+:VTW]=lw_vtile;  [24+:8]=8'hD8
+//       gn:  cur_gn_addr[0+:DIMW]=gn_idx;[GNA_WH_LO+:1]=gn_which;[GNA_LY_LO+:LAYW]=db_layer;
+//       (offsets packed end-to-end from the widths -- mirror g_lbrest's localparams)
 //            [24+:8]=8'hE9
 //   ddr5_xbar carries the FULL address to the per-channel memory unchanged and
 //   returns the response paired with its tag.  This TB's DDR5 memory model, on an
@@ -163,6 +164,11 @@ module glm_q4k_loopback_rest_tb;
     localparam integer DIMW   = (MODEL_DIM<=1)?1:$clog2(MODEL_DIM);
     localparam integer NVTILE = VOCAB/LM_TN;
     localparam integer VTW    = (NVTILE<=1)?1:$clog2(NVTILE);
+    // rest loopback key offsets -- MUST mirror glm_q4k_system g_lbrest (packed end-to-end)
+    localparam integer RWA_LY_LO = R_KW;
+    localparam integer LWA_VT_LO = DIMW;
+    localparam integer GNA_WH_LO = DIMW;
+    localparam integer GNA_LY_LO = GNA_WH_LO + 1;
     localparam integer ROW_BITS = (KV_LORA+ROPE)*16;
     localparam integer KVPOSW   = (KV_CTX<=1)?1:$clog2(KV_CTX);
     localparam integer CSLOTW   = (CACHE_SLOTS<=1)?1:$clog2(CACHE_SLOTS);
@@ -633,8 +639,8 @@ module glm_q4k_loopback_rest_tb;
         integer ln; integer ly, kk;
         reg [DDR_DATA_W-1:0] b; begin
         b   = gen_beat(tg, ad);              // X-clean base for the unused high bits
-        kk  = ad[0  +: R_KW];
-        ly  = ad[20 +: LAYW];
+        kk  = ad[0 +: R_KW];
+        ly  = ad[RWA_LY_LO +: LAYW];
         for (ln=0; ln<N_EXPERT; ln=ln+1)
 `ifdef LBRESTINJECT_RW
             // INJECTION (injection-ONLY): corrupt the fed-back rw router-code lane 0 on
@@ -658,8 +664,8 @@ module glm_q4k_loopback_rest_tb;
         integer ln; integer vtile, kk;
         reg [DDR_DATA_W-1:0] b; begin
         b     = gen_beat(tg, ad);            // X-clean base for the unused high bits
-        kk    = ad[0  +: DIMW];
-        vtile = ad[12 +: VTW];
+        kk    = ad[0 +: DIMW];
+        vtile = ad[LWA_VT_LO +: VTW];
         for (ln=0; ln<LM_TN; ln=ln+1)
             b[16*ln +: 16] = gen_bf16((vtile*LM_TN + ln)*MODEL_DIM + kk + 7603);
         gen_lblw_beat = b;
@@ -673,9 +679,9 @@ module glm_q4k_loopback_rest_tb;
         integer ly, which, idx;
         reg [DDR_DATA_W-1:0] b; begin
         b     = gen_beat(tg, ad);            // X-clean base for the unused high bits
-        idx   = ad[0  +: DIMW];
-        which = ad[16 +: 1];
-        ly    = ad[20 +: LAYW];
+        idx   = ad[0 +: DIMW];
+        which = ad[GNA_WH_LO +: 1];
+        ly    = ad[GNA_LY_LO +: LAYW];
         b[0 +: 16] = gen_bf16(ly*1024 + which*512 + idx + 7411);
 `ifdef LBRESTINJECT
         // SOUNDNESS INJECTION: corrupt the fed-back gn value on EVERY gn beat by
