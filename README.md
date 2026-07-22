@@ -171,6 +171,7 @@ absolute tok/s. See [`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md),
 
 ```sh
 brew install icarus-verilog verilator yosys     # iverilog 13.0, verilator 5.048, yosys 0.66
+python3 -m pip install numpy                    # required by the golden-reference generators (make all / q4k / model-q4k)
 
 make all                 # the rung-① FPGA prove-it gate: unittests + synth-glm + formal + more
 make release-gate-strict # the full 68-gate release gate + exact per-gate test-count manifest check
