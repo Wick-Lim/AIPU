@@ -1732,13 +1732,19 @@ cdc-protocol:
 # the default netlist makes the diff non-empty and fails.  (Interactively this
 # was also cross-checked with a full yosys equiv_simple+equiv_induct sequential
 # equivalence -- 7988/7988 $equiv cells proven -- via matched interface adapters.)
-CDC_PROTO_BASE ?= be67c38
+CDC_PROTO_BASE ?= 0d2a2e5
 CDC_PROTO_LIBS := src/glm_q4k_system.v src/cdc_async_fifo.v src/reset_sync.v
 cdc-protocol-equiv:
 	@mkdir -p $(BUILD_DIR)
 	@git show $(CDC_PROTO_BASE):src/glm_q4k_system_cdc.v > $(BUILD_DIR)/cdc_proto_base.v
+	@# SYMMETRY: the base run must apply the SAME chparam as the new run below --
+	@#   yosys elaborates an explicitly-chparam'd top as a parametrized derivative
+	@#   and can optimize it marginally differently from the default elaboration
+	@#   (observed: 144 vs 143 cells on IDENTICAL source), so a default-vs-chparam
+	@#   comparison flags false netlist drift.
 	@$(YOSYS) -q -p "read_verilog -lib -sv -I src $(CDC_PROTO_LIBS); \
 	    read_verilog -sv -I src $(BUILD_DIR)/cdc_proto_base.v; \
+	    chparam -set PROTO_CTX 0 glm_q4k_system_cdc; \
 	    synth -top glm_q4k_system_cdc -flatten; tee -o $(BUILD_DIR)/cdc_proto_stat_base.txt stat"
 	@$(YOSYS) -q -p "read_verilog -lib -sv -I src $(CDC_PROTO_LIBS); \
 	    read_verilog -sv -I src src/glm_q4k_system_cdc.v; \
