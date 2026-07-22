@@ -138,8 +138,7 @@ The denominator is well-grounded; the numerator is the external hardware's bandw
 |---|---|---|
 | ① Prove-it FPGA (KU3P + DDR4 hot-set) | 1–2 NVMe … striped | **~0.5–1 … ~5–8** · bit-exact |
 | ② Custom board (mid FPGA, DDR5/HBM) | ~400 GB/s–1 TB/s | **~15–40** · contingent |
-| ③ SoC — 512 GB LPDDR5X full residency (primary) | ~1.1 TB/s | **≈80** `[measured-inputs EST]` (~95 if GLM-5.2 MTP is deeper) |
-| ③ higher-BW variants | 1.54 TB/s … HBM | **~111 … ~120** (aspirational ceiling) |
+| ③ SoC — 512 GB LPDDR5X full residency (primary) | ~1.1 TB/s (up to 1.54 TB/s … HBM) | **≈80** `[measured-inputs EST]` (~95 if GLM-5.2 MTP is deeper; ~111–120 aspirational HBM ceiling) |
 | ④ **future** — HBF weights + HBM KV (two-store box) | HBF ~1.6 TB/s **per stack** (2-stack base) + 96 GB HBM KV | **~200+** `[EST]` (stack expansion required; die/power become the binding constraint) |
 
 **Rung ④ (future, memory-tech-dependent).** Once HBF (High Bandwidth Flash — 3D-NAND stacked HBM-style,
