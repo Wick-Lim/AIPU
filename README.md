@@ -140,13 +140,28 @@ The denominator is well-grounded; the numerator is the external hardware's bandw
 | ② Custom board (mid FPGA, DDR5/HBM) | ~400 GB/s–1 TB/s | **~15–40** · contingent |
 | ③ SoC — 512 GB LPDDR5X full residency (primary) | ~1.1 TB/s | **≈80** `[measured-inputs EST]` (~95 if GLM-5.2 MTP is deeper) |
 | ③ higher-BW variants | 1.54 TB/s … HBM | **~111 … ~120** (aspirational ceiling) |
+| ④ **future** — HBF weights + HBM KV (two-store box) | HBF ~1.6 TB/s **per stack** (2-stack base) + 96 GB HBM KV | **~200+** `[EST]` (stack expansion required; die/power become the binding constraint) |
+
+**Rung ④ (future, memory-tech-dependent).** Once HBF (High Bandwidth Flash — 3D-NAND stacked HBM-style,
+announced 2025) matures, the two jobs the current design splits — persistent store (NVMe) and weight-stream bandwidth (LPDDR5X) —
+collapse into **one non-volatile, high-bandwidth store**: ~512 GB HBF holds the 467 GB weights *resident and
+non-volatile* (no NVMe tier, no ~467 GB DRAM copy, no ~70 s boot-load → instant-on), while a separate ~96 GB HBM
+holds only the KV cache. The announced ~1.6 TB/s is **per stack** and HBF stacks like HBM, so the 2-stack base
+(~3.2 TB/s against weights) is the natural entry point → **~200+ tok/s `[EST]`**; a 1-stack config is the ~100–115
+entry. Because lane scaling is sublinear (4× → ~2.40×), the binding constraint shifts from bandwidth to the **die
+(≈26K lanes) and power** — higher stack counts push into a chiplet / kW bracket that is deliberately not quoted.
+The RTL abstraction already supports the swap (`flash_xbar` is a medium-agnostic storage-read fabric — "the NAND
+backend is the swapped part, not the abstraction"); what rung ④ adds is the DDR-tier removal + re-tiering and the
+**vendor HBF/HBM PHY + controllers** (external IP). See [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md) § Rung ④.
 
 **Read these as an optimistic ceiling, not a precise number.** The BW is *peak*, not sustained (real DRAM
 ~70–85% of peak); lane scaling is **sublinear** (measured 4× lanes → ~2.40×, because attention and MoE run
 in sequential phases), so the die needs overprovisioned lanes to consume high BW and can otherwise become
 the bottleneck; and nothing is measured on silicon. The real number more likely lands *below* the estimate
 than above. What is validated on real RTL cycles is the memory-stall *mechanism* (`make perf-q4k`), not the
-absolute tok/s. See [`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md),
+absolute tok/s. **Rung ④ is a further step out** — it depends on a memory technology (HBF) that is announced
+but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
+[`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md),
 [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md), [`docs/H_MEASUREMENT.md`](docs/H_MEASUREMENT.md).
 
 ---
@@ -209,8 +224,9 @@ model adds the memory/streaming system + array scaling.
   [Roadmap](https://wick-lim.github.io/AIPU/roadmap.html) ladder.
 - **[`docs/Q4K_RETARGET.md`](docs/Q4K_RETARGET.md)** — the Q4_K dequant math, GEMM contract, per-type status.
   Start here for "what is Q4_K-exact and what isn't."
-- **[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)** — the 3-rung hardware plan. Start here for "how
-  fast, on what hardware."
+- **[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)** — the hardware plan: rungs ①–③ (prove-it FPGA →
+  custom board → 512 GB LPDDR5X SoC) plus the future rung ④ (HBF weights + HBM KV, ~200+ tok/s `[EST]`). Start
+  here for "how fast, on what hardware."
 - **[`docs/R3_APPLIANCE_SPEC.md`](docs/R3_APPLIANCE_SPEC.md)** — the rung-③ 512 GB LPDDR5X residency-box
   design point (≈80 tok/s `[measured-inputs EST]`), power / BOM / lane derivation.
 - **[`docs/SPEC_COMPOSITION_DESIGN.md`](docs/SPEC_COMPOSITION_DESIGN.md)** / **[`docs/KV_WRITEBACK_DESIGN.md`](docs/KV_WRITEBACK_DESIGN.md)** — the spec-chain × memory-system composition (the tok/s critical path) and the die-internal KV write-back.
