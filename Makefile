@@ -1181,6 +1181,43 @@ laguna-moe:
 	@echo "laguna-moe: Laguna MoE path carries -- ref order OK; router 256/top-10 renorm-invariant; SwiGLU expert INTER_MOE=1024 Q4_K bit-exact. Scale placement (SCALE=1.0 + combine x2.5) is the assembly-phase combine, NOT a leaf change."
 
 # ============================================================================
+# laguna-attn / laguna-model : Phase 3-6 REFERENCE gates for the attention
+#   machine and the full forward.  These are the executable Laguna spec (numpy),
+#   self-tested -- the golden the Laguna RTL checks against.  Attention covers
+#   Phases 3-5 (GQA + q/k RMSNorm + rotate_half dual YaRN/plain partial RoPE +
+#   sliding-window/causal mask + softplus per-head gating); model covers Phase 6
+#   (embed -> 48x(attn + MoE/dense) -> norm -> LM head -> argmax, dense@0 + the
+#   full/sliding schedule).  See docs/LAGUNA_S21.md SS6 for the verification-level
+#   ledger (what is bit-exact-RTL vs reference-verified).
+# ============================================================================
+.PHONY: laguna-attn laguna-model laguna-datapath-elab laguna
+laguna-attn:
+	@printf '[%s] ' "laguna_attn_ref"; python3 tools/laguna_attn_ref.py --selftest | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: laguna_attn_ref self-test"; exit 1; }
+
+laguna-model:
+	@printf '[%s] ' "laguna_model_ref"; python3 tools/laguna_model_ref.py --selftest | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: laguna_model_ref self-test"; exit 1; }
+
+# laguna-datapath-elab : ELABORATION study -- the leaf blocks a GQA attention
+#   composes from (Q4_K GEMM for Q/K/V/O, RMSNorm for q/k-norm at head_dim=128
+#   eps=1e-6, softmax for the attention window) are main's verified leaves; this
+#   type/width-checks them at Laguna's attention shape (iverilog -tnull, no sim).
+laguna-datapath-elab:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "laguna_datapath_elab"; \
+	    $(IVERILOG) -g2012 -I src -I configs -tnull test/laguna_datapath_elab_wrap.v \
+	    src/glm_matmul_q4k.v src/rmsnorm_unit.v src/glm_softmax.v src/glm_fp_pipe.v \
+	    && echo "ELABORATED (GQA datapath leaves type/width-check at Laguna attention shape: head_dim=128, eps=1e-6)" \
+	    || { echo "FAILED: laguna-datapath-elab (a leaf does not parameterize to Laguna attention shape)"; exit 1; }
+
+# laguna : the aggregate Laguna-port gate (branch laguna-s-2.1).  Runs every
+#   Laguna check: config-consistency, the MoE path, the attention + full-forward
+#   references, and the datapath elaboration.  This is the branch's release gate.
+laguna: laguna-config-check laguna-attn laguna-model laguna-datapath-elab laguna-moe
+	@echo "laguna: ALL Laguna-port gates passed (config + attn/model refs + datapath elab + MoE). See docs/LAGUNA_S21.md SS6 for the verification-level ledger."
+
+# ============================================================================
 # mla-sparse : mla_attn_q4k SPARSE / PER-ROW batching oracle (standalone gate)
 # ----------------------------------------------------------------------------
 #   DUT-vs-DUT EXACT (===) oracle for the PE_M-batched Q4_K MLA attention:

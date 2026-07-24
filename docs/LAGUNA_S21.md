@@ -161,20 +161,51 @@ experts, the 1-shared-expert structure — is `main`'s modules re-parameterized.
    invariant) + `swiglu_expert_q4k` at Laguna **INTER_MOE=1024** (Q4_K bit-exact vs the
    ggml ref). Confirms the leaf modules carry unchanged; the scale-placement (SCALE=1.0 +
    combine x2.5, §4b) is deferred to the Phase-6 decoder-block combine, not a leaf change.
-3. **Phase 3 — GQA orchestrator.** New attention orchestrator over the existing inner
-   attention blocks; bit-exact vs a numpy/ggml GQA reference + injection pair.
-4. **Phase 4 — sliding-window + global/SWA layout.** Windowed masking + per-layer selector;
-   golden vs reference, injection pair (a wrong window must FAIL).
-5. **Phase 5 — softplus output gating.** New datapath; bit-exact vs reference, injection pair.
-6. **Phase 6 — assemble.** Full forward bit-exact golden (embed → layer0-dense →
-   47×(GQA-or-SWA + MoE) → norm → LM head → argmax). **No spec-decode** — Laguna has no
-   MTP head (§4), so the box runs the no-spec roofline; an external drafter is a later,
-   optional add, not part of the port.
-7. **Phase 7 — gate + manifest.** Fold the Laguna gates into a `laguna-release-gate`,
-   pin exact counts, add loopback/PHY-closure for the new families.
+3. **Phase 3 — GQA attention.** ✅ Reference DONE. `make laguna-attn`
+   (`tools/laguna_attn_ref.py`, 16 self-tests): GQA (per-layer Q heads), q/k per-head
+   RMSNorm, causal mask. The composing leaves (Q4_K GEMM / RMSNorm / softmax) type/width-
+   check at Laguna's attention shape — `make laguna-datapath-elab`.
+4. **Phase 4 — sliding-window + dual RoPE/YaRN.** ✅ Reference DONE (in `laguna-attn`):
+   `rotate_half` (not GLM interleave) partial RoPE, YaRN (full layers) + plain (sliding),
+   sliding-window mask + the `[full, sliding×3]×12` schedule — all self-tested (a token
+   outside the window provably cannot affect the output).
+5. **Phase 5 — softplus output gating.** ✅ Reference DONE (in `laguna-attn`): per-head
+   `out *= softplus(x @ Wg)` before o_proj, self-tested.
+6. **Phase 6 — assemble.** ✅ Reference DONE. `make laguna-model`
+   (`tools/laguna_model_ref.py`, 11 self-tests): embed → 48×(attn + MoE/dense) → norm →
+   LM head → argmax, dense@0 + full/sliding schedule, **end-to-end causal**. **No
+   spec-decode** — Laguna has no MTP head (§4), so the box runs the no-spec roofline.
+7. **Phase 7 — gate.** ✅ `make laguna` aggregates every Laguna gate (config-check + MoE +
+   attn/model references + datapath elaboration). Manifest pins for the RTL leaf gates
+   land when the bit-exact orchestrator does (below).
 
-Foundation (dequant + MoE + memory + verification infra) carries ~70–80% of the work;
-the new surface is the attention machine — **GQA (per-layer head count) + sliding-window
-+ dual-RoPE/YaRN + softplus output gating** (Phases 3–5). That is more than the plain-GQA
-GLM-4.7-Air port (which needed none of SWA / YaRN / gating), so budget Phases 3–5 as the
-real cost; Phases 1–2 and 6–7 largely re-use `main`.
+Foundation (dequant + MoE + memory + verification infra) carries ~70–80% of the work; the
+new surface is the attention machine — **GQA (per-layer head count) + sliding-window +
+dual-RoPE/YaRN + softplus output gating**.
+
+## 6. Verification-level ledger — what is proven, and how (no overclaim)
+
+The repo's discipline is to state the EVIDENCE LEVEL of every claim. For the Laguna port:
+
+| Piece | Level | Evidence |
+|---|---|---|
+| Dequant (Q4_K/Q6_K/Q8_0) carries | **format-level, inherited** | `tools/gguf_crosscheck.py` runs unchanged; re-seal on real bytes deferred to download |
+| Config (layers/heads/experts/rope) | **VERIFIED vs config.json** | `make laguna-config-check` — 195 asserts + injection; audited vs `docs/laguna_s21_config.json` |
+| MoE path (router/expert) at Laguna dims | **bit-exact RTL (leaf)** | `make laguna-moe` — `moe_router_q4k` 256/top-10 + `swiglu_expert_q4k` INTER=1024, Q4_K bit-exact vs ggml ref |
+| Attention math (GQA, q/k-norm, rotate_half+YaRN, SWA mask, softplus gate) | **reference-verified (numpy)** | `make laguna-attn` — 16 self-tests |
+| Full forward (schedule, dense/MoE dispatch, causality) | **reference-verified (numpy)** | `make laguna-model` — 11 self-tests |
+| GQA datapath leaves at Laguna shape | **elaboration** | `make laguna-datapath-elab` — type/width-check, no sim |
+
+**Not yet done (the remaining silicon-adjacent RTL), stated plainly:** a bit-exact RTL
+GQA *orchestrator* that streams the leaves (Q/K/V/O GEMM → q/k-norm → rotate_half/YaRN
+RoPE → GQA gather + causal/SWA mask → softmax → ×V → softplus gate → o_proj) against a
+weight-DMA harness, checked bit-exact vs `laguna_attn_ref` with an injection pair; a new
+**softplus** activation leaf (main's `glm_act` has SiLU, not softplus) and a **YaRN /
+rotate_half** RoPE leaf (main's `rope_interleave_unit` is interleaved plain-rope); the
+full-model RTL assembly + a `laguna-release-gate-strict` manifest. These are the same
+class of work the GLM-5.2 attention (`mla_attn_q4k`) represents on `main` — the Laguna
+port has the executable golden (references) and the config/MoE/datapath proofs to build
+them against, but the orchestrator RTL itself is not written. **No claim of a running or
+bit-exact-in-RTL Laguna accelerator is made here** — only that the port is fully
+specified, its MoE path is bit-exact in RTL, and its attention/forward are reference-
+verified end to end.
