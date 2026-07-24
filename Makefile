@@ -1145,6 +1145,42 @@ laguna-config-check:
 	    else echo "injection correctly FAILED (the per-layer schedule rules are pinned against the locked 12-full/36-sliding counts)"; fi
 
 # ============================================================================
+# laguna-moe : Phase-2 MoE/FFN gate for the Laguna-S-2.1 port.  Proves the MoE
+#   path carries to Laguna's exact config -- the leaf modules need NO change,
+#   only re-parameterization (hidden_act=silu == GLM SwiGLU; sigmoid router +
+#   norm_topk_prob + bias=0 no-op == GLM router; the ONLY delta is the scale-
+#   placement, handled at assembly by SCALE=1.0 + combine x2.5, see
+#   docs/LAGUNA_S21.md).  Three checks:
+#     (1) the Laguna MoE numeric-order reference self-test (block order:
+#         sigmoid router -> top-10 -> norm -> routed x2.5 + unscaled shared);
+#     (2) moe_router_q4k at Laguna's 256 experts / TOP-10 (renorm invariant --
+#         the Laguna-specific width: top-10, not GLM's top-8);
+#     (3) swiglu_expert_q4k at Laguna's expert FFN (INTER_MOE=1024), Q4_K
+#         bit-exact vs the ggml reference.
+# ============================================================================
+.PHONY: laguna-moe
+laguna-moe:
+	@mkdir -p $(BUILD_DIR)
+	@# (1) Laguna MoE numeric-order reference (block-level order + scale placement)
+	@printf '[%s] ' "laguna_moe_ref"; python3 tools/laguna_moe_ref.py --selftest | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: laguna_moe_ref self-test"; exit 1; }
+	@# (2) moe_router_q4k at Laguna 256 / TOP-10 -- sigmoid -> top10 -> renorm invariant
+	@$(IVERILOG) $(IFLAGS) -DTB_N_EXPERT=256 -DTB_TOPK=10 -DTB_HIDDEN=128 -DTB_NTEST=4 -DTB_TIMEOUT_NS=600000000 \
+	    -o $(BUILD_DIR)/laguna_moe_router_sim test/moe_router_q4k_tb.v \
+	    src/moe_router_q4k.v src/glm_matmul_q4k.v src/glm_act.v src/topk_select.v src/glm_fp_pipe.v
+	@printf '[%s] ' "moe_router_q4k(256/top-10 Laguna)"; $(VVP) $(BUILD_DIR)/laguna_moe_router_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: laguna moe_router_q4k (256/top-10)"; exit 1; }
+	@# (3) swiglu_expert_q4k at Laguna expert FFN INTER_MOE=1024 (Q4_K bit-exact vs ggml ref)
+	@python3 tools/swiglu_q4k_gen.py 4 64 1024 4 $(BUILD_DIR)/laguna_swiglu_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_HIDDEN=64 -DTB_INTER=1024 -DTB_KMAX=1024 -DTB_VEC='"$(BUILD_DIR)/laguna_swiglu_vec.txt"' \
+	    -DTB_DONE_GUARD=400000 -DTB_TIMEOUT_NS=600000000 \
+	    -o $(BUILD_DIR)/laguna_swiglu_sim test/swiglu_expert_q4k_tb.v \
+	    src/swiglu_expert_q4k.v src/glm_matmul_q4k.v src/glm_act.v
+	@printf '[%s] ' "swiglu_expert_q4k(INTER=1024 Laguna)"; $(VVP) $(BUILD_DIR)/laguna_swiglu_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: laguna swiglu_expert_q4k (INTER=1024)"; exit 1; }
+	@echo "laguna-moe: Laguna MoE path carries -- ref order OK; router 256/top-10 renorm-invariant; SwiGLU expert INTER_MOE=1024 Q4_K bit-exact. Scale placement (SCALE=1.0 + combine x2.5) is the assembly-phase combine, NOT a leaf change."
+
+# ============================================================================
 # mla-sparse : mla_attn_q4k SPARSE / PER-ROW batching oracle (standalone gate)
 # ----------------------------------------------------------------------------
 #   DUT-vs-DUT EXACT (===) oracle for the PE_M-batched Q4_K MLA attention:

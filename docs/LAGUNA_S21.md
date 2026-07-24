@@ -121,13 +121,46 @@ Still **[VERIFY]** at build time (need GGUF metadata / reference kernels, not ju
 
 ---
 
+## 4b. Laguna MoE forward — exact order (from modeling_laguna.py) and the GLM delta
+
+Extracted from `poolside/Laguna-S-2.1/modeling_laguna.py` (`tools/laguna_moe_ref.py`
+is the numpy port). `hidden_act` defaults to **silu** → SwiGLU, identical to `main`.
+
+```
+router (LagunaTopKRouter):
+  logits = x @ Wg.T            (fp32)         # softcap 0.0 -> off
+  scores = sigmoid(logits)                    # SIGMOID scoring, NOT softmax
+  sel    = topk(scores + bias, k=10)          # bias = e_score_correction_bias = 0 in
+                                              #   the GGUF (zero-init) -> topk by score
+  w      = scores.gather(sel)                 # gather UNBIASED scores
+  if norm_topk_prob: w /= w.sum(-1)           # normalize the top-k weights
+experts:  down( silu(gate(x)) * up(x) ) * w_e                       # SwiGLU
+block:    out = (Sigma_e experts_e) * 2.5  +  MLP_shared(x)         # scale routed SUM,
+                                                                   #   add UNSCALED shared
+```
+
+**The ONE delta vs `main`'s `moe_router_q4k`:** GLM folds the scale into each routed
+weight (`w_j=(gate_j/s)*2.5`, so `Sum(w_j)=2.5`); Laguna keeps `w` normalized
+(`Sum=1.0`) and scales the routed **sum** (then adds the unscaled shared expert).
+Algebraically identical, fp-rounding differs. **No leaf-module change is needed:**
+`moe_router_q4k` already has a `SCALE` parameter — Laguna runs it at `SCALE=1.0`
+(normalize only) and the decoder-block combine applies `x2.5` to the routed
+accumulator before adding shared. Everything else — sigmoid, top-k, renorm, SwiGLU
+experts, the 1-shared-expert structure — is `main`'s modules re-parameterized.
+`tools/laguna_moe_ref.py --selftest` exhibits the fold-vs-sum-scale fp delta.
+
+---
+
 ## 5. Phased plan (each phase is bit-exact-gated before the next)
 
-1. **Phase 1 — inherit + config.** Branch (done), read config.json/GGUF metadata into a
-   Laguna config set, and **re-seal the dequant on the real Laguna GGUF bytes**
-   (`tools/gguf_crosscheck.py`). Early, cheap, high-value proof the moat carries.
-2. **Phase 2 — MoE + FFN at Laguna shape.** TOPK=10, 256+1 experts, the real dims;
-   golden-check the router/expert path (reuses `main`'s gates, re-parameterized).
+1. **Phase 1 — inherit + config.** ✅ DONE. `configs/full_laguna_s21.vh` locks the shape;
+   `make laguna-config-check` (195 asserts + injection) proves it. Dequant is format-level:
+   `tools/gguf_crosscheck.py` runs unchanged on the Laguna GGUF (deferred to download).
+2. **Phase 2 — MoE + FFN at Laguna shape.** ✅ DONE. `make laguna-moe`: the Laguna MoE
+   numeric-order reference self-test + `moe_router_q4k` at Laguna **256/top-10** (renorm
+   invariant) + `swiglu_expert_q4k` at Laguna **INTER_MOE=1024** (Q4_K bit-exact vs the
+   ggml ref). Confirms the leaf modules carry unchanged; the scale-placement (SCALE=1.0 +
+   combine x2.5, §4b) is deferred to the Phase-6 decoder-block combine, not a leaf change.
 3. **Phase 3 — GQA orchestrator.** New attention orchestrator over the existing inner
    attention blocks; bit-exact vs a numpy/ggml GQA reference + injection pair.
 4. **Phase 4 — sliding-window + global/SWA layout.** Windowed masking + per-layer selector;
