@@ -39,10 +39,15 @@ throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon).
 > throughput; it is set by the hardware rung (memory bandwidth / IO / PHY budget) — see
 > [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md).
 
-> **Branches.** `main` develops the GLM-5.2 Q4_K accelerator (this README). The prior **FP8 datacenter
-> track** is preserved on branch **`fp8`** + tag `fp8-verified-baseline`; a compression-research study on
-> `research/compression-study`. All referenced as prior/preserved, never current. The full product (rungs
-> ②③) is the roadmap, not main's current code
+> **Branches.** `main` develops the GLM-5.2 Q4_K accelerator (this README). **`laguna-s-2.1`** ports the
+> same accelerator to a **second model** — [Laguna-S-2.1](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)
+> (118B MoE, `LagunaForCausalLM`): the Q4_K dequant contract is inherited unchanged, the MoE path is
+> bit-exact in RTL at Laguna's config, and the (different) GQA attention machine is specified +
+> reference-verified end to end (`make laguna`) — the bit-exact orchestrator RTL is scoped, not yet
+> written. See that branch's [`docs/LAGUNA_S21.md`](https://github.com/Wick-Lim/AIPU/blob/laguna-s-2.1/docs/LAGUNA_S21.md).
+> The prior **FP8 datacenter track** is preserved on branch **`fp8`** + tag `fp8-verified-baseline`; a
+> compression-research study on `research/compression-study`. All referenced as prior/preserved, never
+> current. The full product (rungs ②③) is the roadmap, not main's current code
 > ([`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md), [`NEXT_STEPS_PLAN.md`](NEXT_STEPS_PLAN.md)).
 
 ---
