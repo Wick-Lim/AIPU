@@ -1123,6 +1123,28 @@ clean:
 	rm -f *.vcd
 
 # ============================================================================
+# laguna-config-check : Phase-1 config-consistency gate for the Laguna-S-2.1
+#   port (branch laguna-s-2.1).  Elaborates configs/full_laguna_s21.vh and
+#   asserts every derived per-layer count / GQA group / dim against the config
+#   locked from poolside/Laguna-S-2.1 config.json.  NO datapath -- it guards the
+#   config header itself.  Paired with a must-FAIL injection (a corrupted count
+#   MUST be caught) so the gate is proven live, same discipline as every gate.
+# ============================================================================
+.PHONY: laguna-config-check
+laguna-config-check:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) -g2012 -I configs -o $(BUILD_DIR)/laguna_config_check test/laguna_config_check.v
+	@printf '[%s] ' "laguna_config_check"; $(VVP) $(BUILD_DIR)/laguna_config_check | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: laguna-config-check (config header inconsistent with the locked counts)"; exit 1; }
+	@# INJECTION -- force a WRONG full-layer schedule (full iff i%3==0 -> 16 full, not 12):
+	@#   the layer-count asserts MUST catch it -> the gate MUST FAIL.
+	@$(IVERILOG) -g2012 -I configs -DLAGUNA_INJECT_BADSCHED -o $(BUILD_DIR)/laguna_config_check_inject test/laguna_config_check.v
+	@printf '[%s] ' "laguna_config_check_INJECT_badsched"; \
+	    if $(VVP) $(BUILD_DIR)/laguna_config_check_inject 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: BADSCHED injection NOT caught (a wrong per-layer schedule still passed -- the count asserts are not load-bearing)"; exit 1; \
+	    else echo "injection correctly FAILED (the per-layer schedule rules are pinned against the locked 12-full/36-sliding counts)"; fi
+
+# ============================================================================
 # mla-sparse : mla_attn_q4k SPARSE / PER-ROW batching oracle (standalone gate)
 # ----------------------------------------------------------------------------
 #   DUT-vs-DUT EXACT (===) oracle for the PE_M-batched Q4_K MLA attention:
