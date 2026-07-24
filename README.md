@@ -33,17 +33,30 @@ design (attention/accumulation orders differ), the 467 GB checkpoint has not bee
 throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon). See
 [*What's proven*](#whats-proven) for the exact status of every claim.
 
+> **🧬 This branch (`laguna-s-2.1`) — a SECOND model target.** The same accelerator, retargeted to
+> [`unsloth/Laguna-S-2.1-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF) (poolside
+> **Laguna-S-2.1** — a 118B MoE, ~8B active/token, `LagunaForCausalLM`). The Q4_K **dequant contract is
+> inherited unchanged** (format-level) and the **MoE path is bit-exact in RTL at Laguna's config** (256
+> experts / **top-10** / expert-FFN 1024 — `make laguna-moe`). The attention machine is genuinely
+> different — **GQA** with per-layer head counts (48/72), **sliding-window** + **dual YaRN/plain RoPE**,
+> **per-head softplus gating**, q/k RMSNorm — and is **specified and reference-verified end to end**
+> (`make laguna`, numpy golden); the bit-exact **GQA orchestrator RTL is scoped but not yet written**
+> (same class as `main`'s `mla_attn_q4k`). No claim of a running/RTL-bit-exact Laguna accelerator is made.
+> Full status + per-piece verification ledger: [`docs/LAGUNA_S21.md`](docs/LAGUNA_S21.md). `main` (the
+> GLM-5.2 accelerator described below) is untouched by this branch.
+
 > **The product** is a single-user box that runs with the ethernet unplugged — the full 753B model,
 > fully offline / air-gapped, provisioned once (~467 GB Q4_K weights) then disconnected. No per-token API
 > fees, no vendor that can rate-limit or cut you off. The number that matters is single-user interactive
 > throughput; it is set by the hardware rung (memory bandwidth / IO / PHY budget) — see
 > [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md).
 
-> **Branches.** `main` develops the GLM-5.2 Q4_K accelerator (this README). The prior **FP8 datacenter
-> track** is preserved on branch **`fp8`** + tag `fp8-verified-baseline`; a compression-research study on
-> `research/compression-study`. All referenced as prior/preserved, never current. The full product (rungs
-> ②③) is the roadmap, not main's current code
-> ([`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md), [`NEXT_STEPS_PLAN.md`](NEXT_STEPS_PLAN.md)).
+> **Branches.** `main` develops the GLM-5.2 Q4_K accelerator (this README). **`laguna-s-2.1`** ports the
+> same accelerator to a second model, Laguna-S-2.1 (this branch — see the callout above and
+> [`docs/LAGUNA_S21.md`](docs/LAGUNA_S21.md)). The prior **FP8 datacenter track** is preserved on branch
+> **`fp8`** + tag `fp8-verified-baseline`; a compression-research study on `research/compression-study`.
+> All referenced as prior/preserved, never current. The full product (rungs ②③) is the roadmap, not main's
+> current code ([`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md), [`NEXT_STEPS_PLAN.md`](NEXT_STEPS_PLAN.md)).
 
 ---
 

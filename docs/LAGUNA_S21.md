@@ -1,5 +1,12 @@
 # Porting AIPU to Laguna-S-2.1 (UD-Q4_K_XL)
 
+> **Status (branch `laguna-s-2.1`).** Config LOCKED + verified · dequant inherited
+> (format-level) · **MoE path bit-exact in RTL** · attention + full forward
+> **reference-verified end to end** · GQA-orchestrator RTL scoped, not yet written.
+> One command runs every Laguna gate: **`make laguna`** (config-check + MoE + attn/
+> model references + datapath elaboration). Per-piece evidence levels are in §6 —
+> **no claim of a running / RTL-bit-exact Laguna accelerator is made.** `main` untouched.
+
 Target: **`unsloth/Laguna-S-2.1-GGUF : UD-Q4_K_XL`** — a 118B MoE (~8B active/token)
 in the same GGUF k-quant ecosystem as the GLM-5.2 build that `main` targets.
 
